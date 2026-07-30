@@ -1,9 +1,27 @@
 import Combine
 import Foundation
 
+enum CalendarDisplayMode: String, CaseIterable, Identifiable {
+    case month
+    case week
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .month:
+            return "Month"
+        case .week:
+            return "Week"
+        }
+    }
+}
+
 @MainActor
 final class CalendarViewModel: ObservableObject {
+    @Published private(set) var displayMode: CalendarDisplayMode = .month
     @Published private(set) var visibleMonth: Date
+    @Published private(set) var visibleWeekAnchor: Date
     @Published private(set) var selectedDate: Date
     @Published private(set) var events: [CalendarEvent] = []
     @Published private(set) var categories: [CalendarCategory] = []
@@ -25,6 +43,7 @@ final class CalendarViewModel: ObservableObject {
         self.calendar = calendar
         let today = calendar.startOfDay(for: Date())
         self.visibleMonth = today
+        self.visibleWeekAnchor = today
         self.selectedDate = today
     }
 
@@ -35,6 +54,7 @@ final class CalendarViewModel: ObservableObject {
         }
 
         calendar.firstWeekday = firstWeekday
+        visibleWeekAnchor = selectedDate
         updateSelectedDayEvents()
     }
 
@@ -54,6 +74,7 @@ final class CalendarViewModel: ObservableObject {
             selectedDayEvents = []
             let today = calendar.startOfDay(for: Date())
             visibleMonth = today
+            visibleWeekAnchor = today
             selectedDate = today
             await startRealtimeUpdates(homeId: homeId)
         }
@@ -72,15 +93,58 @@ final class CalendarViewModel: ObservableObject {
         defer { isLoading = false }
 
         do {
-            async let loadedEvents = calendarService.fetchEventsForVisibleMonth(homeId: activeHomeId, month: visibleMonth)
+            let requestMode = displayMode
+            let requestMonth = visibleMonth
+            let requestWeekRange = visibleWeekRange()
+            let requestHomeId = activeHomeId
+
+            async let loadedEvents: [CalendarEvent] = {
+                switch requestMode {
+                case .month:
+                    return try await calendarService.fetchEventsForVisibleMonth(homeId: requestHomeId, month: requestMonth)
+                case .week:
+                    guard let requestWeekRange else {
+                        throw CalendarServiceError.invalidDateRange
+                    }
+                    return try await calendarService.fetchEvents(
+                        homeId: requestHomeId,
+                        rangeStart: requestWeekRange.start,
+                        rangeEnd: requestWeekRange.end
+                    )
+                }
+            }()
             async let loadedCategories = calendarService.fetchCategories(homeId: activeHomeId)
-            events = try await loadedEvents
-            categories = try await loadedCategories
+
+            let resolvedEvents = try await loadedEvents
+            let resolvedCategories = try await loadedCategories
+
+            guard activeHomeId == requestHomeId,
+                  displayMode == requestMode else {
+                return
+            }
+
+            events = resolvedEvents
+            categories = resolvedCategories
             loadedHomeId = activeHomeId
             updateSelectedDayEvents()
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    func setDisplayMode(_ mode: CalendarDisplayMode) async {
+        guard displayMode != mode else {
+            return
+        }
+
+        displayMode = mode
+        switch mode {
+        case .month:
+            visibleMonth = selectedDate
+        case .week:
+            visibleWeekAnchor = selectedDate
+        }
+        await reload()
     }
 
     func selectDate(_ date: Date) {
@@ -111,15 +175,45 @@ final class CalendarViewModel: ObservableObject {
     func moveToToday() async {
         let today = calendar.startOfDay(for: Date())
         visibleMonth = today
+        visibleWeekAnchor = today
         selectedDate = today
         await reload()
+    }
+
+    func moveToPreviousPeriod() async {
+        switch displayMode {
+        case .month:
+            await moveToPreviousMonth()
+        case .week:
+            await moveToPreviousWeek()
+        }
+    }
+
+    func moveToNextPeriod() async {
+        switch displayMode {
+        case .month:
+            await moveToNextMonth()
+        case .week:
+            await moveToNextWeek()
+        }
+    }
+
+    func moveToPreviousWeek() async {
+        await moveWeek(by: -1)
+    }
+
+    func moveToNextWeek() async {
+        await moveWeek(by: 1)
     }
 
     func focus(on date: Date) async {
         let focusedDate = calendar.startOfDay(for: date)
         selectedDate = focusedDate
+        visibleWeekAnchor = focusedDate
 
-        if !calendar.isDate(focusedDate, equalTo: visibleMonth, toGranularity: .month) {
+        if displayMode == .week {
+            await reload()
+        } else if !calendar.isDate(focusedDate, equalTo: visibleMonth, toGranularity: .month) {
             visibleMonth = focusedDate
             await reload()
         } else {
@@ -177,6 +271,7 @@ final class CalendarViewModel: ObservableObject {
             )
             selectedDate = calendar.startOfDay(for: normalizedRange.start)
             visibleMonth = normalizedRange.start
+            visibleWeekAnchor = normalizedRange.start
             await reload()
             NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
             return true
@@ -267,6 +362,7 @@ final class CalendarViewModel: ObservableObject {
             )
             selectedDate = calendar.startOfDay(for: normalizedRange.start)
             visibleMonth = normalizedRange.start
+            visibleWeekAnchor = normalizedRange.start
             await reload()
             NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
             return true
@@ -352,6 +448,43 @@ final class CalendarViewModel: ObservableObject {
         return days
     }
 
+    func weekDays() -> [Date] {
+        guard let range = visibleWeekRange() else {
+            return []
+        }
+
+        return (0..<7).compactMap { offset in
+            calendar.date(byAdding: .day, value: offset, to: range.start)
+        }
+    }
+
+    func visibleWeekRange() -> (start: Date, end: Date)? {
+        let weekStart = startOfWeek(containing: visibleWeekAnchor)
+        guard let weekEnd = calendar.date(byAdding: .day, value: 7, to: weekStart) else {
+            return nil
+        }
+
+        return (weekStart, weekEnd)
+    }
+
+    func visibleWeekEvents() -> [CalendarEvent] {
+        guard let range = visibleWeekRange() else {
+            return []
+        }
+
+        return events
+            .filter { $0.overlapsRange(start: range.start, end: range.end) }
+            .sortedForCalendarDisplay()
+    }
+
+    func isDateInVisibleWeek(_ date: Date) -> Bool {
+        guard let range = visibleWeekRange() else {
+            return false
+        }
+
+        return date >= range.start && date < range.end
+    }
+
     func weekdaySymbols() -> [String] {
         let symbols = calendar.shortStandaloneWeekdaySymbols
         let firstIndex = max(0, calendar.firstWeekday - 1)
@@ -433,6 +566,20 @@ final class CalendarViewModel: ObservableObject {
         selectedDayEvents = events(on: selectedDate)
     }
 
+    private func moveWeek(by value: Int) async {
+        let selectedWeekdayOffset = daysFromStartOfWeek(to: selectedDate)
+        let currentWeekStart = startOfWeek(containing: visibleWeekAnchor)
+        guard let newWeekStart = calendar.date(byAdding: .weekOfYear, value: value, to: currentWeekStart),
+              let newSelectedDate = calendar.date(byAdding: .day, value: selectedWeekdayOffset, to: newWeekStart) else {
+            return
+        }
+
+        visibleWeekAnchor = newWeekStart
+        visibleMonth = newSelectedDate
+        selectedDate = calendar.startOfDay(for: newSelectedDate)
+        await reload()
+    }
+
     private func clampedSelectedDate(for month: Date) -> Date {
         let selectedDay = calendar.component(.day, from: selectedDate)
         var components = calendar.dateComponents([.year, .month], from: month)
@@ -448,6 +595,12 @@ final class CalendarViewModel: ObservableObject {
         }
 
         return calendar.startOfDay(for: finalDay)
+    }
+
+    private func startOfWeek(containing date: Date) -> Date {
+        let startOfDay = calendar.startOfDay(for: date)
+        let leadingDays = daysFromStartOfWeek(to: startOfDay)
+        return calendar.date(byAdding: .day, value: -leadingDays, to: startOfDay) ?? startOfDay
     }
 
     private func daysFromStartOfWeek(to date: Date) -> Int {
@@ -470,6 +623,10 @@ extension CalendarEvent {
         }
 
         return occurrenceStartsAt < startOfNextDay && occurrenceEndsAt > startOfDay
+    }
+
+    func overlapsRange(start: Date, end: Date) -> Bool {
+        occurrenceStartsAt < end && occurrenceEndsAt > start
     }
 }
 

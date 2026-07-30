@@ -66,6 +66,9 @@ struct CalendarView: View {
         }
         .onChange(of: selectedHome?.weekStartsOn) { _, newValue in
             viewModel.configureWeekStart(newValue)
+            Task {
+                await viewModel.reload()
+            }
         }
         .onDisappear {
             Task {
@@ -204,7 +207,7 @@ struct CalendarView: View {
                     .foregroundStyle(HomeyDashboardTheme.primaryText)
                     .accessibilityAddTraits(.isHeader)
 
-                Text(monthTitle)
+                Text(visibleRangeTitle)
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
             }
@@ -212,12 +215,21 @@ struct CalendarView: View {
             Spacer()
 
             HStack(spacing: 10) {
-                iconButton(systemImage: "chevron.left", label: "Previous month") {
-                    Task { await viewModel.moveToPreviousMonth() }
+                Picker("Calendar View", selection: displayModeBinding) {
+                    ForEach(CalendarDisplayMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 176)
+                .accessibilityLabel("Calendar view")
+
+                iconButton(systemImage: "chevron.left", label: previousPeriodAccessibilityLabel) {
+                    Task { await viewModel.moveToPreviousPeriod() }
                 }
 
-                iconButton(systemImage: "chevron.right", label: "Next month") {
-                    Task { await viewModel.moveToNextMonth() }
+                iconButton(systemImage: "chevron.right", label: nextPeriodAccessibilityLabel) {
+                    Task { await viewModel.moveToNextPeriod() }
                 }
 
                 Button {
@@ -235,7 +247,7 @@ struct CalendarView: View {
                         }
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Today")
+                .accessibilityLabel("Go to today")
 
                 Button {
                     presentCreateEditor()
@@ -256,15 +268,15 @@ struct CalendarView: View {
     private var calendarContent: some View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .top, spacing: 22) {
-                monthGridCard
-                    .frame(minWidth: 620)
+                primaryCalendarCard
+                    .frame(minWidth: viewModel.displayMode == .week ? 760 : 620)
 
                 agendaCard
                     .frame(width: 360)
             }
 
             VStack(alignment: .leading, spacing: 22) {
-                monthGridCard
+                primaryCalendarCard
                 agendaCard
             }
         }
@@ -280,6 +292,16 @@ struct CalendarView: View {
         }
     }
 
+    @ViewBuilder
+    private var primaryCalendarCard: some View {
+        switch viewModel.displayMode {
+        case .month:
+            monthGridCard
+        case .week:
+            weekGridCard
+        }
+    }
+
     private var monthGridCard: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack {
@@ -290,12 +312,7 @@ struct CalendarView: View {
                 Spacer()
 
                 if !viewModel.events.isEmpty {
-                    Text("\(viewModel.events.count) \(viewModel.events.count == 1 ? "Event" : "Events")")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(HomeyDashboardTheme.selectedSidebarBackground, in: Capsule())
+                    eventCountBadge(count: viewModel.events.count, accessibilitySuffix: "this month")
                 }
             }
 
@@ -318,6 +335,43 @@ struct CalendarView: View {
                     ) {
                         viewModel.selectDate(day)
                     }
+                }
+            }
+        }
+        .padding(24)
+        .dashboardCard(cornerRadius: 30)
+    }
+
+    private var weekGridCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Text("Week View")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                Spacer()
+
+                let count = viewModel.visibleWeekEvents().count
+                if count > 0 {
+                    eventCountBadge(count: count, accessibilitySuffix: "this week")
+                }
+            }
+
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 7), spacing: 10) {
+                ForEach(viewModel.weekDays(), id: \.self) { day in
+                    WeekDayColumn(
+                        date: day,
+                        events: viewModel.events(on: day),
+                        isSelected: viewModel.isSelected(day),
+                        isToday: viewModel.isToday(day),
+                        assignedMembers: assignedMembers(for:),
+                        onSelect: {
+                            viewModel.selectDate(day)
+                        },
+                        onSelectEvent: { event in
+                            presentEditEditor(for: event)
+                        }
+                    )
                 }
             }
         }
@@ -453,6 +507,16 @@ struct CalendarView: View {
         .accessibilityLabel(label)
     }
 
+    private func eventCountBadge(count: Int, accessibilitySuffix: String) -> some View {
+        Text("\(count) \(count == 1 ? "Event" : "Events")")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(HomeyDashboardTheme.selectedSidebarBackground, in: Capsule())
+            .accessibilityLabel("\(count) \(count == 1 ? "event" : "events") \(accessibilitySuffix)")
+    }
+
     private func assignedMembers(for event: CalendarEvent) -> [HomeMemberDisplay] {
         event.assignedUserIds.compactMap { membersById[$0] }
     }
@@ -482,6 +546,43 @@ struct CalendarView: View {
 
     private var monthTitle: String {
         CalendarViewFormatters.monthAndYear.string(from: viewModel.visibleMonth)
+    }
+
+    private var weekTitle: String {
+        guard let range = viewModel.visibleWeekRange(),
+              let finalDay = Calendar.autoupdatingCurrent.date(byAdding: .day, value: -1, to: range.end) else {
+            return ""
+        }
+
+        return CalendarViewFormatters.weekRangeTitle(start: range.start, end: finalDay)
+    }
+
+    private var visibleRangeTitle: String {
+        switch viewModel.displayMode {
+        case .month:
+            return monthTitle
+        case .week:
+            return weekTitle
+        }
+    }
+
+    private var previousPeriodAccessibilityLabel: String {
+        viewModel.displayMode == .week ? "Previous week" : "Previous month"
+    }
+
+    private var nextPeriodAccessibilityLabel: String {
+        viewModel.displayMode == .week ? "Next week" : "Next month"
+    }
+
+    private var displayModeBinding: Binding<CalendarDisplayMode> {
+        Binding(
+            get: { viewModel.displayMode },
+            set: { mode in
+                Task {
+                    await viewModel.setDisplayMode(mode)
+                }
+            }
+        )
     }
 
     private var selectedDateTitle: String {
@@ -617,6 +718,183 @@ private struct CalendarDayCell: View {
     }
 }
 
+private struct WeekDayColumn: View {
+    let date: Date
+    let events: [CalendarEvent]
+    let isSelected: Bool
+    let isToday: Bool
+    let assignedMembers: (CalendarEvent) -> [HomeMemberDisplay]
+    let onSelect: () -> Void
+    let onSelectEvent: (CalendarEvent) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: onSelect) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(CalendarViewFormatters.weekdayName.string(from: date))
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .lineLimit(1)
+
+                    Text(dayNumber)
+                        .font(.title3.weight(isSelected || isToday ? .bold : .semibold))
+                        .foregroundStyle(dayForeground)
+                        .frame(width: 36, height: 36)
+                        .background(dayNumberBackground, in: Circle())
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(dayAccessibilityLabel)
+
+            VStack(alignment: .leading, spacing: 8) {
+                if events.isEmpty {
+                    Text("No Events")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText.opacity(0.65))
+                        .frame(maxWidth: .infinity, minHeight: 82, alignment: .topLeading)
+                } else {
+                    ForEach(events.prefix(4)) { event in
+                        Button {
+                            onSelectEvent(event)
+                        } label: {
+                            WeekEventChip(event: event, assignedMembers: assignedMembers(event))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens event details")
+                    }
+
+                    if events.count > 4 {
+                        Text("+\(events.count - 4) more")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                            .padding(.top, 2)
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 350, alignment: .topLeading)
+        .background(columnBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(columnBorder, lineWidth: isSelected ? 1.5 : 1)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .onTapGesture(perform: onSelect)
+    }
+
+    private var dayNumber: String {
+        String(Calendar.autoupdatingCurrent.component(.day, from: date))
+    }
+
+    private var dayForeground: Color {
+        if isSelected {
+            return .white
+        }
+
+        if isToday {
+            return HomeyDashboardTheme.warmBrown
+        }
+
+        return HomeyDashboardTheme.primaryText
+    }
+
+    private var dayNumberBackground: Color {
+        if isSelected {
+            return HomeyDashboardTheme.warmBrown
+        }
+
+        if isToday {
+            return HomeyDashboardTheme.selectedSidebarBackground
+        }
+
+        return .clear
+    }
+
+    private var columnBackground: Color {
+        isSelected ? HomeyDashboardTheme.selectedSidebarBackground.opacity(0.9) : HomeyDashboardTheme.cardBackground.opacity(0.70)
+    }
+
+    private var columnBorder: Color {
+        isSelected ? HomeyDashboardTheme.warmBrown.opacity(0.45) : HomeyDashboardTheme.softBorder
+    }
+
+    private var dayAccessibilityLabel: String {
+        let dateText = CalendarViewFormatters.selectedDate.string(from: date)
+        let countText = "\(events.count) \(events.count == 1 ? "event" : "events")"
+        let selectedText = isSelected ? ", selected" : ""
+        return "\(dateText), \(countText)\(selectedText)"
+    }
+}
+
+private struct WeekEventChip: View {
+    let event: CalendarEvent
+    let assignedMembers: [HomeMemberDisplay]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 7) {
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(event.indicatorColor)
+                    .frame(width: 5, height: 34)
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(event.title)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(timeText)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            if !assignedMembers.isEmpty {
+                HStack(spacing: -6) {
+                    ForEach(assignedMembers.prefix(3)) { member in
+                        AvatarView(
+                            imageURL: member.avatarURL,
+                            initials: member.initials,
+                            size: 22,
+                            accentColor: HomeyDashboardTheme.warmBrown,
+                            borderWidth: 1.5,
+                            showsShadow: false,
+                            accessibilityLabel: "Assigned to \(member.displayName)"
+                        )
+                    }
+                }
+                .padding(.leading, 12)
+            }
+        }
+        .padding(9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(HomeyDashboardTheme.appBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(event.title), \(timeText)")
+    }
+
+    private var timeText: String {
+        if event.isAllDay {
+            return "All day"
+        }
+
+        return "\(CalendarViewFormatters.eventTime.string(from: event.occurrenceStartsAt)) - \(CalendarViewFormatters.eventTime.string(from: event.occurrenceEndsAt))"
+    }
+}
+
 private struct AgendaEventRow: View {
     let event: CalendarEvent
     let assignedMembers: [HomeMemberDisplay]
@@ -737,6 +1015,62 @@ private enum CalendarViewFormatters {
         formatter.calendar = .autoupdatingCurrent
         formatter.timeStyle = .short
         formatter.dateStyle = .none
+        return formatter
+    }()
+
+    static let weekdayName: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = .autoupdatingCurrent
+        formatter.dateFormat = "EEEE"
+        return formatter
+    }()
+
+    static func weekRangeTitle(start: Date, end: Date) -> String {
+        let calendar = Calendar.autoupdatingCurrent
+        if calendar.isDate(start, equalTo: end, toGranularity: .month),
+           calendar.isDate(start, equalTo: end, toGranularity: .year) {
+            return "\(monthName.string(from: start)) \(dayNumber.string(from: start))-\(dayNumber.string(from: end)), \(year.string(from: start))"
+        }
+
+        if calendar.isDate(start, equalTo: end, toGranularity: .year) {
+            return "\(monthAndDay.string(from: start)) - \(monthAndDay.string(from: end)), \(year.string(from: start))"
+        }
+
+        return "\(monthDayAndYear.string(from: start)) - \(monthDayAndYear.string(from: end))"
+    }
+
+    private static let monthName: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = .autoupdatingCurrent
+        formatter.dateFormat = "LLLL"
+        return formatter
+    }()
+
+    private static let dayNumber: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = .autoupdatingCurrent
+        formatter.dateFormat = "d"
+        return formatter
+    }()
+
+    private static let year: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = .autoupdatingCurrent
+        formatter.dateFormat = "yyyy"
+        return formatter
+    }()
+
+    private static let monthAndDay: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = .autoupdatingCurrent
+        formatter.dateFormat = "MMM d"
+        return formatter
+    }()
+
+    private static let monthDayAndYear: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = .autoupdatingCurrent
+        formatter.dateFormat = "MMM d, yyyy"
         return formatter
     }()
 }
