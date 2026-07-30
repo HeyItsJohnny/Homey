@@ -10,6 +10,9 @@ import SwiftData
 
 @main
 struct HomeyApp: App {
+    @StateObject private var authenticationService = AuthenticationService()
+    @StateObject private var homeService = HomeService()
+
     var sharedModelContainer: ModelContainer = {
         let schema = Schema([
             Item.self,
@@ -25,7 +28,9 @@ struct HomeyApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environmentObject(authenticationService)
+                .environmentObject(homeService)
         }
         .modelContainer(sharedModelContainer)
     }
