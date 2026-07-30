@@ -31,7 +31,9 @@ struct HomeInvitationOnboardingView: View {
                 }
             }
             .navigationDestination(isPresented: $isShowingInvitations) {
-                HomeInvitationsView(onClose: {})
+                HomeInvitationsView {
+                    isShowingInvitations = false
+                }
             }
             .navigationDestination(isPresented: $isShowingCreateHome) {
                 CreateHomeView()

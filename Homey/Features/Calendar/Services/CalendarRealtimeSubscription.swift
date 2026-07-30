@@ -15,14 +15,6 @@ final class CalendarRealtimeSubscription {
         listenerTasks.forEach { $0.cancel() }
         listenerTasks.removeAll()
 
-        do {
-            try await channel.unsubscribe()
-        } catch {
-            #if DEBUG
-            print("========== CALENDAR REALTIME UNSUBSCRIBE FAILED ==========")
-            print(String(reflecting: error))
-            print("==========================================================")
-            #endif
-        }
+        await channel.unsubscribe()
     }
 }

@@ -1,0 +1,81 @@
+# ============================================
+# macOS
+# ============================================
+.DS_Store
+
+# ============================================
+# Xcode Build Products
+# ============================================
+build/
+DerivedData/
+
+# ============================================
+# Xcode User Data
+# ============================================
+xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+
+# Xcode State Files
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+
+# ============================================
+# Swift Package Manager
+# ============================================
+.build/
+
+# Uncomment if you DON'T want to commit resolved package versions
+# Package.resolved
+
+# ============================================
+# CocoaPods
+# ============================================
+Pods/
+
+# ============================================
+# Carthage
+# ============================================
+Carthage/Build/
+
+# ============================================
+# Fastlane
+# ============================================
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+
+# ============================================
+# Archives
+# ============================================
+*.ipa
+*.xcarchive
+*.dSYM
+*.dSYM.zip
+
+# ============================================
+# Secrets
+# ============================================
+.env
+.env.*
+Secrets.xcconfig
+
+# Apple Keys / Certificates
+*.p8
+*.p12
+*.cer
+*.mobileprovision
+
+# ============================================
+# Temporary Files
+# ============================================
+*.swp
+*.tmp
+*.log
+
+# ============================================
+# Firebase (if you ever add it back)
+# ============================================
+GoogleService-Info.plist

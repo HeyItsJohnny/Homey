@@ -35,31 +35,34 @@ struct CalendarCategoriesView: View {
             HomeyDashboardTheme.appBackground
                 .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 26) {
-                header
+            ScrollView {
+                VStack(alignment: .leading, spacing: 26) {
+                    header
 
-                if let successMessage {
-                    CategoryStatusBanner(message: successMessage, style: .success)
-                        .transition(.opacity)
+                    if let successMessage {
+                        CategoryStatusBanner(message: successMessage, style: .success)
+                            .transition(.opacity)
+                    }
+
+                    if !canManageCalendarCategories && selectedHome != nil {
+                        readOnlyBanner
+                    }
+
+                    categoriesCard
                 }
-
-                if !canManageCalendarCategories && selectedHome != nil {
-                    readOnlyBanner
-                }
-
-                categoriesCard
+                .padding(.horizontal, 34)
+                .padding(.top, 34)
+                .padding(.bottom, 38)
+                .frame(maxWidth: 920, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .top)
             }
-            .padding(.horizontal, 34)
-            .padding(.top, 34)
-            .padding(.bottom, 38)
-            .frame(maxWidth: 920, alignment: .leading)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .scrollIndicators(.hidden)
+            .refreshable {
+                await refreshActiveHomeData()
+            }
         }
         .task(id: selectedHome?.id) {
             await loadForActiveHome()
-        }
-        .refreshable {
-            await refreshActiveHomeData()
         }
         .sheet(isPresented: $isShowingAddSheet) {
             CalendarCategoryEditorView(

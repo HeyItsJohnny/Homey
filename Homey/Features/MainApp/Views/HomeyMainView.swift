@@ -6,7 +6,8 @@ struct HomeyMainView: View {
     }
 }
 
-#Preview("Homey Main") {
+#Preview("Homey Main", traits: .landscapeLeft) {
     HomeyMainView()
-        .previewInterfaceOrientation(.landscapeLeft)
+        .environmentObject(AuthenticationService())
+        .environmentObject(HomeService())
 }

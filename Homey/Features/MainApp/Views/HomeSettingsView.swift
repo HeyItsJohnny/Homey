@@ -5,6 +5,7 @@ struct HomeSettingsView: View {
     @EnvironmentObject private var homeService: HomeService
 
     var onClose: () -> Void = {}
+    var onShowCalendarCategories: () -> Void = {}
 
     @State private var homeName = ""
     @State private var timezone = TimeZone.current.identifier
@@ -163,6 +164,13 @@ struct HomeSettingsView: View {
                 }
 
                 DashboardWeekStartPicker(selection: $weekStartsOn)
+
+                DashboardSettingsNavigationRow(
+                    title: "Calendar Categories",
+                    supportingText: "Manage the shared colors and icons used for events.",
+                    systemImage: "tag.fill",
+                    action: onShowCalendarCategories
+                )
             }
 
             if let successMessage {
@@ -282,14 +290,14 @@ struct HomeSettingsView: View {
 private struct HomeSettingsValues: Equatable {
     let name: String
     let timezone: String
-    let weekStartsOn: String
+    let weekStartsOn: Int
 }
 
-private enum WeekStartOption: String, CaseIterable, Identifiable {
-    case sunday
-    case monday
+private enum WeekStartOption: Int, CaseIterable, Identifiable {
+    case sunday = 1
+    case monday = 2
 
-    var id: String { rawValue }
+    var id: Int { rawValue }
 
     var title: String {
         switch self {
@@ -365,8 +373,57 @@ private struct DashboardSettingsPickerButton: View {
     }
 }
 
+private struct DashboardSettingsNavigationRow: View {
+    let title: String
+    let supportingText: String
+    let systemImage: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(HomeyDashboardTheme.selectedSidebarBackground)
+                        .frame(width: 44, height: 44)
+
+                    Image(systemName: systemImage)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                    Text(supportingText)
+                        .font(.caption)
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .lineLimit(2)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText.opacity(0.72))
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(HomeyDashboardTheme.appBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+    }
+}
+
 private struct DashboardWeekStartPicker: View {
-    @Binding var selection: String
+    @Binding var selection: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -438,7 +495,7 @@ private struct DashboardSettingsErrorBanner: View {
     }
 }
 
-private struct DashboardPrimaryButtonStyle: ButtonStyle {
+struct DashboardPrimaryButtonStyle: ButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
     func makeBody(configuration: Configuration) -> some View {

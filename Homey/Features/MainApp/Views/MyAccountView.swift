@@ -1,4 +1,6 @@
+import PhotosUI
 import SwiftUI
+import UIKit
 
 struct MyAccountView: View {
     @EnvironmentObject private var authenticationService: AuthenticationService
@@ -16,7 +18,12 @@ struct MyAccountView: View {
     @State private var isLoadingProfile = true
     @State private var successMessage: String?
     @State private var errorMessage: String?
+    @State private var alertTitle = "Unable to Save Account"
     @State private var isShowingSaveError = false
+    @State private var isShowingAvatarOptions = false
+    @State private var isShowingPhotoPicker = false
+    @State private var isShowingCamera = false
+    @State private var selectedPhotoItem: PhotosPickerItem?
 
     private var pendingInvitationCount: Int {
         homeService.myPendingInvitations.count
@@ -83,7 +90,42 @@ struct MyAccountView: View {
         .onChange(of: displayName) { _, newValue in
             handleDisplayNameChange(newValue)
         }
-        .alert("Unable to Save Account", isPresented: $isShowingSaveError) {
+        .confirmationDialog("Profile Photo", isPresented: $isShowingAvatarOptions, titleVisibility: .visible) {
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("Take Photo") {
+                    isShowingCamera = true
+                }
+            }
+
+            Button("Choose from Photo Library") {
+                isShowingPhotoPicker = true
+            }
+
+            if authenticationService.currentUser?.avatarURL != nil {
+                Button("Remove Photo", role: .destructive) {
+                    Task {
+                        await removeAvatar()
+                    }
+                }
+            }
+
+            Button("Cancel", role: .cancel) {}
+        }
+        .photosPicker(isPresented: $isShowingPhotoPicker, selection: $selectedPhotoItem, matching: .images)
+        .sheet(isPresented: $isShowingCamera) {
+            CameraImagePicker { image in
+                Task {
+                    await uploadAvatar(image)
+                }
+            }
+            .ignoresSafeArea()
+        }
+        .onChange(of: selectedPhotoItem) { _, newItem in
+            Task {
+                await loadSelectedPhoto(newItem)
+            }
+        }
+        .alert(alertTitle, isPresented: $isShowingSaveError) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(errorMessage ?? "We could not update your account. Please try again.")
@@ -142,6 +184,8 @@ struct MyAccountView: View {
 
     private var profileCard: some View {
         VStack(alignment: .leading, spacing: 24) {
+            profileAvatarHeader
+
             sectionHeading(
                 title: "Profile Information",
                 subtitle: "These details are saved to your Homey profile."
@@ -207,6 +251,57 @@ struct MyAccountView: View {
         }
         .padding(28)
         .dashboardCard(cornerRadius: 30)
+    }
+
+    private var profileAvatarHeader: some View {
+        VStack(spacing: 12) {
+            Button {
+                guard !authenticationService.isUploadingAvatar else {
+                    return
+                }
+
+                isShowingAvatarOptions = true
+            } label: {
+                ZStack(alignment: .bottomTrailing) {
+                    AvatarView(
+                        imageURL: authenticationService.currentUser?.avatarURL,
+                        initials: authenticationService.currentUser?.initials ?? "HM",
+                        size: 132,
+                        accentColor: HomeyDashboardTheme.warmBrown,
+                        borderColor: HomeyDashboardTheme.cardBackground,
+                        borderWidth: 4,
+                        isLoading: authenticationService.isUploadingAvatar,
+                        accessibilityLabel: "Profile photo"
+                    )
+
+                    ZStack {
+                        Circle()
+                            .fill(HomeyDashboardTheme.warmBrown)
+                            .frame(width: 38, height: 38)
+                            .shadow(color: HomeyDashboardTheme.primaryText.opacity(0.16), radius: 8, x: 0, y: 4)
+
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.white)
+                            .accessibilityHidden(true)
+                    }
+                    .overlay {
+                        Circle()
+                            .stroke(HomeyDashboardTheme.cardBackground, lineWidth: 3)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(authenticationService.isUploadingAvatar)
+            .accessibilityLabel("Change profile photo")
+
+            Text("Change Photo")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.warmBrown)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 6)
+        .padding(.bottom, 8)
     }
 
     private var accountInformation: some View {
@@ -315,8 +410,7 @@ struct MyAccountView: View {
     private func loadAccountData() async {
         guard let userID = authenticationService.currentUser?.id else {
             isLoadingProfile = false
-            errorMessage = "Your session has expired. Please sign in again."
-            isShowingSaveError = true
+            presentError(title: "Unable to Load Account", message: "Your session has expired. Please sign in again.")
             return
         }
 
@@ -364,13 +458,91 @@ struct MyAccountView: View {
 
         if didSave {
             populateProfileFields()
+            await refreshSelectedHomeMembers()
             withAnimation(.easeInOut(duration: 0.2)) {
                 successMessage = "Account updated."
             }
         } else {
-            errorMessage = authenticationService.errorMessage ?? "We could not update your account. Please try again."
-            isShowingSaveError = true
+            presentError(
+                title: "Unable to Save Account",
+                message: authenticationService.errorMessage ?? "We could not update your account. Please try again."
+            )
         }
+    }
+
+    private func loadSelectedPhoto(_ item: PhotosPickerItem?) async {
+        guard let item else {
+            return
+        }
+
+        do {
+            guard let data = try await item.loadTransferable(type: Data.self),
+                  let image = UIImage(data: data) else {
+                presentError(title: "Unable to Update Photo", message: "We could not read that image. Please choose another photo.")
+                selectedPhotoItem = nil
+                return
+            }
+
+            await uploadAvatar(image)
+            selectedPhotoItem = nil
+        } catch {
+            presentError(title: "Unable to Update Photo", message: "We could not read that image. Please choose another photo.")
+            selectedPhotoItem = nil
+        }
+    }
+
+    private func uploadAvatar(_ image: UIImage) async {
+        guard let imageData = AvatarImageProcessor.jpegData(from: image) else {
+            presentError(title: "Unable to Update Photo", message: "We could not prepare that image. Please choose another photo.")
+            return
+        }
+
+        successMessage = nil
+        let didUpload = await authenticationService.uploadCurrentUserAvatar(imageData: imageData)
+
+        if didUpload {
+            await refreshSelectedHomeMembers()
+            withAnimation(.easeInOut(duration: 0.2)) {
+                successMessage = "Profile photo updated."
+            }
+        } else {
+            presentError(
+                title: "Unable to Update Photo",
+                message: authenticationService.errorMessage ?? "We could not update your profile photo. Please try again."
+            )
+        }
+    }
+
+    private func removeAvatar() async {
+        successMessage = nil
+        let didRemove = await authenticationService.removeCurrentUserAvatar()
+
+        if didRemove {
+            await refreshSelectedHomeMembers()
+            withAnimation(.easeInOut(duration: 0.2)) {
+                successMessage = "Profile photo removed."
+            }
+        } else {
+            presentError(
+                title: "Unable to Remove Photo",
+                message: authenticationService.errorMessage ?? "We could not remove your profile photo. Please try again."
+            )
+        }
+    }
+
+    private func refreshSelectedHomeMembers() async {
+        guard let selectedHome = homeService.selectedHome(),
+              let currentUser = authenticationService.currentUser else {
+            return
+        }
+
+        await homeService.refreshMembers(for: selectedHome.id, currentUser: currentUser)
+    }
+
+    private func presentError(title: String, message: String) {
+        alertTitle = title
+        errorMessage = message
+        isShowingSaveError = true
     }
 
     private func updateGeneratedDisplayNameIfNeeded() {
@@ -492,6 +664,111 @@ private struct MyAccountErrorBanner: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(HomeyDashboardTheme.destructiveRed.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .accessibilityLabel(message)
+    }
+}
+
+private struct CameraImagePicker: UIViewControllerRepresentable {
+    @Environment(\.dismiss) private var dismiss
+
+    let onImagePicked: (UIImage) -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.allowsEditing = true
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let parent: CameraImagePicker
+
+        init(parent: CameraImagePicker) {
+            self.parent = parent
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            let editedImage = info[.editedImage] as? UIImage
+            let originalImage = info[.originalImage] as? UIImage
+
+            if let image = editedImage ?? originalImage {
+                parent.onImagePicked(image)
+            }
+
+            parent.dismiss()
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+    }
+}
+
+private enum AvatarImageProcessor {
+    static func jpegData(from image: UIImage, targetPixelSize: CGFloat = 512, compressionQuality: CGFloat = 0.82) -> Data? {
+        let normalizedImage = normalized(image)
+        let squareImage = squareCrop(normalizedImage)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+
+        let targetSize = CGSize(width: targetPixelSize, height: targetPixelSize)
+        let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+        let resizedImage = renderer.image { _ in
+            UIColor.white.setFill()
+            UIBezierPath(rect: CGRect(origin: .zero, size: targetSize)).fill()
+            squareImage.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+
+        return resizedImage.jpegData(compressionQuality: compressionQuality)
+    }
+
+    private static func normalized(_ image: UIImage) -> UIImage {
+        guard image.imageOrientation != .up else {
+            return image
+        }
+
+        let renderer = UIGraphicsImageRenderer(size: image.size)
+        return renderer.image { _ in
+            image.draw(in: CGRect(origin: .zero, size: image.size))
+        }
+    }
+
+    private static func squareCrop(_ image: UIImage) -> UIImage {
+        let originalSize = image.size
+        let sideLength = min(originalSize.width, originalSize.height)
+        let cropRect = CGRect(
+            x: (originalSize.width - sideLength) / 2,
+            y: (originalSize.height - sideLength) / 2,
+            width: sideLength,
+            height: sideLength
+        )
+
+        guard let cgImage = image.cgImage?.cropping(to: cropRect.scaled(by: image.scale)) else {
+            return image
+        }
+
+        return UIImage(cgImage: cgImage, scale: image.scale, orientation: image.imageOrientation)
+    }
+}
+
+private extension CGRect {
+    func scaled(by scale: CGFloat) -> CGRect {
+        CGRect(
+            x: origin.x * scale,
+            y: origin.y * scale,
+            width: size.width * scale,
+            height: size.height * scale
+        )
     }
 }
 

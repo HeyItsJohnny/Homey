@@ -8,8 +8,6 @@ struct HomeSelectionView: View {
     var onHomeSelected: () -> Void = {}
 
     @State private var switchingHomeID: UUID?
-    @State private var previousHomeID: UUID?
-    @State private var showSwitchError = false
 
     private var selectedHome: HomeSummary? {
         homeService.selectedHome()
@@ -33,6 +31,7 @@ struct HomeSelectionView: View {
                     } else {
                         currentHomeSection
                         homesSection
+                        secondaryActionsSection
                     }
                 }
                 .padding(.horizontal, 34)
@@ -52,25 +51,43 @@ struct HomeSelectionView: View {
         .onChange(of: homeService.selectedHomeID) { _, selectedHomeID in
             storedSelectedHomeID = selectedHomeID?.uuidString ?? ""
         }
-        .alert("Unable to Change Home", isPresented: $showSwitchError) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("We couldn't switch homes. Please try again.")
-        }
     }
 
     // MARK: - Sections
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Change Home")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-                .foregroundStyle(HomeyDashboardTheme.primaryText)
-                .accessibilityAddTraits(.isHeader)
+        HStack(alignment: .top, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Change Home")
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    .accessibilityAddTraits(.isHeader)
 
-            Text("Choose which home you want to view and manage.")
-                .font(.title3)
-                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                Text("Choose which home you want to view and manage.")
+                    .font(.title3)
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            }
+
+            Spacer()
+
+            Button {
+                onHomeSelected()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.left")
+                    Text("Back")
+                }
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                .frame(minHeight: 44)
+                .padding(.horizontal, 16)
+                .background(HomeyDashboardTheme.cardBackground, in: Capsule())
+                .overlay {
+                    Capsule()
+                        .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -161,6 +178,51 @@ struct HomeSelectionView: View {
         .dashboardCard(cornerRadius: 30)
     }
 
+    private var secondaryActionsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(
+                title: "More Options",
+                subtitle: "Add another home when your family needs a separate space."
+            )
+
+            NavigationLink {
+                CreateHomeView()
+            } label: {
+                HStack(spacing: 13) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(HomeyDashboardTheme.warmBrown.opacity(0.12))
+                            .frame(width: 44, height: 44)
+
+                        Image(systemName: "plus")
+                            .font(.body.weight(.bold))
+                            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                    }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Create Another Home")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                        Text("Start a separate household space.")
+                            .font(.caption)
+                            .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                    }
+
+                    Spacer()
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText.opacity(0.7))
+                }
+                .padding(18)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .dashboardCard(cornerRadius: 24)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
     // MARK: - Actions
 
     private func select(_ home: HomeSummary) {
@@ -172,7 +234,6 @@ struct HomeSelectionView: View {
             return
         }
 
-        previousHomeID = homeService.selectedHomeID
         switchingHomeID = home.id
 
         storedSelectedHomeID = home.id.uuidString

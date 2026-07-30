@@ -179,6 +179,8 @@ struct AuthenticationTextField<Field: Hashable>: View {
     let field: Field
     var keyboardType: UIKeyboardType = .default
     var textContentType: UITextContentType?
+    var textInputAutocapitalization: TextInputAutocapitalization? = .never
+    var isAutocorrectionDisabled = true
     var submitLabel: SubmitLabel = .next
 
     var body: some View {
@@ -189,14 +191,42 @@ struct AuthenticationTextField<Field: Hashable>: View {
                 .accessibilityHidden(true)
 
             TextField(title, text: $text)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
+                .textInputAutocapitalization(textInputAutocapitalization)
+                .autocorrectionDisabled(isAutocorrectionDisabled)
                 .keyboardType(keyboardType)
                 .textContentType(textContentType)
                 .focused(focusedField, equals: field)
                 .submitLabel(submitLabel)
         }
         .authenticationFieldBackground(isFocused: focusedField.wrappedValue == field)
+    }
+}
+
+struct AuthenticationPickerField<Selection: Hashable>: View {
+    let title: String
+    let systemImage: String
+    @Binding var selection: Selection
+    let options: [Selection]
+    let label: (Selection) -> String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundStyle(AuthenticationTheme.secondaryText)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+
+            Picker(title, selection: $selection) {
+                ForEach(options, id: \.self) { option in
+                    Text(label(option))
+                        .tag(option)
+                }
+            }
+            .pickerStyle(.menu)
+            .tint(AuthenticationTheme.darkText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .authenticationFieldBackground(isFocused: false)
     }
 }
 
@@ -260,6 +290,35 @@ struct AuthenticationErrorView: View {
         .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Error: \(message)")
+    }
+}
+
+struct AuthenticationSuccessView: View {
+    let title: String
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(AuthenticationTheme.successGreen)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AuthenticationTheme.darkText)
+
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(AuthenticationTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(AuthenticationTheme.successGreen.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Success: \(title) \(message)")
     }
 }
 
@@ -347,6 +406,7 @@ enum AuthenticationTheme {
     static let lowerLeftWarmth = Color(red: 0.94, green: 0.72, blue: 0.58)
     static let softBeige = Color(red: 0.94, green: 0.86, blue: 0.77)
     static let primaryBlue = Color(red: 0.29, green: 0.53, blue: 0.91)
+    static let successGreen = Color(red: 0.30, green: 0.58, blue: 0.36)
     static let darkText = Color(red: 0.10, green: 0.14, blue: 0.22)
     static let secondaryText = Color(red: 0.38, green: 0.42, blue: 0.50)
     static let border = Color(red: 0.86, green: 0.84, blue: 0.80)

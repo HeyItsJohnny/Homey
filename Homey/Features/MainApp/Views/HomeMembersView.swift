@@ -39,11 +39,11 @@ struct HomeMembersView: View {
     }
 
     private var canManageInvitations: Bool {
-        guard let role = selectedHome?.role?.lowercased() else {
+        guard let role = selectedHome?.role else {
             return false
         }
 
-        return role == "owner" || role == "admin"
+        return role == .owner || role == .admin
     }
 
     var body: some View {
@@ -453,7 +453,7 @@ struct HomeMemberRow: View {
 
             Spacer(minLength: 18)
 
-            RoleBadge(role: member.formattedRole, rawRole: member.role)
+            RoleBadge(role: member.role)
         }
         .padding(.vertical, 14)
         .accessibilityElement(children: .combine)
@@ -472,53 +472,22 @@ struct MemberAvatarView: View {
     var size: CGFloat = 38
 
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(avatarColor.opacity(0.24))
-
-            if let avatarURL = member.avatarURL {
-                AsyncImage(url: avatarURL) { phase in
-                    switch phase {
-                    case .empty:
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(HomeyDashboardTheme.warmBrown)
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    case .failure:
-                        initialsView
-                    @unknown default:
-                        initialsView
-                    }
-                }
-                .clipShape(Circle())
-            } else {
-                initialsView
-            }
-        }
-        .frame(width: size, height: size)
-        .overlay {
-            Circle()
-                .stroke(HomeyDashboardTheme.cardBackground, lineWidth: 3)
-        }
-        .accessibilityLabel("Avatar for \(member.displayName)")
-    }
-
-    private var initialsView: some View {
-        Text(member.initials)
-            .font(.system(size: max(12, size * 0.34), weight: .bold, design: .rounded))
-            .foregroundStyle(avatarColor)
+        AvatarView(
+            imageURL: member.avatarURL,
+            initials: member.initials,
+            size: size,
+            accentColor: avatarColor,
+            accessibilityLabel: "Avatar for \(member.displayName)"
+        )
     }
 
     private var avatarColor: Color {
-        switch member.role.lowercased() {
-        case "owner":
+        switch member.role {
+        case .owner:
             return HomeyDashboardTheme.warmBrown
-        case "admin":
+        case .admin:
             return HomeyDashboardTheme.sageAccent
-        default:
+        case .member:
             return HomeyDashboardTheme.orangeAccent
         }
     }
@@ -526,7 +495,7 @@ struct MemberAvatarView: View {
 
 struct DashboardMemberAvatarStack: View {
     let members: [HomeMemberDisplay]
-    var avatarSize: CGFloat = 38
+    var avatarSize: CGFloat = 58
 
     private var visibleMembers: [HomeMemberDisplay] {
         Array(members.prefix(4))
@@ -537,7 +506,7 @@ struct DashboardMemberAvatarStack: View {
     }
 
     var body: some View {
-        HStack(spacing: -8) {
+        HStack(spacing: -14) {
             ForEach(visibleMembers) { member in
                 MemberAvatarView(member: member, size: avatarSize)
             }
@@ -635,7 +604,7 @@ private struct InviteMemberSheet: View {
     let onSuccess: (String) -> Void
 
     @State private var email = ""
-    @State private var selectedRole = InviteRole.member
+    @State private var selectedRole = HomeMemberRole.member
     @State private var validationMessage: String?
     @State private var createErrorMessage: String?
     @State private var isShowingCreateError = false
@@ -699,8 +668,8 @@ private struct InviteMemberSheet: View {
                                 settingsLabel("Role", supportingText: "Choose what this person can manage in the home.")
 
                                 Picker("Role", selection: $selectedRole) {
-                                    ForEach(InviteRole.allCases) { role in
-                                        Text(role.title).tag(role)
+                                    ForEach(HomeMemberRole.invitationOptions) { role in
+                                        Text(role.displayName).tag(role)
                                     }
                                 }
                                 .pickerStyle(.segmented)
@@ -741,17 +710,8 @@ private struct InviteMemberSheet: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
-                    .disabled(homeService.isCreatingInvitation)
-                }
-            }
         }
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
         .alert("Unable to Create Invitation", isPresented: $isShowingCreateError) {
             Button("OK", role: .cancel) {}
         } message: {
@@ -773,7 +733,7 @@ private struct InviteMemberSheet: View {
             return
         }
 
-        guard let currentUser = authenticationService.currentUser else {
+        guard authenticationService.currentUser != nil else {
             createErrorMessage = "Please sign in and try again."
             isShowingCreateError = true
             return
@@ -782,14 +742,13 @@ private struct InviteMemberSheet: View {
         let didCreate = await homeService.createInvitation(
             homeID: selectedHome.id,
             email: normalizedEmail,
-            role: selectedRole.rawValue,
-            invitedBy: currentUser.id
+            role: selectedRole
         )
 
         if didCreate {
             email = ""
             selectedRole = .member
-            onSuccess("Invitation Created\nThe invitation has been added to this home.")
+            onSuccess("Invitation Created\nThe invitation is ready for the recipient when they sign in to Homey.")
             dismiss()
         } else {
             createErrorMessage = homeService.invitationsErrorMessage ?? "The invitation could not be created. Please try again."
@@ -818,7 +777,7 @@ private struct InviteMemberSheet: View {
         }
 
         if pendingInvitations.contains(where: { invitation in
-            invitation.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == email && invitation.status.lowercased() == "pending"
+            invitation.email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == email && invitation.status == .pending
         }) {
             return "An invitation is already pending for this email."
         }
@@ -832,42 +791,25 @@ private struct InviteMemberSheet: View {
     }
 }
 
-private enum InviteRole: String, CaseIterable, Identifiable {
-    case member
-    case admin
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .member:
-            return "Member"
-        case .admin:
-            return "Admin"
-        }
-    }
-}
-
 private struct RoleBadge: View {
-    let role: String
-    let rawRole: String
+    let role: HomeMemberRole
 
     var body: some View {
-        Text(role)
+        Text(role.displayName)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(foregroundColor)
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
             .background(backgroundColor, in: Capsule())
-            .accessibilityLabel("Role: \(role)")
+            .accessibilityLabel("Role: \(role.displayName)")
     }
 
     private var foregroundColor: Color {
-        rawRole.lowercased() == "owner" ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.secondaryText
+        role == .owner ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.secondaryText
     }
 
     private var backgroundColor: Color {
-        rawRole.lowercased() == "owner" ? HomeyDashboardTheme.selectedSidebarBackground : HomeyDashboardTheme.appBackground.opacity(0.72)
+        role == .owner ? HomeyDashboardTheme.selectedSidebarBackground : HomeyDashboardTheme.appBackground.opacity(0.72)
     }
 }
 
@@ -988,7 +930,7 @@ private enum HomeMembersPreviewData {
             userId: UUID(),
             displayName: "Johnny Laroco",
             email: "johnny@example.com",
-            role: "owner",
+            role: .owner,
             avatarURL: nil,
             isCurrentUser: true
         ),
@@ -997,7 +939,7 @@ private enum HomeMembersPreviewData {
             userId: UUID(),
             displayName: "Sarah Laroco",
             email: "sarah@example.com",
-            role: "admin",
+            role: .admin,
             avatarURL: nil,
             isCurrentUser: false
         ),
@@ -1006,7 +948,7 @@ private enum HomeMembersPreviewData {
             userId: UUID(),
             displayName: "Mia Laroco",
             email: "mia@example.com",
-            role: "member",
+            role: .member,
             avatarURL: nil,
             isCurrentUser: false
         ),
@@ -1015,7 +957,7 @@ private enum HomeMembersPreviewData {
             userId: UUID(),
             displayName: "Leo Laroco",
             email: nil,
-            role: "member",
+            role: .member,
             avatarURL: nil,
             isCurrentUser: false
         ),
@@ -1024,7 +966,7 @@ private enum HomeMembersPreviewData {
             userId: UUID(),
             displayName: "Nora Laroco",
             email: "nora@example.com",
-            role: "member",
+            role: .member,
             avatarURL: nil,
             isCurrentUser: false
         )
@@ -1035,8 +977,8 @@ private enum HomeMembersPreviewData {
             id: UUID(),
             homeID: UUID(),
             email: "alex@example.com",
-            role: "member",
-            status: "pending",
+            role: .member,
+            status: .pending,
             invitedBy: UUID(),
             createdAt: "2026-07-26T12:00:00Z",
             expiresAt: nil
@@ -1045,8 +987,8 @@ private enum HomeMembersPreviewData {
             id: UUID(),
             homeID: UUID(),
             email: "taylor@example.com",
-            role: "admin",
-            status: "pending",
+            role: .admin,
+            status: .pending,
             invitedBy: UUID(),
             createdAt: "2026-07-25T12:00:00Z",
             expiresAt: nil

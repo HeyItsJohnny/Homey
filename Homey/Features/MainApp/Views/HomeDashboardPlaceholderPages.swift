@@ -1,11 +1,5 @@
 import SwiftUI
 
-struct CalendarView: View {
-    var body: some View {
-        PlaceholderModuleView(title: "Calendar", subtitle: "Coming soon")
-    }
-}
-
 struct ChoresView: View {
     var body: some View {
         PlaceholderModuleView(title: "Chores", subtitle: "Coming soon")
@@ -42,18 +36,6 @@ struct SettingsView: View {
     }
 }
 
-struct HomeSettingsView: View {
-    var body: some View {
-        PlaceholderModuleView(title: "Home Settings", subtitle: "Coming soon")
-    }
-}
-
-struct MembersView: View {
-    var body: some View {
-        PlaceholderModuleView(title: "Members", subtitle: "Coming soon")
-    }
-}
-
 struct ManageHomeView: View {
     var body: some View {
         PlaceholderModuleView(title: "Manage Home", subtitle: "Coming soon")
@@ -64,10 +46,6 @@ struct ChangeHomeView: View {
     var body: some View {
         PlaceholderModuleView(title: "Change Home", subtitle: "Coming soon")
     }
-}
-
-#Preview("Calendar Placeholder") {
-    CalendarView()
 }
 
 #Preview("Chores Placeholder") {
@@ -92,14 +70,6 @@ struct ChangeHomeView: View {
 
 #Preview("Settings Placeholder") {
     SettingsView()
-}
-
-#Preview("Home Settings Placeholder") {
-    HomeSettingsView()
-}
-
-#Preview("Members Placeholder") {
-    MembersView()
 }
 
 #Preview("Manage Home Placeholder") {

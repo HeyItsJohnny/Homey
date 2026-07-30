@@ -5,6 +5,7 @@ struct HomeInvitationsView: View {
     @EnvironmentObject private var homeService: HomeService
 
     var onClose: () -> Void = {}
+    var onSwitchHome: () -> Void = {}
 
     @State private var invitationToDecline: HomeInvitationDisplay?
     @State private var isShowingDeclineConfirmation = false
@@ -81,7 +82,7 @@ struct HomeInvitationsView: View {
                     homeService.selectHome(id: joinedHome.homeID)
                 }
                 joinedHome = nil
-                onClose()
+                onSwitchHome()
             }
         } message: {
             Text("You are now a member of this home. Would you like to switch to it now?")
@@ -404,8 +405,8 @@ struct HomeInvitationCard: View {
             id: UUID(),
             homeID: UUID(),
             email: "nancy@example.com",
-            role: "member",
-            status: "pending",
+            role: .member,
+            status: .pending,
             invitedBy: UUID(),
             createdAt: "2026-07-26T12:00:00Z",
             expiresAt: nil,

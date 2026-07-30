@@ -398,8 +398,8 @@ struct EventEditorView: View {
                 .font(.body.weight(.medium))
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
                 .padding(.horizontal, 16)
-                .padding(.vertical, axis == .vertical ? 14 : 0)
-                .frame(minHeight: axis == .vertical ? 104 : 56, alignment: .topLeading)
+                .padding(.vertical, axis == .vertical ? 14 : 10)
+                .frame(minHeight: axis == .vertical ? 104 : 56, alignment: axis == .vertical ? .topLeading : .center)
                 .background(HomeyDashboardTheme.appBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)

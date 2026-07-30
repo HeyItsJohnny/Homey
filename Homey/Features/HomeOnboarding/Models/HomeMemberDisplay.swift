@@ -13,6 +13,53 @@ struct HomeMemberDisplay: Identifiable, Hashable {
     let avatarURL: URL?
     let isCurrentUser: Bool
 
+    init(
+        id: UUID,
+        homeId: UUID = UUID(),
+        userId: UUID,
+        role: HomeMemberRole,
+        joinedAt: String? = nil,
+        firstName: String? = nil,
+        lastName: String? = nil,
+        profileDisplayName: String? = nil,
+        displayName: String? = nil,
+        email: String?,
+        avatarURL: URL?,
+        isCurrentUser: Bool
+    ) {
+        self.id = id
+        self.homeId = homeId
+        self.userId = userId
+        self.role = role
+        self.joinedAt = joinedAt
+        self.firstName = firstName
+        self.lastName = lastName
+        self.profileDisplayName = profileDisplayName ?? displayName
+        self.email = email
+        self.avatarURL = avatarURL
+        self.isCurrentUser = isCurrentUser
+    }
+
+    init(
+        id: UUID,
+        userId: UUID,
+        displayName: String,
+        email: String?,
+        role: HomeMemberRole,
+        avatarURL: URL?,
+        isCurrentUser: Bool
+    ) {
+        self.init(
+            id: id,
+            userId: userId,
+            role: role,
+            profileDisplayName: displayName,
+            email: email,
+            avatarURL: avatarURL,
+            isCurrentUser: isCurrentUser
+        )
+    }
+
     var displayName: String {
         Self.resolvedDisplayName(
             displayName: profileDisplayName,

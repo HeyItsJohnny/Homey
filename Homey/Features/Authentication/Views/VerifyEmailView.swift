@@ -44,9 +44,3 @@ struct VerifyEmailView: View {
     }
 }
 
-#Preview {
-    NavigationStack {
-        VerifyEmailView(onBackToLogin: {})
-            .environmentObject(AuthenticationService())
-    }
-}

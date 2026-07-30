@@ -1,9 +1,13 @@
 import SwiftUI
 
 struct CalendarView: View {
+    let focusDate: Date?
+
+    @EnvironmentObject private var authenticationService: AuthenticationService
     @EnvironmentObject private var homeService: HomeService
     @StateObject private var viewModel = CalendarViewModel()
-    @State private var isShowingAddEventPlaceholder = false
+    @State private var editorPresentation: CalendarEditorPresentation?
+    @State private var successMessage: String?
 
     private var selectedHome: HomeSummary? {
         homeService.selectedHome()
@@ -11,6 +15,10 @@ struct CalendarView: View {
 
     private var membersById: [UUID: HomeMemberDisplay] {
         Dictionary(uniqueKeysWithValues: homeService.membersForSelectedHome().map { ($0.userId, $0) })
+    }
+
+    init(focusDate: Date? = nil) {
+        self.focusDate = focusDate
     }
 
     var body: some View {
@@ -21,6 +29,11 @@ struct CalendarView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
                     header
+
+                    if let successMessage {
+                        CalendarStatusBanner(message: successMessage)
+                            .transition(.opacity)
+                    }
 
                     if selectedHome == nil {
                         missingHomeCard
@@ -43,13 +56,80 @@ struct CalendarView: View {
         }
         .task(id: selectedHome?.id) {
             viewModel.configureWeekStart(selectedHome?.weekStartsOn)
+            await loadMembersIfNeeded()
             await viewModel.loadInitialData(homeId: selectedHome?.id)
+
+            if let focusDate {
+                await viewModel.focus(on: focusDate)
+            }
         }
         .onChange(of: selectedHome?.weekStartsOn) { _, newValue in
             viewModel.configureWeekStart(newValue)
         }
-        .sheet(isPresented: $isShowingAddEventPlaceholder) {
-            AddEventPlaceholderSheet()
+        .onDisappear {
+            Task {
+                await viewModel.stopRealtimeUpdates()
+            }
+        }
+        .onChange(of: focusDate) { _, newValue in
+            guard let newValue else {
+                return
+            }
+
+            Task {
+                await viewModel.focus(on: newValue)
+            }
+        }
+        .sheet(item: $editorPresentation) { presentation in
+            EventEditorView(
+                mode: presentation.mode,
+                selectedDate: presentation.selectedDate,
+                categories: viewModel.categories,
+                members: homeService.membersForSelectedHome(),
+                isSaving: viewModel.isSavingEvent,
+                isDeleting: viewModel.isDeletingEvent,
+                errorMessage: viewModel.errorMessage,
+                onSave: { draft in
+                    switch presentation.mode {
+                    case .create:
+                        return await viewModel.createEvent(
+                            homeId: selectedHome?.id,
+                            title: draft.title,
+                            notes: draft.notes,
+                            location: draft.location,
+                            startDate: draft.startDate,
+                            endDate: draft.endDate,
+                            isAllDay: draft.isAllDay,
+                            timezone: draft.timezone,
+                            categoryId: draft.categoryId,
+                            assignedUserIds: draft.assignedUserIds
+                        )
+                    case .edit(let event):
+                        return await viewModel.updateEvent(
+                            eventId: event.id,
+                            title: draft.title,
+                            notes: draft.notes,
+                            location: draft.location,
+                            startDate: draft.startDate,
+                            endDate: draft.endDate,
+                            isAllDay: draft.isAllDay,
+                            timezone: draft.timezone,
+                            categoryId: draft.categoryId,
+                            assignedUserIds: draft.assignedUserIds
+                        )
+                    }
+                },
+                onDelete: presentation.event.map { event in
+                    {
+                        await viewModel.deleteEvent(eventId: event.id)
+                    }
+                },
+                onSuccess: { completion in
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        successMessage = completion.successMessage
+                    }
+                }
+            )
         }
     }
 
@@ -95,7 +175,7 @@ struct CalendarView: View {
                 .accessibilityLabel("Today")
 
                 Button {
-                    isShowingAddEventPlaceholder = true
+                    presentCreateEditor()
                 } label: {
                     HStack(spacing: 9) {
                         Image(systemName: "plus")
@@ -199,7 +279,13 @@ struct CalendarView: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(viewModel.selectedDayEvents.enumerated()), id: \.element.id) { index, event in
-                        AgendaEventRow(event: event, assignedMembers: assignedMembers(for: event))
+                        Button {
+                            presentEditEditor(for: event)
+                        } label: {
+                            AgendaEventRow(event: event, assignedMembers: assignedMembers(for: event))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHint("Opens event details")
 
                         if index < viewModel.selectedDayEvents.count - 1 {
                             Divider()
@@ -238,7 +324,7 @@ struct CalendarView: View {
             }
 
             Button {
-                isShowingAddEventPlaceholder = true
+                presentCreateEditor()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "plus")
@@ -308,6 +394,25 @@ struct CalendarView: View {
         event.assignedUserIds.compactMap { membersById[$0] }
     }
 
+    private func presentCreateEditor() {
+        successMessage = nil
+        editorPresentation = CalendarEditorPresentation(mode: .create, selectedDate: viewModel.selectedDate)
+    }
+
+    private func presentEditEditor(for event: CalendarEvent) {
+        successMessage = nil
+        editorPresentation = CalendarEditorPresentation(mode: .edit(event), selectedDate: event.startsAt)
+    }
+
+    private func loadMembersIfNeeded() async {
+        guard let selectedHome,
+              let currentUser = authenticationService.currentUser else {
+            return
+        }
+
+        await homeService.loadMembers(for: selectedHome.id, currentUser: currentUser)
+    }
+
     private var monthTitle: String {
         CalendarViewFormatters.monthAndYear.string(from: viewModel.visibleMonth)
     }
@@ -319,6 +424,29 @@ struct CalendarView: View {
     private var selectedDayCountText: String {
         let count = viewModel.selectedDayEvents.count
         return "\(count) \(count == 1 ? "Event" : "Events")"
+    }
+}
+
+private struct CalendarEditorPresentation: Identifiable {
+    let id = UUID()
+    let mode: EventEditorMode
+    let selectedDate: Date
+
+    var event: CalendarEvent? {
+        mode.event
+    }
+}
+
+private extension EventEditorCompletion {
+    var successMessage: String {
+        switch self {
+        case .created:
+            return "Event saved."
+        case .updated:
+            return "Event updated."
+        case .deleted:
+            return "Event deleted."
+        }
     }
 }
 
@@ -390,15 +518,16 @@ private struct CalendarDayCell: View {
         return isCurrentMonth ? HomeyDashboardTheme.primaryText : HomeyDashboardTheme.secondaryText.opacity(0.55)
     }
 
-    @ViewBuilder
-    private var dayNumberBackground: some View {
+    private var dayNumberBackground: Color {
         if isSelected {
-            HomeyDashboardTheme.warmBrown
-        } else if isToday {
-            HomeyDashboardTheme.selectedSidebarBackground
-        } else {
-            Color.clear
+            return HomeyDashboardTheme.warmBrown
         }
+
+        if isToday {
+            return HomeyDashboardTheme.selectedSidebarBackground
+        }
+
+        return .clear
     }
 
     private var cellBackground: Color {
@@ -494,47 +623,29 @@ private struct AgendaEventRow: View {
     }
 }
 
-private struct AddEventPlaceholderSheet: View {
-    @Environment(\.dismiss) private var dismiss
+private struct CalendarStatusBanner: View {
+    let message: String
 
     var body: some View {
-        ZStack {
-            HomeyDashboardTheme.appBackground
-                .ignoresSafeArea()
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(HomeyDashboardTheme.sageAccent)
+                .accessibilityHidden(true)
 
-            VStack(spacing: 18) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(HomeyDashboardTheme.selectedSidebarBackground)
-                        .frame(width: 72, height: 72)
+            Text(message)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
 
-                    Image(systemName: "calendar.badge.plus")
-                        .font(.title.weight(.semibold))
-                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
-                }
-
-                VStack(spacing: 6) {
-                    Text("Event Editor Coming Soon")
-                        .font(.title3.weight(.bold))
-                        .foregroundStyle(HomeyDashboardTheme.primaryText)
-
-                    Text("The calendar data layer is ready. Event creation UI will be added next.")
-                        .font(.subheadline)
-                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
-                        .multilineTextAlignment(.center)
-                }
-
-                Button("Close") {
-                    dismiss()
-                }
-                .buttonStyle(DashboardPrimaryButtonStyle())
-                .frame(width: 140)
-            }
-            .padding(34)
-            .frame(maxWidth: 420)
-            .dashboardCard(cornerRadius: 30)
+            Spacer(minLength: 0)
         }
-        .presentationDetents([.medium])
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(HomeyDashboardTheme.sageAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(HomeyDashboardTheme.sageAccent.opacity(0.20), lineWidth: 1)
+        }
+        .accessibilityLabel(message)
     }
 }
 
@@ -569,7 +680,7 @@ private extension CalendarEvent {
     }
 }
 
-private extension Color {
+extension Color {
     init?(hex: String?) {
         guard let hex else {
             return nil

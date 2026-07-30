@@ -32,7 +32,7 @@ struct RootView: View {
             if state == .unauthenticated {
                 loadedHomeUserID = nil
                 storedSelectedHomeID = ""
-                homeService.selectHome(id: nil)
+                homeService.clearAuthenticatedState()
             }
         }
     }
@@ -41,6 +41,8 @@ struct RootView: View {
         Group {
             if homeService.isLoading || loadedHomeUserID != authenticationService.currentUser?.id {
                 ProgressView()
+            } else if homeService.homes.isEmpty && !homeService.myPendingInvitations.isEmpty {
+                HomeInvitationOnboardingView()
             } else if homeService.homes.isEmpty {
                 HomeOnboardingView()
             } else {
@@ -60,6 +62,7 @@ struct RootView: View {
         loadedHomeUserID = nil
         homeService.restoreSelectedHome(from: storedSelectedHomeID)
         await homeService.loadHomes(for: userID)
+        await homeService.loadMyPendingInvitations(for: userID)
         storedSelectedHomeID = homeService.selectedHomeID?.uuidString ?? ""
         loadedHomeUserID = userID
     }

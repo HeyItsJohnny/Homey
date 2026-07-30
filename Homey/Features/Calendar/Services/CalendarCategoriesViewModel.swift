@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import SwiftUI
 
@@ -186,7 +187,7 @@ final class CalendarCategoriesViewModel: ObservableObject {
     }
 }
 
-enum CalendarCategoryMutationResult {
+enum CalendarCategoryMutationResult: Equatable {
     case success
     case permissionDenied
     case failure

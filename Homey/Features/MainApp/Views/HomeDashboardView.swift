@@ -1,8 +1,12 @@
 import SwiftUI
 
 struct HomeDashboardView: View {
+    @EnvironmentObject private var authenticationService: AuthenticationService
+    @EnvironmentObject private var homeService: HomeService
+
     @State private var selectedDestination: DashboardDestination = .home
     @State private var isShowingSettingsMenu = false
+    @State private var calendarFocusDate: Date?
 
     var body: some View {
         NavigationSplitView {
@@ -15,23 +19,35 @@ struct HomeDashboardView: View {
 
                 selectedContent
 
-                SettingsGearButton(isShowingSettingsMenu: $isShowingSettingsMenu)
-                    .padding(.top, 28)
-                    .padding(.trailing, 34)
+                SettingsGearButton(
+                    selectedDestination: $selectedDestination,
+                    isShowingSettingsMenu: $isShowingSettingsMenu
+                )
+                .padding(.top, 28)
+                .padding(.trailing, 34)
             }
         }
         .navigationSplitViewStyle(.balanced)
+        .task(id: homeService.selectedHomeID) {
+            await loadMembersForSelectedHome()
+        }
+        .task(id: authenticationService.currentUser?.id) {
+            await loadInvitationsForAuthenticatedUser()
+        }
     }
 
     @ViewBuilder
     private var selectedContent: some View {
         switch selectedDestination {
         case .home:
-            DashboardContentView()
+            DashboardContentView { focusDate in
+                calendarFocusDate = focusDate
+                selectedDestination = .calendar
+            }
         case .chores:
             ChoresView()
         case .calendar:
-            CalendarView()
+            CalendarView(focusDate: calendarFocusDate)
         case .lists:
             ListsView()
         case .meals:
@@ -43,18 +59,91 @@ struct HomeDashboardView: View {
         case .settings:
             SettingsView()
         case .homeSettings:
-            HomeSettingsView()
+            HomeSettingsView(
+                onClose: {
+                    selectedDestination = .home
+                },
+                onShowCalendarCategories: {
+                    selectedDestination = .calendarCategories
+                }
+            )
+        case .calendarCategories:
+            CalendarCategoriesView {
+                selectedDestination = .homeSettings
+            }
         case .members:
-            MembersView()
+            HomeMembersView {
+                selectedDestination = .home
+            }
+        case .myAccount:
+            MyAccountView(
+                onClose: {
+                    selectedDestination = .home
+                },
+                onShowInvitations: {
+                    selectedDestination = .homeInvitations
+                }
+            )
+        case .homeInvitations:
+            HomeInvitationsView(
+                onClose: {
+                    selectedDestination = .myAccount
+                },
+                onSwitchHome: {
+                    selectedDestination = .home
+                }
+            )
         case .manageHome:
             ManageHomeView()
         case .changeHome:
-            ChangeHomeView()
+            NavigationStack {
+                HomeSelectionView(restoresStoredSelectionOnAppear: false) {
+                    selectedDestination = .home
+                }
+            }
         }
+    }
+
+    private func loadMembersForSelectedHome() async {
+        guard let selectedHome = homeService.selectedHome(),
+              let currentUser = authenticationService.currentUser else {
+            return
+        }
+
+        await homeService.loadMembers(for: selectedHome.id, currentUser: currentUser)
+    }
+
+    private func loadInvitationsForAuthenticatedUser() async {
+        guard let userID = authenticationService.currentUser?.id else {
+            return
+        }
+
+        await homeService.loadMyPendingInvitations(for: userID)
     }
 }
 
 private struct DashboardContentView: View {
+    @EnvironmentObject private var homeService: HomeService
+    @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var calendarViewModel = DashboardCalendarViewModel()
+
+    var onOpenCalendar: (Date?) -> Void = { _ in }
+
+    private var dashboardMetrics: [DashboardMetric] {
+        [
+            DashboardMetric(
+                title: "Calendar",
+                value: "\(calendarViewModel.eventsTodayCount)",
+                subtitle: calendarViewModel.eventsTodayCount == 0 ? "No Events Today" : "Events Today",
+                systemImage: "calendar",
+                accentColor: HomeyDashboardTheme.lavenderAccent
+            ),
+            DashboardPlaceholderData.metrics[1],
+            DashboardPlaceholderData.metrics[2],
+            DashboardPlaceholderData.metrics[3]
+        ]
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 26) {
@@ -64,13 +153,21 @@ private struct DashboardContentView: View {
                 HomeHeroCard()
 
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 18), count: 4), spacing: 18) {
-                    ForEach(DashboardPlaceholderData.metrics) { metric in
-                        DashboardMetricCard(metric: metric)
+                    ForEach(dashboardMetrics) { metric in
+                        DashboardMetricCard(metric: metric) {
+                            if metric.title == "Calendar" {
+                                onOpenCalendar(Date())
+                            }
+                        }
                     }
                 }
 
                 HStack(alignment: .top, spacing: 18) {
-                    UpcomingEventsCard()
+                    UpcomingEventsCard(
+                        events: calendarViewModel.upcomingEvents,
+                        isLoading: calendarViewModel.isLoading,
+                        onOpenCalendar: onOpenCalendar
+                    )
                     DashboardChoresCard()
                     DashboardGroceriesCard()
                 }
@@ -83,21 +180,67 @@ private struct DashboardContentView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .scrollIndicators(.hidden)
+        .onAppear {
+            calendarViewModel.load(homeId: homeService.selectedHomeID)
+        }
+        .task(id: homeService.selectedHomeID) {
+            calendarViewModel.load(homeId: homeService.selectedHomeID)
+        }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .homeyCalendarEventsDidChange) {
+                calendarViewModel.reload()
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                calendarViewModel.reload()
+            }
+        }
+        .onDisappear {
+            Task {
+                await calendarViewModel.clear()
+            }
+        }
     }
 }
 
 private struct DashboardHeader: View {
+    @EnvironmentObject private var authenticationService: AuthenticationService
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var timeGreeting = TimeOfDayGreeting.greeting()
+
+    private var dashboardGreeting: String {
+        guard let currentUser = authenticationService.currentUser else {
+            return "\(timeGreeting)!"
+        }
+
+        return "\(timeGreeting), \(currentUser.preferredDisplayName)!"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Good morning, Johnny! 👋")
+            Text(dashboardGreeting)
                 .font(.system(size: 34, weight: .bold, design: .rounded))
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .accessibilityLabel(dashboardGreeting)
 
             Text("Here’s what’s happening in your home.")
                 .font(.title3)
                 .foregroundStyle(HomeyDashboardTheme.secondaryText)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            refreshTimeGreeting()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                refreshTimeGreeting()
+            }
+        }
+    }
+
+    private func refreshTimeGreeting() {
+        timeGreeting = TimeOfDayGreeting.greeting()
     }
 }
 
@@ -187,6 +330,21 @@ private struct SidebarNavigationRow: View {
 }
 
 private struct CurrentHomeSidebarCard: View {
+    @EnvironmentObject private var homeService: HomeService
+
+    private var selectedHome: HomeSummary? {
+        homeService.selectedHome()
+    }
+
+    private var memberCountText: String {
+        guard let selectedHome else {
+            return "Choose a Home"
+        }
+
+        let count = homeService.memberCountForSelectedHome() ?? selectedHome.memberCount
+        return "\(count) \(count == 1 ? "Member" : "Members")"
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             ZStack {
@@ -199,11 +357,11 @@ private struct CurrentHomeSidebarCard: View {
             }
 
             VStack(alignment: .leading, spacing: 3) {
-                Text("Laroco Family")
+                Text(selectedHome?.name ?? "No Home Selected")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(HomeyDashboardTheme.primaryText)
 
-                Text("4 Members")
+                Text(memberCountText)
                     .font(.caption)
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
             }
@@ -224,7 +382,11 @@ private struct CurrentHomeSidebarCard: View {
 }
 
 private struct SettingsGearButton: View {
+    @EnvironmentObject private var authenticationService: AuthenticationService
+    @EnvironmentObject private var homeService: HomeService
+    @Binding var selectedDestination: DashboardDestination
     @Binding var isShowingSettingsMenu: Bool
+    @State private var isSigningOut = false
 
     var body: some View {
         Button {
@@ -243,32 +405,88 @@ private struct SettingsGearButton: View {
         }
         .buttonStyle(.plain)
         .popover(isPresented: $isShowingSettingsMenu, arrowEdge: .top) {
-            SettingsMenuView()
-                .presentationCompactAdaptation(.popover)
+            SettingsMenuView(
+                isSigningOut: isSigningOut,
+                onHomeSettings: showHomeSettings,
+                onMembers: showMembers,
+                onMyAccount: showMyAccount,
+                onChangeHome: changeHome,
+                onSignOut: signOut
+            )
+            .presentationCompactAdaptation(.popover)
+        }
+    }
+
+    private func showHomeSettings() {
+        isShowingSettingsMenu = false
+        selectedDestination = .homeSettings
+    }
+
+    private func showMembers() {
+        isShowingSettingsMenu = false
+        selectedDestination = .members
+    }
+
+    private func showMyAccount() {
+        isShowingSettingsMenu = false
+        selectedDestination = .myAccount
+    }
+
+    private func changeHome() {
+        isShowingSettingsMenu = false
+        selectedDestination = .changeHome
+    }
+
+    private func signOut() {
+        guard !isSigningOut else {
+            return
+        }
+
+        isShowingSettingsMenu = false
+        isSigningOut = true
+
+        Task {
+            // Reuse the central authentication service and let RootView react to the signed-out session state.
+            await authenticationService.signOut()
+            isSigningOut = false
         }
     }
 }
 
 struct HomeHeroCard: View {
+    @EnvironmentObject private var homeService: HomeService
+
+    private var selectedHome: HomeSummary? {
+        homeService.selectedHome()
+    }
+
+    private var members: [HomeMemberDisplay] {
+        homeService.membersForSelectedHome()
+    }
+
+    private var memberCountText: String {
+        guard let selectedHome else {
+            return "Choose a Home"
+        }
+
+        let count = homeService.memberCountForSelectedHome() ?? selectedHome.memberCount
+        return "\(count) \(count == 1 ? "Member" : "Members")"
+    }
+
     var body: some View {
-        HStack(spacing: 26) {
-            HomeIllustrationPlaceholder()
-                .frame(width: 156, height: 128)
+        HStack(spacing: 28) {
+            HomeHeroHouseArtwork()
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("Laroco Family")
+                Text(selectedHome?.name ?? "No Home Selected")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
                     .foregroundStyle(HomeyDashboardTheme.primaryText)
 
-                Text("4 Members")
+                Text(memberCountText)
                     .font(.headline)
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
 
-                HStack(spacing: -8) {
-                    ForEach(DashboardPlaceholderData.members) { member in
-                        AvatarPlaceholderView(initials: member.initials, color: member.color)
-                    }
-                }
+                DashboardMemberAvatarStack(members: members)
                 .padding(.top, 2)
             }
 
@@ -283,36 +501,28 @@ struct HomeHeroCard: View {
     }
 }
 
-private struct HomeIllustrationPlaceholder: View {
+private struct HomeHeroHouseArtwork: View {
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
     var body: some View {
-        ZStack(alignment: .bottom) {
-            RoundedRectangle(cornerRadius: 34, style: .continuous)
-                .fill(HomeyDashboardTheme.warmBeige.opacity(0.85))
-
-            Circle()
-                .fill(HomeyDashboardTheme.sageAccent.opacity(0.28))
-                .frame(width: 74, height: 74)
-                .offset(x: -36, y: -30)
-
-            Circle()
-                .fill(HomeyDashboardTheme.orangeAccent.opacity(0.22))
-                .frame(width: 62, height: 62)
-                .offset(x: 42, y: -18)
-
-            Image(systemName: "house.fill")
-                .font(.system(size: 58, weight: .semibold))
-                .foregroundStyle(HomeyDashboardTheme.warmBrown)
-                .offset(y: -30)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 34, style: .continuous))
+        Image("home_dashboard_house")
+            .resizable()
+            .scaledToFit()
+            .frame(
+                width: horizontalSizeClass == .compact ? 170 : 240,
+                height: horizontalSizeClass == .compact ? 125 : 170
+            )
+            .accessibilityLabel("Laroco Family home")
     }
 }
 
 struct DashboardMetricCard: View {
     let metric: DashboardMetric
+    var action: () -> Void = {}
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 14) {
             ZStack {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(metric.accentColor.opacity(0.20))
@@ -335,15 +545,18 @@ struct DashboardMetricCard: View {
                 .font(.subheadline)
                 .foregroundStyle(HomeyDashboardTheme.secondaryText)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(22)
-        .dashboardCard(cornerRadius: 26)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(22)
+            .dashboardCard(cornerRadius: 26)
+        }
+        .buttonStyle(.plain)
     }
 }
 
 struct DashboardSectionCard<Content: View>: View {
     let title: String
     let actionTitle: String
+    var action: () -> Void = {}
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -355,7 +568,7 @@ struct DashboardSectionCard<Content: View>: View {
 
                 Spacer()
 
-                Button(actionTitle) {}
+                Button(actionTitle, action: action)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(HomeyDashboardTheme.warmBrown)
                     .buttonStyle(.plain)
@@ -370,36 +583,58 @@ struct DashboardSectionCard<Content: View>: View {
 }
 
 struct UpcomingEventsCard: View {
-    var body: some View {
-        DashboardSectionCard(title: "Upcoming", actionTitle: "View Calendar") {
-            VStack(spacing: 0) {
-                ForEach(DashboardPlaceholderData.events) { event in
-                    UpcomingEventRow(event: event)
+    var events: [CalendarEvent] = []
+    var isLoading = false
+    var onOpenCalendar: (Date?) -> Void = { _ in }
 
-                    if event.id != DashboardPlaceholderData.events.last?.id {
-                        Divider()
-                            .overlay(HomeyDashboardTheme.softBorder)
+    var body: some View {
+        DashboardSectionCard(title: "Upcoming", actionTitle: "View Calendar", action: {
+            onOpenCalendar(nil)
+        }) {
+            VStack(spacing: 0) {
+                if isLoading && events.isEmpty {
+                    ProgressView()
+                        .tint(HomeyDashboardTheme.warmBrown)
+                        .frame(maxWidth: .infinity, minHeight: 190)
+                        .accessibilityLabel("Loading upcoming events")
+                } else if events.isEmpty {
+                    UpcomingEventsEmptyState()
+                } else {
+                    ForEach(Array(events.enumerated()), id: \.element.id) { index, event in
+                        Button {
+                            onOpenCalendar(event.startsAt)
+                        } label: {
+                            UpcomingEventRow(event: event)
+                        }
+                        .buttonStyle(.plain)
+
+                        if index < events.count - 1 {
+                            Divider()
+                                .overlay(HomeyDashboardTheme.softBorder)
+                        }
                     }
                 }
 
                 Spacer(minLength: 16)
 
-                SoftDashboardButton(systemImage: "calendar", title: "View Full Calendar")
+                SoftDashboardButton(systemImage: "calendar", title: "View Full Calendar") {
+                    onOpenCalendar(nil)
+                }
             }
         }
     }
 }
 
 private struct UpcomingEventRow: View {
-    let event: DashboardEvent
+    let event: CalendarEvent
 
     var body: some View {
         HStack(spacing: 13) {
             Circle()
-                .fill(event.statusColor)
+                .fill(statusColor)
                 .frame(width: 9, height: 9)
 
-            Image(systemName: event.systemImage)
+            Image(systemName: event.categoryIconName ?? "calendar")
                 .font(.body.weight(.medium))
                 .foregroundStyle(HomeyDashboardTheme.warmBrown)
                 .frame(width: 28)
@@ -408,10 +643,12 @@ private struct UpcomingEventRow: View {
                 Text(event.title)
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    .lineLimit(1)
 
-                Text(event.time)
+                Text(subtitle)
                     .font(.caption)
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                    .lineLimit(1)
             }
 
             Spacer()
@@ -421,6 +658,52 @@ private struct UpcomingEventRow: View {
                 .foregroundStyle(HomeyDashboardTheme.secondaryText.opacity(0.7))
         }
         .padding(.vertical, 15)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var statusColor: Color {
+        Color(hex: event.categoryColorHex) ?? HomeyDashboardTheme.lavenderAccent
+    }
+
+    private var subtitle: String {
+        let dateText = DashboardCalendarFormatters.eventDate.string(from: event.startsAt)
+        let timeText = event.isAllDay ? "All Day" : "\(DashboardCalendarFormatters.eventTime.string(from: event.startsAt))"
+        let location = event.location?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if location.isEmpty {
+            return "\(dateText) • \(timeText)"
+        }
+
+        return "\(dateText) • \(timeText) • \(location)"
+    }
+}
+
+private struct UpcomingEventsEmptyState: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(HomeyDashboardTheme.selectedSidebarBackground)
+                    .frame(width: 54, height: 54)
+
+                Image(systemName: "calendar")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            }
+            .accessibilityHidden(true)
+
+            VStack(spacing: 4) {
+                Text("No Upcoming Events")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                Text("Nothing is scheduled yet.")
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 190)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -527,9 +810,10 @@ private struct GroceryBagPlaceholder: View {
 private struct SoftDashboardButton: View {
     let systemImage: String
     let title: String
+    var action: () -> Void = {}
 
     var body: some View {
-        Button {} label: {
+        Button(action: action) {
             HStack(spacing: 10) {
                 Image(systemName: systemImage)
                 Text(title)
@@ -544,22 +828,32 @@ private struct SoftDashboardButton: View {
 }
 
 struct SettingsMenuView: View {
+    var isSigningOut = false
+    var onHomeSettings: () -> Void = {}
+    var onMembers: () -> Void = {}
+    var onMyAccount: () -> Void = {}
+    var onChangeHome: () -> Void = {}
+    var onSignOut: () -> Void = {}
+
     var body: some View {
         VStack(spacing: 8) {
             SettingsMenuRow(
                 title: "Home Settings",
                 subtitle: "Edit home name, timezone, and more",
-                systemImage: "gearshape"
+                systemImage: "gearshape",
+                action: onHomeSettings
             )
             SettingsMenuRow(
                 title: "Members",
                 subtitle: "View and manage members",
-                systemImage: "person.2"
+                systemImage: "person.2",
+                action: onMembers
             )
             SettingsMenuRow(
-                title: "Manage Home",
-                subtitle: "Home preferences and defaults",
-                systemImage: "house"
+                title: "My Account",
+                subtitle: "Profile and personal preferences",
+                systemImage: "person.crop.circle",
+                action: onMyAccount
             )
 
             Divider()
@@ -568,7 +862,8 @@ struct SettingsMenuView: View {
             SettingsMenuRow(
                 title: "Change Home",
                 subtitle: "Switch to a different home",
-                systemImage: "arrow.left.arrow.right"
+                systemImage: "arrow.left.arrow.right",
+                action: onChangeHome
             )
 
             Divider()
@@ -578,7 +873,9 @@ struct SettingsMenuView: View {
                 title: "Sign Out",
                 subtitle: "Sign out of Homey",
                 systemImage: "rectangle.portrait.and.arrow.right",
-                role: .destructive
+                role: .destructive,
+                isLoading: isSigningOut,
+                action: onSignOut
             )
         }
         .padding(12)
@@ -597,18 +894,26 @@ private struct SettingsMenuRow: View {
     let subtitle: String
     let systemImage: String
     var role: Role = .normal
+    var isLoading = false
+    var action: () -> Void = {}
 
     var body: some View {
-        Button {} label: {
+        Button(action: action) {
             HStack(spacing: 13) {
                 ZStack {
                     RoundedRectangle(cornerRadius: 13, style: .continuous)
                         .fill(iconColor.opacity(0.14))
                         .frame(width: 42, height: 42)
 
-                    Image(systemName: systemImage)
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(iconColor)
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(iconColor)
+                    } else {
+                        Image(systemName: systemImage)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(iconColor)
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 3) {
@@ -628,6 +933,7 @@ private struct SettingsMenuRow: View {
             .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
+        .disabled(isLoading)
     }
 
     private var iconColor: Color {
@@ -703,7 +1009,10 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
     case messages
     case settings
     case homeSettings
+    case calendarCategories
     case members
+    case myAccount
+    case homeInvitations
     case manageHome
     case changeHome
 
@@ -740,8 +1049,14 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
             "Settings"
         case .homeSettings:
             "Home Settings"
+        case .calendarCategories:
+            "Calendar Categories"
         case .members:
             "Members"
+        case .myAccount:
+            "My Account"
+        case .homeInvitations:
+            "Home Invitations"
         case .manageHome:
             "Manage Home"
         case .changeHome:
@@ -769,8 +1084,14 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
             "gearshape.fill"
         case .homeSettings:
             "gearshape"
+        case .calendarCategories:
+            "tag.fill"
         case .members:
             "person.2"
+        case .myAccount:
+            "person.crop.circle"
+        case .homeInvitations:
+            "envelope.badge"
         case .manageHome:
             "house"
         case .changeHome:
@@ -786,6 +1107,25 @@ struct DashboardMetric: Identifiable {
     let subtitle: String
     let systemImage: String
     let accentColor: Color
+}
+
+private enum DashboardCalendarFormatters {
+    static let eventDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = .autoupdatingCurrent
+        formatter.doesRelativeDateFormatting = true
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter
+    }()
+
+    static let eventTime: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = .autoupdatingCurrent
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        return formatter
+    }()
 }
 
 struct DashboardEvent: Identifiable {
@@ -870,9 +1210,10 @@ enum HomeyDashboardTheme {
     static let shadow = Color(red: 0.40, green: 0.28, blue: 0.18).opacity(0.08)
 }
 
-#Preview("Home Dashboard - iPad Landscape") {
+#Preview("Home Dashboard - iPad Landscape", traits: .landscapeLeft) {
     HomeDashboardView()
-        .previewInterfaceOrientation(.landscapeLeft)
+        .environmentObject(AuthenticationService())
+        .environmentObject(HomeService())
 }
 
 #Preview("Sidebar") {
@@ -903,6 +1244,7 @@ private struct HomeSidebarPreview: View {
 
 #Preview("Settings Menu") {
     SettingsMenuView()
+        .environmentObject(AuthenticationService())
 }
 
 #Preview("Upcoming Card") {

@@ -30,6 +30,15 @@ enum HomeMemberRole: String, Codable, CaseIterable, Identifiable {
     static var invitationOptions: [HomeMemberRole] {
         [.member, .admin]
     }
+
+    var canManageCalendarCategories: Bool {
+        switch self {
+        case .owner, .admin:
+            return true
+        case .member:
+            return false
+        }
+    }
 }
 
 enum HomeInvitationStatus: String, Codable, CaseIterable, Identifiable {

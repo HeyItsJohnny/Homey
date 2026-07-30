@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import PostgREST
 import Supabase
@@ -201,17 +202,32 @@ final class CalendarService: ObservableObject {
         }
     }
 
+    func fetchCategories(homeId: UUID) async throws -> [CalendarCategory] {
+        do {
+            try await requireAuthenticatedSession()
+
+            let categories: [CalendarCategory] = try await client
+                .rpc(
+                    "get_calendar_categories",
+                    params: GetCalendarCategoriesParameters(targetHomeId: homeId)
+                )
+                .execute()
+                .value
+
+            return sortedCategories(categories)
+        } catch {
+            logCalendarError(error, rpcName: "get_calendar_categories", homeId: homeId)
+            throw CalendarServiceError.loadCategoriesFailed
+        }
+    }
+
     func createCategory(homeId: UUID, name: String, colorHex: String, iconName: String? = nil) async throws -> UUID {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedColorHex = colorHex.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedColorHex = try normalizedCategoryColorHex(colorHex)
         let trimmedIconName = normalizedOptionalString(iconName)
 
         guard !trimmedName.isEmpty else {
             throw CalendarServiceError.emptyCategoryName
-        }
-
-        guard !trimmedColorHex.isEmpty else {
-            throw CalendarServiceError.invalidCategoryColor
         }
 
         do {
@@ -235,7 +251,44 @@ final class CalendarService: ObservableObject {
             throw error
         } catch {
             logCalendarError(error, rpcName: "create_calendar_category", homeId: homeId)
+            if isCalendarCategoryPermissionError(error) {
+                throw CalendarServiceError.categoryPermissionDenied
+            }
             throw CalendarServiceError.createCategoryFailed
+        }
+    }
+
+    func updateCategory(categoryId: UUID, name: String, colorHex: String, iconName: String? = nil) async throws {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedColorHex = try normalizedCategoryColorHex(colorHex)
+        let trimmedIconName = normalizedOptionalString(iconName)
+
+        guard !trimmedName.isEmpty else {
+            throw CalendarServiceError.emptyCategoryName
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+
+            try await client
+                .rpc(
+                    "update_calendar_category",
+                    params: UpdateCalendarCategoryParameters(
+                        targetCategoryId: categoryId,
+                        categoryName: trimmedName,
+                        categoryColorHex: trimmedColorHex,
+                        categoryIconName: trimmedIconName
+                    )
+                )
+                .execute()
+        } catch let error as CalendarServiceError {
+            throw error
+        } catch {
+            logCalendarError(error, rpcName: "update_calendar_category", categoryId: categoryId)
+            if isCalendarCategoryPermissionError(error) {
+                throw CalendarServiceError.categoryPermissionDenied
+            }
+            throw CalendarServiceError.updateCategoryFailed
         }
     }
 
@@ -251,7 +304,79 @@ final class CalendarService: ObservableObject {
                 .execute()
         } catch {
             logCalendarError(error, rpcName: "delete_calendar_category", categoryId: categoryId)
+            if isCalendarCategoryPermissionError(error) {
+                throw CalendarServiceError.categoryPermissionDenied
+            }
             throw CalendarServiceError.deleteCategoryFailed
+        }
+    }
+
+    func reorderCategories(homeId: UUID, orderedCategoryIds: [UUID]) async throws {
+        do {
+            try await requireAuthenticatedSession()
+
+            try await client
+                .rpc(
+                    "reorder_calendar_categories",
+                    params: ReorderCalendarCategoriesParameters(
+                        targetHomeId: homeId,
+                        orderedCategoryIds: orderedCategoryIds
+                    )
+                )
+                .execute()
+        } catch {
+            logCalendarError(error, rpcName: "reorder_calendar_categories", homeId: homeId)
+            if isCalendarCategoryPermissionError(error) {
+                throw CalendarServiceError.categoryPermissionDenied
+            }
+            throw CalendarServiceError.reorderCategoriesFailed
+        }
+    }
+
+    func subscribeToCalendarChanges(
+        homeId: UUID,
+        onChange: @escaping @MainActor () -> Void
+    ) async throws -> CalendarRealtimeSubscription {
+        do {
+            try await requireAuthenticatedSession()
+
+            let homeIdString = homeId.uuidString.lowercased()
+            let channel = client.channel("calendar-home-\(homeIdString)")
+            let events = channel.postgresChange(
+                AnyAction.self,
+                schema: "public",
+                table: "calendar_events",
+                filter: .eq("home_id", value: homeIdString)
+            )
+            let eventMembers = channel.postgresChange(
+                AnyAction.self,
+                schema: "public",
+                table: "calendar_event_members"
+            )
+            let categories = channel.postgresChange(
+                AnyAction.self,
+                schema: "public",
+                table: "calendar_categories",
+                filter: .eq("home_id", value: homeIdString)
+            )
+
+            let listenerTasks = [events, eventMembers, categories].map { stream in
+                Task { @MainActor in
+                    for await _ in stream {
+                        guard !Task.isCancelled else {
+                            return
+                        }
+
+                        onChange()
+                    }
+                }
+            }
+
+            try await channel.subscribeWithError()
+            return CalendarRealtimeSubscription(channel: channel, listenerTasks: listenerTasks)
+        } catch {
+            logCalendarError(error, rpcName: "calendar_realtime_subscribe", homeId: homeId)
+            throw CalendarServiceError.realtimeSubscriptionFailed
         }
     }
 
@@ -304,6 +429,40 @@ final class CalendarService: ObservableObject {
     private func normalizedOptionalString(_ value: String?) -> String? {
         let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmedValue.isEmpty ? nil : trimmedValue
+    }
+
+    private func normalizedCategoryColorHex(_ value: String) throws -> String {
+        var trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedValue.hasPrefix("#") {
+            trimmedValue.removeFirst()
+        }
+
+        guard trimmedValue.count == 6,
+              Int(trimmedValue, radix: 16) != nil else {
+            throw CalendarServiceError.invalidCategoryColor
+        }
+
+        return trimmedValue.uppercased()
+    }
+
+    private func sortedCategories(_ categories: [CalendarCategory]) -> [CalendarCategory] {
+        categories.sorted { lhs, rhs in
+            if lhs.sortOrder != rhs.sortOrder {
+                return lhs.sortOrder < rhs.sortOrder
+            }
+
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
+
+    private func isCalendarCategoryPermissionError(_ error: Error) -> Bool {
+        guard let postgrestError = error as? PostgrestError else {
+            return false
+        }
+
+        let message = postgrestError.message.lowercased()
+        return message.contains("only home owners and admins")
+            && message.contains("calendar categor")
     }
 
     private func visibleMonthRange(containing month: Date) throws -> (start: Date, end: Date) {
@@ -375,11 +534,16 @@ enum CalendarServiceError: LocalizedError, Equatable {
     case emptyCategoryName
     case invalidCategoryColor
     case loadEventsFailed
+    case loadCategoriesFailed
     case createEventFailed
     case updateEventFailed
     case deleteEventFailed
     case createCategoryFailed
+    case updateCategoryFailed
     case deleteCategoryFailed
+    case reorderCategoriesFailed
+    case categoryPermissionDenied
+    case realtimeSubscriptionFailed
 
     var errorDescription: String? {
         switch self {
@@ -395,6 +559,8 @@ enum CalendarServiceError: LocalizedError, Equatable {
             return "Choose a category color."
         case .loadEventsFailed:
             return "We could not load calendar events."
+        case .loadCategoriesFailed:
+            return "We could not load calendar categories."
         case .createEventFailed:
             return "We could not save this event."
         case .updateEventFailed:
@@ -403,8 +569,16 @@ enum CalendarServiceError: LocalizedError, Equatable {
             return "We could not delete this event."
         case .createCategoryFailed:
             return "We could not save this category."
+        case .updateCategoryFailed:
+            return "We could not update this category."
         case .deleteCategoryFailed:
             return "We could not delete this category."
+        case .reorderCategoriesFailed:
+            return "We could not reorder calendar categories."
+        case .categoryPermissionDenied:
+            return "You no longer have permission to manage Calendar Categories."
+        case .realtimeSubscriptionFailed:
+            return "We could not start live calendar updates."
         }
     }
 }
@@ -557,11 +731,43 @@ private struct CreateCalendarCategoryParameters: Encodable {
     }
 }
 
+private struct GetCalendarCategoriesParameters: Encodable {
+    let targetHomeId: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case targetHomeId = "target_home_id"
+    }
+}
+
+private struct UpdateCalendarCategoryParameters: Encodable {
+    let targetCategoryId: UUID
+    let categoryName: String
+    let categoryColorHex: String
+    let categoryIconName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case targetCategoryId = "target_category_id"
+        case categoryName = "category_name"
+        case categoryColorHex = "category_color_hex"
+        case categoryIconName = "category_icon_name"
+    }
+}
+
 private struct CalendarCategoryIdParameters: Encodable {
     let targetCategoryId: UUID
 
     enum CodingKeys: String, CodingKey {
         case targetCategoryId = "target_category_id"
+    }
+}
+
+private struct ReorderCalendarCategoriesParameters: Encodable {
+    let targetHomeId: UUID
+    let orderedCategoryIds: [UUID]
+
+    enum CodingKeys: String, CodingKey {
+        case targetHomeId = "target_home_id"
+        case orderedCategoryIds = "ordered_category_ids"
     }
 }
 

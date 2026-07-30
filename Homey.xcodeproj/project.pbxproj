@@ -6,13 +6,41 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		AF63590A3012CA49001A0B87 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = AF6359093012CA49001A0B87 /* Auth */; };
+		AF63590C3012CA49001A0B87 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = AF63590B3012CA49001A0B87 /* Functions */; };
+		AF63590E3012CA49001A0B87 /* PostgREST in Frameworks */ = {isa = PBXBuildFile; productRef = AF63590D3012CA49001A0B87 /* PostgREST */; };
+		AF6359103012CA49001A0B87 /* Realtime in Frameworks */ = {isa = PBXBuildFile; productRef = AF63590F3012CA49001A0B87 /* Realtime */; };
+		AF6359123012CA49001A0B87 /* Storage in Frameworks */ = {isa = PBXBuildFile; productRef = AF6359113012CA49001A0B87 /* Storage */; };
+		AF6359143012CA49001A0B87 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = AF6359133012CA49001A0B87 /* Supabase */; };
+		AF91D7393012D0CB007B94B9 /* Release.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = AF91D7363012D0CB007B94B9 /* Release.xcconfig */; };
+		AF91D73A3012D0CB007B94B9 /* Secrets.xcconfig.example in Resources */ = {isa = PBXBuildFile; fileRef = AF91D7373012D0CB007B94B9 /* Secrets.xcconfig.example */; };
+		AF91D73B3012D0CB007B94B9 /* Debug.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = AF91D7353012D0CB007B94B9 /* Debug.xcconfig */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		AF6358F8301087EA001A0B87 /* Homey.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Homey.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AF91D7353012D0CB007B94B9 /* Debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Debug.xcconfig; sourceTree = "<group>"; };
+		AF91D7363012D0CB007B94B9 /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Release.xcconfig; sourceTree = "<group>"; };
+		AF91D7373012D0CB007B94B9 /* Secrets.xcconfig.example */ = {isa = PBXFileReference; lastKnownFileType = text; path = Secrets.xcconfig.example; sourceTree = "<group>"; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AF91D775301408FA007B94B9 /* Exceptions for "Homey" folder in "Homey" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = AF6358F7301087EA001A0B87 /* Homey */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		AF6358FA301087EA001A0B87 /* Homey */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AF91D775301408FA007B94B9 /* Exceptions for "Homey" folder in "Homey" target */,
+			);
 			path = Homey;
 			sourceTree = "<group>";
 		};
@@ -23,6 +51,12 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AF63590E3012CA49001A0B87 /* PostgREST in Frameworks */,
+				AF63590C3012CA49001A0B87 /* Functions in Frameworks */,
+				AF6359143012CA49001A0B87 /* Supabase in Frameworks */,
+				AF63590A3012CA49001A0B87 /* Auth in Frameworks */,
+				AF6359123012CA49001A0B87 /* Storage in Frameworks */,
+				AF6359103012CA49001A0B87 /* Realtime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -32,6 +66,7 @@
 		AF6358EF301087EA001A0B87 = {
 			isa = PBXGroup;
 			children = (
+				AF91D7383012D0CB007B94B9 /* Configuration */,
 				AF6358FA301087EA001A0B87 /* Homey */,
 				AF6358F9301087EA001A0B87 /* Products */,
 			);
@@ -43,6 +78,16 @@
 				AF6358F8301087EA001A0B87 /* Homey.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		AF91D7383012D0CB007B94B9 /* Configuration */ = {
+			isa = PBXGroup;
+			children = (
+				AF91D7353012D0CB007B94B9 /* Debug.xcconfig */,
+				AF91D7363012D0CB007B94B9 /* Release.xcconfig */,
+				AF91D7373012D0CB007B94B9 /* Secrets.xcconfig.example */,
+			);
+			path = Configuration;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -65,6 +110,12 @@
 			);
 			name = Homey;
 			packageProductDependencies = (
+				AF6359093012CA49001A0B87 /* Auth */,
+				AF63590B3012CA49001A0B87 /* Functions */,
+				AF63590D3012CA49001A0B87 /* PostgREST */,
+				AF63590F3012CA49001A0B87 /* Realtime */,
+				AF6359113012CA49001A0B87 /* Storage */,
+				AF6359133012CA49001A0B87 /* Supabase */,
 			);
 			productName = Homey;
 			productReference = AF6358F8301087EA001A0B87 /* Homey.app */;
@@ -94,6 +145,9 @@
 			);
 			mainGroup = AF6358EF301087EA001A0B87;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AF6359083012CA49001A0B87 /* XCRemoteSwiftPackageReference "supabase-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AF6358F9301087EA001A0B87 /* Products */;
 			projectDirPath = "";
@@ -109,6 +163,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AF91D7393012D0CB007B94B9 /* Release.xcconfig in Resources */,
+				AF91D73A3012D0CB007B94B9 /* Secrets.xcconfig.example in Resources */,
+				AF91D73B3012D0CB007B94B9 /* Debug.xcconfig in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -127,6 +184,7 @@
 /* Begin XCBuildConfiguration section */
 		AF635903301087EB001A0B87 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = AF91D7353012D0CB007B94B9 /* Debug.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -191,6 +249,7 @@
 		};
 		AF635904301087EB001A0B87 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = AF91D7363012D0CB007B94B9 /* Release.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -248,6 +307,7 @@
 		};
 		AF635906301087EB001A0B87 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = AF91D7353012D0CB007B94B9 /* Debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -256,6 +316,9 @@
 				DEVELOPMENT_TEAM = JA38J3EZWJ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Homey/Info.plist;
+				INFOPLIST_KEY_SUPABASE_PUBLISHABLE_KEY = "$(SUPABASE_PUBLISHABLE_KEY)";
+				INFOPLIST_KEY_SUPABASE_URL = "$(SUPABASE_URL)";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -269,6 +332,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = JohnnyLaroco.Homey;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPABASE_PUBLISHABLE_KEY = sb_publishable_5v0Xt1ReWAfgiflZJm2egA_cdw28PKw;
+				SUPABASE_URL = "https://czddjigvnliclcjyxqoc.supabase.co";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -280,6 +345,7 @@
 		};
 		AF635907301087EB001A0B87 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = AF91D7353012D0CB007B94B9 /* Debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -288,6 +354,9 @@
 				DEVELOPMENT_TEAM = JA38J3EZWJ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = Homey/Info.plist;
+				INFOPLIST_KEY_SUPABASE_PUBLISHABLE_KEY = "$(SUPABASE_PUBLISHABLE_KEY)";
+				INFOPLIST_KEY_SUPABASE_URL = "$(SUPABASE_URL)";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -301,6 +370,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = JohnnyLaroco.Homey;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPABASE_PUBLISHABLE_KEY = sb_publishable_5v0Xt1ReWAfgiflZJm2egA_cdw28PKw;
+				SUPABASE_URL = "https://czddjigvnliclcjyxqoc.supabase.co";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -332,6 +403,50 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AF6359083012CA49001A0B87 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.5.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AF6359093012CA49001A0B87 /* Auth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF6359083012CA49001A0B87 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Auth;
+		};
+		AF63590B3012CA49001A0B87 /* Functions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF6359083012CA49001A0B87 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Functions;
+		};
+		AF63590D3012CA49001A0B87 /* PostgREST */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF6359083012CA49001A0B87 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = PostgREST;
+		};
+		AF63590F3012CA49001A0B87 /* Realtime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF6359083012CA49001A0B87 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Realtime;
+		};
+		AF6359113012CA49001A0B87 /* Storage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF6359083012CA49001A0B87 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Storage;
+		};
+		AF6359133012CA49001A0B87 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF6359083012CA49001A0B87 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AF6358F0301087EA001A0B87 /* Project object */;
 }

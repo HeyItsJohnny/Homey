@@ -36,7 +36,3 @@ private enum AuthenticationDestination {
     case verifyEmail
 }
 
-#Preview {
-    AuthenticationView()
-        .environmentObject(AuthenticationService())
-}

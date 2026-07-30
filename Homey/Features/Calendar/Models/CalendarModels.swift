@@ -50,6 +50,7 @@ struct CalendarCategory: Codable, Identifiable, Hashable {
     let name: String
     let colorHex: String
     let iconName: String?
+    let sortOrder: Int
     let createdBy: UUID?
     let createdAt: Date
     let updatedAt: Date
@@ -60,6 +61,7 @@ struct CalendarCategory: Codable, Identifiable, Hashable {
         case name
         case colorHex = "color_hex"
         case iconName = "icon_name"
+        case sortOrder = "sort_order"
         case createdBy = "created_by"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
