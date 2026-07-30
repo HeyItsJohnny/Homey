@@ -7,6 +7,7 @@ struct CalendarView: View {
     @EnvironmentObject private var homeService: HomeService
     @StateObject private var viewModel = CalendarViewModel()
     @State private var editorPresentation: CalendarEditorPresentation?
+    @State private var eventPendingEditScope: CalendarEvent?
     @State private var successMessage: String?
 
     private var selectedHome: HomeSummary? {
@@ -102,26 +103,52 @@ struct CalendarView: View {
                             isAllDay: draft.isAllDay,
                             timezone: draft.timezone,
                             categoryId: draft.categoryId,
-                            assignedUserIds: draft.assignedUserIds
+                            assignedUserIds: draft.assignedUserIds,
+                            recurrence: draft.recurrence
                         )
-                    case .edit(let event):
-                        return await viewModel.updateEvent(
-                            eventId: event.id,
-                            title: draft.title,
-                            notes: draft.notes,
-                            location: draft.location,
-                            startDate: draft.startDate,
-                            endDate: draft.endDate,
-                            isAllDay: draft.isAllDay,
-                            timezone: draft.timezone,
-                            categoryId: draft.categoryId,
-                            assignedUserIds: draft.assignedUserIds
-                        )
+                    case .edit(let event, let scope):
+                        switch scope {
+                        case .singleOccurrence:
+                            return await viewModel.updateOccurrence(
+                                eventId: event.eventId,
+                                occurrenceStartsAt: event.occurrenceStartsAt,
+                                title: draft.title,
+                                notes: draft.notes,
+                                location: draft.location,
+                                startDate: draft.startDate,
+                                endDate: draft.endDate,
+                                isAllDay: draft.isAllDay,
+                                timezone: draft.timezone,
+                                categoryId: draft.categoryId
+                            )
+                        case .entireSeries:
+                            return await viewModel.updateEvent(
+                                eventId: event.eventId,
+                                title: draft.title,
+                                notes: draft.notes,
+                                location: draft.location,
+                                startDate: draft.startDate,
+                                endDate: draft.endDate,
+                                isAllDay: draft.isAllDay,
+                                timezone: draft.timezone,
+                                categoryId: draft.categoryId,
+                                assignedUserIds: draft.assignedUserIds,
+                                recurrence: draft.recurrence
+                            )
+                        }
                     }
                 },
                 onDelete: presentation.event.map { event in
-                    {
-                        await viewModel.deleteEvent(eventId: event.id)
+                    { scope in
+                        switch scope {
+                        case .singleOccurrence:
+                            return await viewModel.deleteOccurrence(
+                                eventId: event.eventId,
+                                occurrenceStartsAt: event.occurrenceStartsAt
+                            )
+                        case .entireSeries:
+                            return await viewModel.deleteEvent(eventId: event.eventId)
+                        }
                     }
                 },
                 onSuccess: { completion in
@@ -130,6 +157,42 @@ struct CalendarView: View {
                     }
                 }
             )
+        }
+        .confirmationDialog(
+            "Edit Recurring Event",
+            isPresented: Binding(
+                get: { eventPendingEditScope != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        eventPendingEditScope = nil
+                    }
+                }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("This Event Only") {
+                if let event = eventPendingEditScope {
+                    editorPresentation = CalendarEditorPresentation(
+                        mode: .edit(event, scope: .singleOccurrence),
+                        selectedDate: event.occurrenceStartsAt
+                    )
+                }
+                eventPendingEditScope = nil
+            }
+
+            Button("Entire Series") {
+                if let event = eventPendingEditScope {
+                    editorPresentation = CalendarEditorPresentation(
+                        mode: .edit(event, scope: .entireSeries),
+                        selectedDate: event.startsAt
+                    )
+                }
+                eventPendingEditScope = nil
+            }
+
+            Button("Cancel", role: .cancel) {
+                eventPendingEditScope = nil
+            }
         }
     }
 
@@ -401,7 +464,11 @@ struct CalendarView: View {
 
     private func presentEditEditor(for event: CalendarEvent) {
         successMessage = nil
-        editorPresentation = CalendarEditorPresentation(mode: .edit(event), selectedDate: event.startsAt)
+        if event.isRecurring {
+            eventPendingEditScope = event
+        } else {
+            editorPresentation = CalendarEditorPresentation(mode: .edit(event), selectedDate: event.occurrenceStartsAt)
+        }
     }
 
     private func loadMembersIfNeeded() async {
@@ -619,7 +686,7 @@ private struct AgendaEventRow: View {
             return "All day"
         }
 
-        return "\(CalendarViewFormatters.eventTime.string(from: event.startsAt)) - \(CalendarViewFormatters.eventTime.string(from: event.endsAt))"
+        return "\(CalendarViewFormatters.eventTime.string(from: event.occurrenceStartsAt)) - \(CalendarViewFormatters.eventTime.string(from: event.occurrenceEndsAt))"
     }
 }
 

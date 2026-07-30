@@ -602,7 +602,7 @@ struct UpcomingEventsCard: View {
                 } else {
                     ForEach(Array(events.enumerated()), id: \.element.id) { index, event in
                         Button {
-                            onOpenCalendar(event.startsAt)
+                            onOpenCalendar(event.occurrenceStartsAt)
                         } label: {
                             UpcomingEventRow(event: event)
                         }
@@ -666,8 +666,8 @@ private struct UpcomingEventRow: View {
     }
 
     private var subtitle: String {
-        let dateText = DashboardCalendarFormatters.eventDate.string(from: event.startsAt)
-        let timeText = event.isAllDay ? "All Day" : "\(DashboardCalendarFormatters.eventTime.string(from: event.startsAt))"
+        let dateText = DashboardCalendarFormatters.eventDate.string(from: event.occurrenceStartsAt)
+        let timeText = event.isAllDay ? "All Day" : "\(DashboardCalendarFormatters.eventTime.string(from: event.occurrenceStartsAt))"
         let location = event.location?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         if location.isEmpty {

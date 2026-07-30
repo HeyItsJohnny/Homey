@@ -13,6 +13,15 @@ final class CalendarService: ObservableObject {
     }
 
     func fetchEvents(homeId: UUID, rangeStart: Date, rangeEnd: Date) async throws -> [CalendarEvent] {
+        try await fetchEvents(
+            homeId: homeId,
+            rangeStart: rangeStart,
+            rangeEnd: rangeEnd,
+            sourceOperation: "fetchEvents"
+        )
+    }
+
+    private func fetchEvents(homeId: UUID, rangeStart: Date, rangeEnd: Date, sourceOperation: String) async throws -> [CalendarEvent] {
         guard rangeEnd > rangeStart else {
             throw CalendarServiceError.invalidDateRange
         }
@@ -32,13 +41,7 @@ final class CalendarService: ObservableObject {
                 .execute()
                 .value
 
-            return events.sorted { lhs, rhs in
-                if lhs.startsAt != rhs.startsAt {
-                    return lhs.startsAt < rhs.startsAt
-                }
-
-                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-            }
+            return deduplicatedEvents(events, sourceOperation: sourceOperation).sortedForCalendarDisplay()
         } catch {
             logCalendarError(error, rpcName: "get_calendar_events", homeId: homeId)
             throw CalendarServiceError.loadEventsFailed
@@ -51,12 +54,22 @@ final class CalendarService: ObservableObject {
             throw CalendarServiceError.invalidDateRange
         }
 
-        return try await fetchEvents(homeId: homeId, rangeStart: startOfDay, rangeEnd: startOfNextDay)
+        return try await fetchEvents(
+            homeId: homeId,
+            rangeStart: startOfDay,
+            rangeEnd: startOfNextDay,
+            sourceOperation: "fetchEventsForDay"
+        )
     }
 
     func fetchEventsForVisibleMonth(homeId: UUID, month: Date) async throws -> [CalendarEvent] {
         let range = try visibleMonthRange(containing: month)
-        return try await fetchEvents(homeId: homeId, rangeStart: range.start, rangeEnd: range.end)
+        return try await fetchEvents(
+            homeId: homeId,
+            rangeStart: range.start,
+            rangeEnd: range.end,
+            sourceOperation: "fetchEventsForVisibleMonth"
+        )
     }
 
     func fetchUpcomingEvents(homeId: UUID, from date: Date = Date(), limit: Int) async throws -> [CalendarEvent] {
@@ -68,17 +81,16 @@ final class CalendarService: ObservableObject {
             throw CalendarServiceError.invalidDateRange
         }
 
-        let events = try await fetchEvents(homeId: homeId, rangeStart: date, rangeEnd: rangeEnd)
+        let events = try await fetchEvents(
+            homeId: homeId,
+            rangeStart: date,
+            rangeEnd: rangeEnd,
+            sourceOperation: "fetchUpcomingEvents"
+        )
         return Array(
             events
-                .filter { $0.endsAt >= date }
-                .sorted { lhs, rhs in
-                    if lhs.startsAt != rhs.startsAt {
-                        return lhs.startsAt < rhs.startsAt
-                    }
-
-                    return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
-                }
+                .filter { $0.occurrenceEndsAt > date }
+                .sortedForCalendarDisplay()
                 .prefix(limit)
         )
     }
@@ -93,7 +105,8 @@ final class CalendarService: ObservableObject {
         isAllDay: Bool,
         timezone: String? = nil,
         categoryId: UUID? = nil,
-        assignedUserIds: [UUID] = []
+        assignedUserIds: [UUID] = [],
+        recurrence: CalendarRecurrenceInput = CalendarRecurrenceInput()
     ) async throws -> UUID {
         let normalizedInput = try normalizedEventInput(
             title: title,
@@ -102,7 +115,8 @@ final class CalendarService: ObservableObject {
             startsAt: startsAt,
             endsAt: endsAt,
             timezone: timezone,
-            assignedUserIds: assignedUserIds
+            assignedUserIds: assignedUserIds,
+            recurrence: recurrence
         )
 
         do {
@@ -121,7 +135,8 @@ final class CalendarService: ObservableObject {
                         isAllDay: isAllDay,
                         timezone: normalizedInput.timezone,
                         categoryId: categoryId,
-                        assignedUserIds: normalizedInput.assignedUserIds
+                        assignedUserIds: normalizedInput.assignedUserIds,
+                        recurrence: normalizedInput.recurrence
                     )
                 )
                 .execute()
@@ -146,7 +161,8 @@ final class CalendarService: ObservableObject {
         isAllDay: Bool,
         timezone: String? = nil,
         categoryId: UUID? = nil,
-        assignedUserIds: [UUID] = []
+        assignedUserIds: [UUID] = [],
+        recurrence: CalendarRecurrenceInput = CalendarRecurrenceInput()
     ) async throws {
         let normalizedInput = try normalizedEventInput(
             title: title,
@@ -155,7 +171,8 @@ final class CalendarService: ObservableObject {
             startsAt: startsAt,
             endsAt: endsAt,
             timezone: timezone,
-            assignedUserIds: assignedUserIds
+            assignedUserIds: assignedUserIds,
+            recurrence: recurrence
         )
 
         do {
@@ -174,7 +191,8 @@ final class CalendarService: ObservableObject {
                         isAllDay: isAllDay,
                         timezone: normalizedInput.timezone,
                         categoryId: categoryId,
-                        assignedUserIds: normalizedInput.assignedUserIds
+                        assignedUserIds: normalizedInput.assignedUserIds,
+                        recurrence: normalizedInput.recurrence
                     )
                 )
                 .execute()
@@ -198,6 +216,88 @@ final class CalendarService: ObservableObject {
                 .execute()
         } catch {
             logCalendarError(error, rpcName: "delete_calendar_event", eventId: eventId)
+            throw CalendarServiceError.deleteEventFailed
+        }
+    }
+
+    func updateOccurrence(
+        eventId: UUID,
+        occurrenceStartsAt: Date,
+        title: String,
+        startsAt: Date,
+        endsAt: Date,
+        timezone: String? = nil,
+        isAllDay: Bool,
+        notes: String? = nil,
+        location: String? = nil,
+        categoryId: UUID? = nil
+    ) async throws {
+        let normalizedInput = try normalizedEventInput(
+            title: title,
+            notes: notes,
+            location: location,
+            startsAt: startsAt,
+            endsAt: endsAt,
+            timezone: timezone,
+            assignedUserIds: [],
+            recurrence: CalendarRecurrenceInput()
+        )
+
+        do {
+            try await requireAuthenticatedSession()
+
+            try await client
+                .rpc(
+                    "update_calendar_event_occurrence",
+                    params: UpdateCalendarEventOccurrenceParameters(
+                        targetEventId: eventId,
+                        targetOccurrenceStartsAt: occurrenceStartsAt,
+                        title: normalizedInput.title,
+                        startsAt: startsAt,
+                        endsAt: endsAt,
+                        timezone: normalizedInput.timezone,
+                        isAllDay: isAllDay,
+                        notes: normalizedInput.notes,
+                        location: normalizedInput.location,
+                        categoryId: categoryId
+                    )
+                )
+                .execute()
+        } catch let error as CalendarServiceError {
+            throw error
+        } catch {
+            logCalendarError(error, rpcName: "update_calendar_event_occurrence", eventId: eventId)
+            if isOccurrenceNotPartOfSeriesError(error) {
+                throw CalendarServiceError.occurrenceNotPartOfSeries
+            }
+            if isPermissionError(error) {
+                throw CalendarServiceError.permissionDenied
+            }
+            throw CalendarServiceError.updateEventFailed
+        }
+    }
+
+    func deleteOccurrence(eventId: UUID, occurrenceStartsAt: Date) async throws {
+        do {
+            try await requireAuthenticatedSession()
+
+            try await client
+                .rpc(
+                    "delete_calendar_event_occurrence",
+                    params: DeleteCalendarEventOccurrenceParameters(
+                        targetEventId: eventId,
+                        targetOccurrenceStartsAt: occurrenceStartsAt
+                    )
+                )
+                .execute()
+        } catch {
+            logCalendarError(error, rpcName: "delete_calendar_event_occurrence", eventId: eventId)
+            if isOccurrenceNotPartOfSeriesError(error) {
+                throw CalendarServiceError.occurrenceNotPartOfSeries
+            }
+            if isPermissionError(error) {
+                throw CalendarServiceError.permissionDenied
+            }
             throw CalendarServiceError.deleteEventFailed
         }
     }
@@ -391,7 +491,8 @@ final class CalendarService: ObservableObject {
         startsAt: Date,
         endsAt: Date,
         timezone: String?,
-        assignedUserIds: [UUID]
+        assignedUserIds: [UUID],
+        recurrence: CalendarRecurrenceInput
     ) throws -> NormalizedCalendarEventInput {
         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -405,13 +506,56 @@ final class CalendarService: ObservableObject {
 
         let resolvedTimezone = normalizedTimezone(timezone)
         let uniqueAssignedUserIds = Array(Set(assignedUserIds)).sorted { $0.uuidString < $1.uuidString }
+        let normalizedRecurrence = try normalizedRecurrenceInput(
+            recurrence,
+            startsAt: startsAt,
+            timezone: resolvedTimezone
+        )
 
         return NormalizedCalendarEventInput(
             title: trimmedTitle,
             notes: normalizedOptionalString(notes),
             location: normalizedOptionalString(location),
             timezone: resolvedTimezone,
-            assignedUserIds: uniqueAssignedUserIds
+            assignedUserIds: uniqueAssignedUserIds,
+            recurrence: normalizedRecurrence
+        )
+    }
+
+    private func normalizedRecurrenceInput(
+        _ recurrence: CalendarRecurrenceInput,
+        startsAt: Date,
+        timezone: String
+    ) throws -> CalendarRecurrenceInput {
+        guard recurrence.interval > 0 else {
+            throw CalendarServiceError.invalidRepeatInterval
+        }
+
+        if let count = recurrence.count, count <= 0 {
+            throw CalendarServiceError.invalidRepeatInterval
+        }
+
+        guard recurrence.frequency != nil else {
+            return CalendarRecurrenceInput()
+        }
+
+        if let endDate = recurrence.endDate {
+            var recurrenceCalendar = Calendar(identifier: .gregorian)
+            recurrenceCalendar.timeZone = TimeZone(identifier: timezone) ?? .autoupdatingCurrent
+            let recurrenceEndDay = recurrenceCalendar.startOfDay(for: endDate)
+            let eventStartDay = recurrenceCalendar.startOfDay(for: startsAt)
+
+            guard recurrenceEndDay >= eventStartDay else {
+                throw CalendarServiceError.recurrenceEndDateBeforeStart
+            }
+        }
+
+        return CalendarRecurrenceInput(
+            frequency: recurrence.frequency,
+            interval: recurrence.interval,
+            daysOfWeek: recurrence.daysOfWeek?.sorted { $0.rawValue < $1.rawValue },
+            endDate: recurrence.endDate,
+            count: recurrence.endDate == nil ? recurrence.count : nil
         )
     }
 
@@ -455,6 +599,36 @@ final class CalendarService: ObservableObject {
         }
     }
 
+    private func deduplicatedEvents(_ events: [CalendarEvent], sourceOperation: String) -> [CalendarEvent] {
+        #if DEBUG
+        let duplicateGroups = Dictionary(grouping: events, by: \.occurrenceId)
+            .filter { $0.value.count > 1 }
+
+        for (occurrenceId, duplicates) in duplicateGroups {
+            for event in duplicates {
+                print(
+                    "Duplicate calendar occurrence received [\(sourceOperation)] occurrenceId=\(occurrenceId) eventId=\(event.eventId.uuidString) title=\(event.title) startsAt=\(event.occurrenceStartsAt)"
+                )
+            }
+        }
+        #endif
+
+        var indexedEvents: [String: CalendarEvent] = [:]
+
+        for event in events {
+            guard let existingEvent = indexedEvents[event.occurrenceId] else {
+                indexedEvents[event.occurrenceId] = event
+                continue
+            }
+
+            if event.updatedAt > existingEvent.updatedAt {
+                indexedEvents[event.occurrenceId] = event
+            }
+        }
+
+        return Array(indexedEvents.values)
+    }
+
     private func isCalendarCategoryPermissionError(_ error: Error) -> Bool {
         guard let postgrestError = error as? PostgrestError else {
             return false
@@ -463,6 +637,26 @@ final class CalendarService: ObservableObject {
         let message = postgrestError.message.lowercased()
         return message.contains("only home owners and admins")
             && message.contains("calendar categor")
+    }
+
+    private func isOccurrenceNotPartOfSeriesError(_ error: Error) -> Bool {
+        guard let postgrestError = error as? PostgrestError else {
+            return false
+        }
+
+        let message = postgrestError.message.lowercased()
+        return message.contains("occurrence") && message.contains("series")
+    }
+
+    private func isPermissionError(_ error: Error) -> Bool {
+        guard let postgrestError = error as? PostgrestError else {
+            return false
+        }
+
+        let message = postgrestError.message.lowercased()
+        return message.contains("permission")
+            || message.contains("not authorized")
+            || message.contains("not allowed")
     }
 
     private func visibleMonthRange(containing month: Date) throws -> (start: Date, end: Date) {
@@ -531,6 +725,11 @@ enum CalendarServiceError: LocalizedError, Equatable {
     case unauthenticated
     case emptyTitle
     case invalidDateRange
+    case invalidRecurrenceFrequency
+    case invalidRepeatInterval
+    case recurrenceEndDateBeforeStart
+    case occurrenceNotPartOfSeries
+    case permissionDenied
     case emptyCategoryName
     case invalidCategoryColor
     case loadEventsFailed
@@ -553,6 +752,16 @@ enum CalendarServiceError: LocalizedError, Equatable {
             return "Enter an event title."
         case .invalidDateRange:
             return "The event end time must be after the start time."
+        case .invalidRecurrenceFrequency:
+            return "Choose a valid repeat option."
+        case .invalidRepeatInterval:
+            return "Choose a valid repeat interval."
+        case .recurrenceEndDateBeforeStart:
+            return "The repeat end date must be on or after the event start date."
+        case .occurrenceNotPartOfSeries:
+            return "This occurrence is no longer part of the event series."
+        case .permissionDenied:
+            return "You do not have permission to change this event."
         case .emptyCategoryName:
             return "Enter a category name."
         case .invalidCategoryColor:
@@ -589,6 +798,7 @@ private struct NormalizedCalendarEventInput {
     let location: String?
     let timezone: String
     let assignedUserIds: [UUID]
+    let recurrence: CalendarRecurrenceInput
 }
 
 private struct CreateCalendarEventParameters: Encodable {
@@ -602,6 +812,11 @@ private struct CreateCalendarEventParameters: Encodable {
     let eventTimezone: String
     let eventCategoryId: UUID?
     let assignedUserIds: [UUID]
+    let eventRecurrenceFrequency: CalendarRecurrenceFrequency?
+    let eventRecurrenceInterval: Int
+    let eventRecurrenceDaysOfWeek: [Int]?
+    let eventRecurrenceEndDate: String?
+    let eventRecurrenceCount: Int?
 
     init(
         targetHomeId: UUID,
@@ -613,7 +828,8 @@ private struct CreateCalendarEventParameters: Encodable {
         isAllDay: Bool,
         timezone: String,
         categoryId: UUID?,
-        assignedUserIds: [UUID]
+        assignedUserIds: [UUID],
+        recurrence: CalendarRecurrenceInput
     ) {
         self.targetHomeId = targetHomeId
         self.eventTitle = title
@@ -625,6 +841,13 @@ private struct CreateCalendarEventParameters: Encodable {
         self.eventTimezone = timezone
         self.eventCategoryId = categoryId
         self.assignedUserIds = assignedUserIds
+        self.eventRecurrenceFrequency = recurrence.frequency
+        self.eventRecurrenceInterval = recurrence.frequency == nil ? 1 : recurrence.interval
+        self.eventRecurrenceDaysOfWeek = recurrence.frequency == nil ? nil : recurrence.daysOfWeek?.map(\.rawValue)
+        self.eventRecurrenceEndDate = recurrence.frequency == nil ? nil : recurrence.endDate.map {
+            CalendarDateOnlyFormatter.string(from: $0, timezone: timezone)
+        }
+        self.eventRecurrenceCount = recurrence.frequency == nil ? nil : recurrence.count
     }
 
     enum CodingKeys: String, CodingKey {
@@ -638,6 +861,11 @@ private struct CreateCalendarEventParameters: Encodable {
         case eventTimezone = "event_timezone"
         case eventCategoryId = "event_category_id"
         case assignedUserIds = "assigned_user_ids"
+        case eventRecurrenceFrequency = "event_recurrence_frequency"
+        case eventRecurrenceInterval = "event_recurrence_interval"
+        case eventRecurrenceDaysOfWeek = "event_recurrence_days_of_week"
+        case eventRecurrenceEndDate = "event_recurrence_end_date"
+        case eventRecurrenceCount = "event_recurrence_count"
     }
 }
 
@@ -652,6 +880,11 @@ private struct UpdateCalendarEventParameters: Encodable {
     let eventTimezone: String
     let eventCategoryId: UUID?
     let assignedUserIds: [UUID]
+    let eventRecurrenceFrequency: CalendarRecurrenceFrequency?
+    let eventRecurrenceInterval: Int
+    let eventRecurrenceDaysOfWeek: [Int]?
+    let eventRecurrenceEndDate: String?
+    let eventRecurrenceCount: Int?
 
     init(
         targetEventId: UUID,
@@ -663,7 +896,8 @@ private struct UpdateCalendarEventParameters: Encodable {
         isAllDay: Bool,
         timezone: String,
         categoryId: UUID?,
-        assignedUserIds: [UUID]
+        assignedUserIds: [UUID],
+        recurrence: CalendarRecurrenceInput
     ) {
         self.targetEventId = targetEventId
         self.eventTitle = title
@@ -675,6 +909,13 @@ private struct UpdateCalendarEventParameters: Encodable {
         self.eventTimezone = timezone
         self.eventCategoryId = categoryId
         self.assignedUserIds = assignedUserIds
+        self.eventRecurrenceFrequency = recurrence.frequency
+        self.eventRecurrenceInterval = recurrence.frequency == nil ? 1 : recurrence.interval
+        self.eventRecurrenceDaysOfWeek = recurrence.frequency == nil ? nil : recurrence.daysOfWeek?.map(\.rawValue)
+        self.eventRecurrenceEndDate = recurrence.frequency == nil ? nil : recurrence.endDate.map {
+            CalendarDateOnlyFormatter.string(from: $0, timezone: timezone)
+        }
+        self.eventRecurrenceCount = recurrence.frequency == nil ? nil : recurrence.count
     }
 
     enum CodingKeys: String, CodingKey {
@@ -688,6 +929,76 @@ private struct UpdateCalendarEventParameters: Encodable {
         case eventTimezone = "event_timezone"
         case eventCategoryId = "event_category_id"
         case assignedUserIds = "assigned_user_ids"
+        case eventRecurrenceFrequency = "event_recurrence_frequency"
+        case eventRecurrenceInterval = "event_recurrence_interval"
+        case eventRecurrenceDaysOfWeek = "event_recurrence_days_of_week"
+        case eventRecurrenceEndDate = "event_recurrence_end_date"
+        case eventRecurrenceCount = "event_recurrence_count"
+    }
+}
+
+private struct UpdateCalendarEventOccurrenceParameters: Encodable {
+    let targetEventId: UUID
+    let targetOccurrenceStartsAt: String
+    let eventTitle: String
+    let eventStartsAt: String
+    let eventEndsAt: String
+    let eventTimezone: String
+    let eventIsAllDay: Bool
+    let eventNotes: String?
+    let eventLocation: String?
+    let eventCategoryId: UUID?
+
+    init(
+        targetEventId: UUID,
+        targetOccurrenceStartsAt: Date,
+        title: String,
+        startsAt: Date,
+        endsAt: Date,
+        timezone: String,
+        isAllDay: Bool,
+        notes: String?,
+        location: String?,
+        categoryId: UUID?
+    ) {
+        self.targetEventId = targetEventId
+        self.targetOccurrenceStartsAt = CalendarRPCDateFormatter.string(from: targetOccurrenceStartsAt)
+        self.eventTitle = title
+        self.eventStartsAt = CalendarRPCDateFormatter.string(from: startsAt)
+        self.eventEndsAt = CalendarRPCDateFormatter.string(from: endsAt)
+        self.eventTimezone = timezone
+        self.eventIsAllDay = isAllDay
+        self.eventNotes = notes
+        self.eventLocation = location
+        self.eventCategoryId = categoryId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case targetEventId = "target_event_id"
+        case targetOccurrenceStartsAt = "target_occurrence_starts_at"
+        case eventTitle = "event_title"
+        case eventStartsAt = "event_starts_at"
+        case eventEndsAt = "event_ends_at"
+        case eventTimezone = "event_timezone"
+        case eventIsAllDay = "event_is_all_day"
+        case eventNotes = "event_notes"
+        case eventLocation = "event_location"
+        case eventCategoryId = "event_category_id"
+    }
+}
+
+private struct DeleteCalendarEventOccurrenceParameters: Encodable {
+    let targetEventId: UUID
+    let targetOccurrenceStartsAt: String
+
+    init(targetEventId: UUID, targetOccurrenceStartsAt: Date) {
+        self.targetEventId = targetEventId
+        self.targetOccurrenceStartsAt = CalendarRPCDateFormatter.string(from: targetOccurrenceStartsAt)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case targetEventId = "target_event_id"
+        case targetOccurrenceStartsAt = "target_occurrence_starts_at"
     }
 }
 

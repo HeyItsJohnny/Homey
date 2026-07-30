@@ -144,7 +144,8 @@ final class CalendarViewModel: ObservableObject {
         isAllDay: Bool,
         timezone: String,
         categoryId: UUID?,
-        assignedUserIds: [UUID]
+        assignedUserIds: [UUID],
+        recurrence: CalendarRecurrenceInput = CalendarRecurrenceInput()
     ) async -> Bool {
         guard let homeId else {
             errorMessage = "Choose a Home before adding events."
@@ -171,7 +172,8 @@ final class CalendarViewModel: ObservableObject {
                 isAllDay: isAllDay,
                 timezone: timezone,
                 categoryId: categoryId,
-                assignedUserIds: assignedUserIds
+                assignedUserIds: assignedUserIds,
+                recurrence: recurrence
             )
             selectedDate = calendar.startOfDay(for: normalizedRange.start)
             visibleMonth = normalizedRange.start
@@ -194,7 +196,8 @@ final class CalendarViewModel: ObservableObject {
         isAllDay: Bool,
         timezone: String,
         categoryId: UUID?,
-        assignedUserIds: [UUID]
+        assignedUserIds: [UUID],
+        recurrence: CalendarRecurrenceInput = CalendarRecurrenceInput()
     ) async -> Bool {
         guard !isSavingEvent else {
             return false
@@ -216,13 +219,60 @@ final class CalendarViewModel: ObservableObject {
                 isAllDay: isAllDay,
                 timezone: timezone,
                 categoryId: categoryId,
-                assignedUserIds: assignedUserIds
+                assignedUserIds: assignedUserIds,
+                recurrence: recurrence
             )
             await reload()
             NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
             return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func updateOccurrence(
+        eventId: UUID,
+        occurrenceStartsAt: Date,
+        title: String,
+        notes: String?,
+        location: String?,
+        startDate: Date,
+        endDate: Date,
+        isAllDay: Bool,
+        timezone: String,
+        categoryId: UUID?
+    ) async -> Bool {
+        guard !isSavingEvent else {
+            return false
+        }
+
+        let normalizedRange = normalizedEventRange(startDate: startDate, endDate: endDate, isAllDay: isAllDay)
+        isSavingEvent = true
+        errorMessage = nil
+        defer { isSavingEvent = false }
+
+        do {
+            try await calendarService.updateOccurrence(
+                eventId: eventId,
+                occurrenceStartsAt: occurrenceStartsAt,
+                title: title,
+                startsAt: normalizedRange.start,
+                endsAt: normalizedRange.end,
+                timezone: timezone,
+                isAllDay: isAllDay,
+                notes: notes,
+                location: location,
+                categoryId: categoryId
+            )
+            selectedDate = calendar.startOfDay(for: normalizedRange.start)
+            visibleMonth = normalizedRange.start
+            await reload()
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            await reload()
             return false
         }
     }
@@ -238,13 +288,36 @@ final class CalendarViewModel: ObservableObject {
 
         do {
             try await calendarService.deleteEvent(eventId: eventId)
-            events.removeAll { $0.id == eventId }
+            events.removeAll { $0.eventId == eventId }
             updateSelectedDayEvents()
             await reload()
             NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
             return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func deleteOccurrence(eventId: UUID, occurrenceStartsAt: Date) async -> Bool {
+        guard !isDeletingEvent else {
+            return false
+        }
+
+        isDeletingEvent = true
+        errorMessage = nil
+        defer { isDeletingEvent = false }
+
+        do {
+            try await calendarService.deleteOccurrence(eventId: eventId, occurrenceStartsAt: occurrenceStartsAt)
+            events.removeAll { $0.eventId == eventId && $0.occurrenceStartsAt == occurrenceStartsAt }
+            updateSelectedDayEvents()
+            await reload()
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            await reload()
             return false
         }
     }
@@ -396,19 +469,27 @@ extension CalendarEvent {
             return false
         }
 
-        return startsAt < startOfNextDay && endsAt >= startOfDay
+        return occurrenceStartsAt < startOfNextDay && occurrenceEndsAt > startOfDay
     }
 }
 
 extension Array where Element == CalendarEvent {
     func sortedForAgenda() -> [CalendarEvent] {
+        sortedForCalendarDisplay(allDayFirst: true)
+    }
+
+    func sortedForCalendarDisplay(allDayFirst: Bool = false) -> [CalendarEvent] {
         sorted { lhs, rhs in
-            if lhs.isAllDay != rhs.isAllDay {
+            if allDayFirst && lhs.isAllDay != rhs.isAllDay {
                 return lhs.isAllDay && !rhs.isAllDay
             }
 
-            if lhs.startsAt != rhs.startsAt {
-                return lhs.startsAt < rhs.startsAt
+            if lhs.occurrenceStartsAt != rhs.occurrenceStartsAt {
+                return lhs.occurrenceStartsAt < rhs.occurrenceStartsAt
+            }
+
+            if lhs.updatedAt != rhs.updatedAt {
+                return lhs.updatedAt > rhs.updatedAt
             }
 
             return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending

@@ -11,7 +11,7 @@ struct EventEditorView: View {
     let isDeleting: Bool
     let errorMessage: String?
     let onSave: (EventEditorDraft) async -> Bool
-    let onDelete: (() async -> Bool)?
+    let onDelete: ((EventEditorDeleteScope) async -> Bool)?
     let onSuccess: (EventEditorCompletion) -> Void
 
     @State private var title: String
@@ -22,8 +22,12 @@ struct EventEditorView: View {
     @State private var assignedUserIds: Set<UUID>
     @State private var location: String
     @State private var notes: String
+    @State private var recurrence: CalendarRecurrenceInput
+    @State private var recurrencePreset: EventRecurrencePreset
+    @State private var recurrenceEndMode: RecurrenceEndMode
     @State private var localErrorMessage: String?
     @State private var isShowingDeleteConfirmation = false
+    @State private var isShowingCustomRecurrence = false
 
     init(
         mode: EventEditorMode = .create,
@@ -34,7 +38,7 @@ struct EventEditorView: View {
         isDeleting: Bool = false,
         errorMessage: String?,
         onSave: @escaping (EventEditorDraft) async -> Bool,
-        onDelete: (() async -> Bool)? = nil,
+        onDelete: ((EventEditorDeleteScope) async -> Bool)? = nil,
         onSuccess: @escaping (EventEditorCompletion) -> Void
     ) {
         self.mode = mode
@@ -57,11 +61,15 @@ struct EventEditorView: View {
         _assignedUserIds = State(initialValue: Set(initialValues.assignedUserIds))
         _location = State(initialValue: initialValues.location)
         _notes = State(initialValue: initialValues.notes)
+        _recurrence = State(initialValue: initialValues.recurrence)
+        _recurrencePreset = State(initialValue: EventRecurrencePreset.matching(initialValues.recurrence, startDate: initialValues.startDate))
+        _recurrenceEndMode = State(initialValue: RecurrenceEndMode.mode(for: initialValues.recurrence))
     }
 
     private var canSave: Bool {
         !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && effectiveEndDate >= effectiveStartDate
+            && recurrenceValidationMessage == nil
             && !isSaving
             && !isDeleting
     }
@@ -126,14 +134,44 @@ struct EventEditorView: View {
                 }
             }
         }
+        .sheet(isPresented: $isShowingCustomRecurrence) {
+            CustomRecurrenceView(
+                recurrence: recurrence,
+                startDate: effectiveStartDate,
+                onCancel: {
+                    isShowingCustomRecurrence = false
+                },
+                onSave: { updatedRecurrence in
+                    recurrence = updatedRecurrence
+                    recurrencePreset = .custom
+                    recurrenceEndMode = RecurrenceEndMode.mode(for: updatedRecurrence)
+                    isShowingCustomRecurrence = false
+                }
+            )
+        }
         .presentationDetents([.large])
-        .alert("Delete Event?", isPresented: $isShowingDeleteConfirmation) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete Event", role: .destructive) {
-                Task { await deleteEvent() }
+        .confirmationDialog(
+            deleteDialogTitle,
+            isPresented: $isShowingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            if mode.event?.isRecurring == true {
+                Button("This Event Only", role: .destructive) {
+                    Task { await deleteEvent(scope: .singleOccurrence) }
+                }
+
+                Button("Entire Series", role: .destructive) {
+                    Task { await deleteEvent(scope: .entireSeries) }
+                }
+            } else {
+                Button("Delete Event", role: .destructive) {
+                    Task { await deleteEvent(scope: .entireSeries) }
+                }
             }
+
+            Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Delete this event? This action cannot be undone.")
+            Text(deleteDialogMessage)
         }
         .onChange(of: isAllDay) { _, newValue in
             if newValue {
@@ -143,6 +181,9 @@ struct EventEditorView: View {
                       let adjustedEnd = Calendar.autoupdatingCurrent.date(byAdding: .hour, value: 1, to: startDate) {
                 endDate = adjustedEnd
             }
+        }
+        .onChange(of: startDate) { _, newValue in
+            updateRecurrenceWeekdayForStartDate(newValue)
         }
     }
 
@@ -176,8 +217,16 @@ struct EventEditorView: View {
                 .accessibilityLabel("All-Day")
 
             dateSection
+            if mode.showsRecurrenceControls {
+                recurrenceSection
+                if recurrence.frequency != nil {
+                    recurrenceEndsSection
+                }
+            }
             categorySection
-            memberAssignmentSection
+            if mode.showsMemberAssignments {
+                memberAssignmentSection
+            }
 
             editorTextField(
                 label: "Location",
@@ -321,6 +370,106 @@ struct EventEditorView: View {
         }
     }
 
+    private var recurrenceSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionLabel("Repeat", supportingText: recurrenceSummary)
+
+            Menu {
+                ForEach(EventRecurrencePreset.allCases) { preset in
+                    Button {
+                        selectRecurrencePreset(preset)
+                    } label: {
+                        if recurrencePreset == preset {
+                            Label(preset.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(preset.displayName)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: recurrence.iconName)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                        .frame(width: 22)
+
+                    Text(recurrencePreset.displayName)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                    Spacer()
+
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                }
+                .padding(.horizontal, 16)
+                .frame(minHeight: 56)
+                .background(HomeyDashboardTheme.appBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isSaving || isDeleting)
+            .accessibilityLabel("Repeat, \(recurrenceSummary)")
+
+            if shouldShowSeriesWarning {
+                Text("Updating the repeat pattern edits the series and may reset individual occurrence changes.")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(HomeyDashboardTheme.selectedSidebarBackground.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+        }
+    }
+
+    private var recurrenceEndsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionLabel("Ends", supportingText: recurrenceEndSummary)
+
+            VStack(alignment: .leading, spacing: 14) {
+                Picker("Ends", selection: recurrenceEndModeBinding) {
+                    ForEach(RecurrenceEndMode.allCases) { mode in
+                        Text(mode.displayName).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                switch recurrenceEndMode {
+                case .never:
+                    EmptyView()
+                case .onDate:
+                    DatePicker(
+                        "End Date",
+                        selection: recurrenceEndDateBinding,
+                        in: Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate)...,
+                        displayedComponents: .date
+                    )
+                    .datePickerStyle(.compact)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                case .afterCount:
+                    Stepper(value: recurrenceCountBinding, in: 1...999) {
+                        Text("\(recurrence.count ?? 10) \((recurrence.count ?? 10) == 1 ? "occurrence" : "occurrences")")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    }
+                    .tint(HomeyDashboardTheme.warmBrown)
+                }
+            }
+            .padding(16)
+            .background(HomeyDashboardTheme.appBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+            }
+        }
+    }
+
     private var memberAssignmentSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             sectionLabel("Assigned Members", supportingText: "Optional")
@@ -388,6 +537,114 @@ struct EventEditorView: View {
         Color(hex: selectedCategory?.colorHex) ?? HomeyDashboardTheme.warmBrown.opacity(0.45)
     }
 
+    private var recurrenceSummary: String {
+        EventRecurrenceSummary.summary(for: recurrence, startDate: effectiveStartDate)
+    }
+
+    private var recurrenceEndSummary: String {
+        switch recurrenceEndMode {
+        case .never:
+            return "Never ends"
+        case .onDate:
+            return "Ends \(EventRecurrenceSummary.endDateString(from: recurrence.endDate ?? effectiveStartDate))"
+        case .afterCount:
+            let count = recurrence.count ?? 10
+            return "Ends after \(count) \(count == 1 ? "occurrence" : "occurrences")"
+        }
+    }
+
+    private var recurrenceEndModeBinding: Binding<RecurrenceEndMode> {
+        Binding(
+            get: { recurrenceEndMode },
+            set: { updateRecurrenceEndMode($0) }
+        )
+    }
+
+    private var recurrenceEndDateBinding: Binding<Date> {
+        Binding(
+            get: { recurrence.endDate ?? Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate) },
+            set: { newValue in
+                recurrence.endDate = max(
+                    Calendar.autoupdatingCurrent.startOfDay(for: newValue),
+                    Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate)
+                )
+                recurrence.count = nil
+            }
+        )
+    }
+
+    private var recurrenceCountBinding: Binding<Int> {
+        Binding(
+            get: { min(max(recurrence.count ?? 10, 1), 999) },
+            set: { newValue in
+                recurrence.count = min(max(newValue, 1), 999)
+                recurrence.endDate = nil
+            }
+        )
+    }
+
+    private var initialRecurrence: CalendarRecurrenceInput {
+        EventEditorInitialValues.values(for: mode, selectedDate: selectedDate).recurrence
+    }
+
+    private var shouldShowSeriesWarning: Bool {
+        mode.event?.isRecurring == true && recurrence != initialRecurrence
+    }
+
+    private var deleteDialogTitle: String {
+        mode.event?.isRecurring == true ? "Delete Recurring Event" : "Delete Event?"
+    }
+
+    private var deleteDialogMessage: String {
+        mode.event?.isRecurring == true
+            ? "Choose whether to delete only this occurrence or the entire series."
+            : "Delete this event? This action cannot be undone."
+    }
+
+    private var recurrenceValidationMessage: String? {
+        guard recurrence.frequency != nil else {
+            return nil
+        }
+
+        guard recurrence.interval >= 1 else {
+            return "Repeat interval must be at least 1."
+        }
+
+        if recurrence.frequency == .weekly && (recurrence.daysOfWeek?.isEmpty ?? true) {
+            return "Choose at least one weekday for weekly repeats."
+        }
+
+        if recurrenceEndMode == .onDate,
+           let endDate = recurrence.endDate,
+           Calendar.autoupdatingCurrent.startOfDay(for: endDate) < Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate) {
+            return "Repeat end date cannot be before the event starts."
+        }
+
+        if recurrenceEndMode == .afterCount, let count = recurrence.count, count < 1 {
+            return "Repeat count must be at least 1."
+        }
+
+        if recurrenceEndMode == .afterCount, let count = recurrence.count, count > 999 {
+            return "Repeat count must be 999 or fewer."
+        }
+
+        return nil
+    }
+
+    private var normalizedRecurrence: CalendarRecurrenceInput {
+        guard let frequency = recurrence.frequency else {
+            return CalendarRecurrenceInput()
+        }
+
+        return CalendarRecurrenceInput(
+            frequency: frequency,
+            interval: max(1, recurrence.interval),
+            daysOfWeek: frequency == .weekly ? recurrence.daysOfWeek?.sortedByISOValue() : nil,
+            endDate: recurrenceEndMode == .onDate ? recurrence.endDate : nil,
+            count: recurrenceEndMode == .afterCount ? recurrence.count : nil
+        )
+    }
+
     private func editorTextField(label: String, supportingText: String, text: Binding<String>, axis: Axis) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             sectionLabel(label, supportingText: supportingText)
@@ -430,6 +687,68 @@ struct EventEditorView: View {
         }
     }
 
+    private func selectRecurrencePreset(_ preset: EventRecurrencePreset) {
+        if preset == .custom {
+            if recurrence.frequency == nil {
+                recurrence = EventRecurrencePreset.everyWeek.recurrence(for: effectiveStartDate)
+                recurrenceEndMode = .never
+            }
+            isShowingCustomRecurrence = true
+            return
+        }
+
+        let previousEndMode = recurrenceEndMode
+        let previousEndDate = recurrence.endDate
+        let previousCount = recurrence.count
+        recurrencePreset = preset
+        recurrence = preset.recurrence(for: effectiveStartDate)
+
+        if preset == .doesNotRepeat {
+            recurrenceEndMode = .never
+        } else {
+            applyRecurrenceEndValues(mode: previousEndMode, endDate: previousEndDate, count: previousCount)
+        }
+    }
+
+    private func updateRecurrenceWeekdayForStartDate(_ date: Date) {
+        guard recurrencePreset == .everyWeek || recurrencePreset == .everyTwoWeeks else {
+            if recurrenceEndMode == .onDate,
+               let endDate = recurrence.endDate,
+               Calendar.autoupdatingCurrent.startOfDay(for: endDate) < Calendar.autoupdatingCurrent.startOfDay(for: date) {
+                recurrence.endDate = Calendar.autoupdatingCurrent.startOfDay(for: date)
+            }
+            return
+        }
+
+        let previousEndMode = recurrenceEndMode
+        let previousEndDate = recurrence.endDate
+        let previousCount = recurrence.count
+        recurrence = recurrencePreset.recurrence(for: date)
+        applyRecurrenceEndValues(mode: previousEndMode, endDate: previousEndDate, count: previousCount)
+    }
+
+    private func updateRecurrenceEndMode(_ mode: RecurrenceEndMode) {
+        recurrenceEndMode = mode
+        applyRecurrenceEndValues(mode: mode, endDate: recurrence.endDate, count: recurrence.count)
+    }
+
+    private func applyRecurrenceEndValues(mode: RecurrenceEndMode, endDate: Date?, count: Int?) {
+        switch mode {
+        case .never:
+            recurrence.endDate = nil
+            recurrence.count = nil
+        case .onDate:
+            recurrence.endDate = max(
+                endDate.map { Calendar.autoupdatingCurrent.startOfDay(for: $0) } ?? Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate),
+                Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate)
+            )
+            recurrence.count = nil
+        case .afterCount:
+            recurrence.endDate = nil
+            recurrence.count = min(max(count ?? 10, 1), 999)
+        }
+    }
+
     private func save() async {
         localErrorMessage = nil
 
@@ -443,6 +762,11 @@ struct EventEditorView: View {
             return
         }
 
+        if let recurrenceValidationMessage {
+            localErrorMessage = recurrenceValidationMessage
+            return
+        }
+
         let draft = EventEditorDraft(
             title: title,
             notes: notes,
@@ -452,7 +776,8 @@ struct EventEditorView: View {
             isAllDay: isAllDay,
             timezone: TimeZone.autoupdatingCurrent.identifier,
             categoryId: selectedCategoryId,
-            assignedUserIds: Array(assignedUserIds)
+            assignedUserIds: Array(assignedUserIds),
+            recurrence: normalizedRecurrence
         )
 
         if await onSave(draft) {
@@ -461,14 +786,14 @@ struct EventEditorView: View {
         }
     }
 
-    private func deleteEvent() async {
+    private func deleteEvent(scope: EventEditorDeleteScope) async {
         guard let onDelete else {
             return
         }
 
         localErrorMessage = nil
 
-        if await onDelete() {
+        if await onDelete(scope) {
             onSuccess(.deleted)
             dismiss()
         }
@@ -485,19 +810,44 @@ struct EventEditorDraft {
     let timezone: String
     let categoryId: UUID?
     let assignedUserIds: [UUID]
+    let recurrence: CalendarRecurrenceInput
 }
 
 enum EventEditorMode {
     case create
-    case edit(CalendarEvent)
+    case edit(CalendarEvent, scope: EventEditorEditScope = .entireSeries)
 
     var event: CalendarEvent? {
         switch self {
         case .create:
             return nil
-        case .edit(let event):
+        case .edit(let event, _):
             return event
         }
+    }
+
+    var editScope: EventEditorEditScope {
+        switch self {
+        case .create:
+            return .entireSeries
+        case .edit(_, let scope):
+            return scope
+        }
+    }
+
+    var showsRecurrenceControls: Bool {
+        switch self {
+        case .create:
+            return true
+        case .edit(_, .entireSeries):
+            return true
+        case .edit(_, .singleOccurrence):
+            return false
+        }
+    }
+
+    var showsMemberAssignments: Bool {
+        editScope != .singleOccurrence
     }
 
     var title: String {
@@ -513,6 +863,10 @@ enum EventEditorMode {
         switch self {
         case .create:
             return "Add an event to the shared Home calendar."
+        case .edit(let event, .entireSeries) where event.isRecurring:
+            return "Editing Entire Series"
+        case .edit(_, .singleOccurrence):
+            return "Update only this occurrence."
         case .edit:
             return "Update this shared Home calendar event."
         }
@@ -522,10 +876,22 @@ enum EventEditorMode {
         switch self {
         case .create:
             return "Save Event"
+        case .edit(let event, .entireSeries) where event.isRecurring:
+            return "Update Series"
         case .edit:
             return "Update Event"
         }
     }
+}
+
+enum EventEditorEditScope {
+    case singleOccurrence
+    case entireSeries
+}
+
+enum EventEditorDeleteScope {
+    case singleOccurrence
+    case entireSeries
 }
 
 enum EventEditorCompletion {
@@ -543,6 +909,7 @@ private struct EventEditorInitialValues {
     let assignedUserIds: [UUID]
     let location: String
     let notes: String
+    let recurrence: CalendarRecurrenceInput
 
     static func values(for mode: EventEditorMode, selectedDate: Date, calendar: Calendar = .autoupdatingCurrent) -> EventEditorInitialValues {
         switch mode {
@@ -556,32 +923,42 @@ private struct EventEditorInitialValues {
                 categoryId: nil,
                 assignedUserIds: [],
                 location: "",
-                notes: ""
+                notes: "",
+                recurrence: CalendarRecurrenceInput()
             )
-        case .edit(let event):
+        case .edit(let event, let scope):
+            let sourceStartDate = scope == .singleOccurrence ? event.occurrenceStartsAt : event.startsAt
+            let sourceEndDate = scope == .singleOccurrence ? event.occurrenceEndsAt : event.endsAt
             let displayEndDate: Date
             if event.isAllDay,
-               let previousDay = calendar.date(byAdding: .day, value: -1, to: event.endsAt) {
-                displayEndDate = max(calendar.startOfDay(for: previousDay), calendar.startOfDay(for: event.startsAt))
+               let previousDay = calendar.date(byAdding: .day, value: -1, to: sourceEndDate) {
+                displayEndDate = max(calendar.startOfDay(for: previousDay), calendar.startOfDay(for: sourceStartDate))
             } else {
-                displayEndDate = event.endsAt
+                displayEndDate = sourceEndDate
             }
 
             return EventEditorInitialValues(
                 title: event.title,
                 isAllDay: event.isAllDay,
-                startDate: event.startsAt,
+                startDate: sourceStartDate,
                 endDate: displayEndDate,
                 categoryId: event.categoryId,
-                assignedUserIds: event.assignedUserIds,
+                assignedUserIds: scope == .singleOccurrence ? [] : event.assignedUserIds,
                 location: event.location ?? "",
-                notes: event.notes ?? ""
+                notes: event.notes ?? "",
+                recurrence: scope == .singleOccurrence ? CalendarRecurrenceInput() : CalendarRecurrenceInput(
+                    frequency: event.recurrenceFrequency,
+                    interval: event.recurrenceInterval,
+                    daysOfWeek: event.recurrenceDaysOfWeek,
+                    endDate: event.recurrenceEndDate,
+                    count: event.recurrenceCount
+                )
             )
         }
     }
 }
 
-private struct EventEditorErrorBanner: View {
+struct EventEditorErrorBanner: View {
     let message: String
 
     var body: some View {
