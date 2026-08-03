@@ -5,12 +5,18 @@ struct HomeDashboardView: View {
     @EnvironmentObject private var homeService: HomeService
 
     @State private var selectedDestination: DashboardDestination = .home
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var isShowingSettingsMenu = false
     @State private var calendarFocusDate: Date?
 
     var body: some View {
-        NavigationSplitView {
-            HomeSidebarView(selectedDestination: $selectedDestination)
+        NavigationSplitView(columnVisibility: $columnVisibility) {
+            HomeSidebarView(
+                selectedDestination: $selectedDestination,
+                onSelectDestination: {
+                    columnVisibility = .detailOnly
+                }
+            )
                 .navigationSplitViewColumnWidth(min: 260, ideal: 280, max: 320)
         } detail: {
             ZStack(alignment: .topTrailing) {
@@ -18,6 +24,8 @@ struct HomeDashboardView: View {
                     .ignoresSafeArea()
 
                 selectedContent
+                    .environment(\.homePermissions, homeService.homePermissions(currentUser: authenticationService.currentUser))
+                    .environment(\.homePermissionResolution, homeService.permissionResolutionState(currentUser: authenticationService.currentUser))
 
                 SettingsGearButton(
                     selectedDestination: $selectedDestination,
@@ -50,8 +58,15 @@ struct HomeDashboardView: View {
             CalendarView(focusDate: calendarFocusDate)
         case .lists:
             ListsView()
+        case .projects:
+            ProjectsView()
+        case .trips:
+            TripsView()
         case .meals:
-            MealsView()
+            MealsView { focusDate in
+                calendarFocusDate = focusDate
+                selectedDestination = .calendar
+            }
         case .groceries:
             GroceriesView()
         case .messages:
@@ -165,6 +180,7 @@ private struct DashboardContentView: View {
                 HStack(alignment: .top, spacing: 18) {
                     UpcomingEventsCard(
                         events: calendarViewModel.upcomingEvents,
+                        categories: calendarViewModel.categories,
                         isLoading: calendarViewModel.isLoading,
                         onOpenCalendar: onOpenCalendar
                     )
@@ -246,6 +262,7 @@ private struct DashboardHeader: View {
 
 struct HomeSidebarView: View {
     @Binding var selectedDestination: DashboardDestination
+    var onSelectDestination: () -> Void = {}
 
     var body: some View {
         ZStack {
@@ -263,6 +280,7 @@ struct HomeSidebarView: View {
                             isSelected: selectedDestination == item
                         ) {
                             selectedDestination = item
+                            onSelectDestination()
                         }
                     }
                 }
@@ -584,6 +602,7 @@ struct DashboardSectionCard<Content: View>: View {
 
 struct UpcomingEventsCard: View {
     var events: [CalendarEvent] = []
+    var categories: [CalendarCategory] = []
     var isLoading = false
     var onOpenCalendar: (Date?) -> Void = { _ in }
 
@@ -604,7 +623,7 @@ struct UpcomingEventsCard: View {
                         Button {
                             onOpenCalendar(event.occurrenceStartsAt)
                         } label: {
-                            UpcomingEventRow(event: event)
+                            UpcomingEventRow(event: event, categories: categories)
                         }
                         .buttonStyle(.plain)
 
@@ -627,6 +646,7 @@ struct UpcomingEventsCard: View {
 
 private struct UpcomingEventRow: View {
     let event: CalendarEvent
+    let categories: [CalendarCategory]
 
     var body: some View {
         HStack(spacing: 13) {
@@ -662,7 +682,7 @@ private struct UpcomingEventRow: View {
     }
 
     private var statusColor: Color {
-        Color(hex: event.categoryColorHex) ?? HomeyDashboardTheme.lavenderAccent
+        CalendarEventColorResolver.color(for: event, categories: categories, fallback: HomeyDashboardTheme.lavenderAccent)
     }
 
     private var subtitle: String {
@@ -1004,6 +1024,8 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
     case chores
     case calendar
     case lists
+    case projects
+    case trips
     case meals
     case groceries
     case messages
@@ -1020,10 +1042,12 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
 
     static let sidebarItems: [DashboardDestination] = [
         .home,
-        .chores,
         .calendar,
-        .lists,
         .meals,
+        .chores,
+        .lists,
+        .projects,
+        .trips,
         .groceries,
         .messages,
         .settings
@@ -1039,6 +1063,10 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
             "Calendar"
         case .lists:
             "Lists"
+        case .projects:
+            "Projects"
+        case .trips:
+            "Trips"
         case .meals:
             "Meals"
         case .groceries:
@@ -1074,6 +1102,10 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
             "calendar"
         case .lists:
             "list.bullet.rectangle"
+        case .projects:
+            "folder.fill"
+        case .trips:
+            "airplane"
         case .meals:
             "fork.knife"
         case .groceries:

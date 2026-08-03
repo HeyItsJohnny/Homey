@@ -110,29 +110,6 @@ struct EventEditorView: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        dismiss()
-                    }
-                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
-                    .disabled(isSaving || isDeleting)
-                }
-
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        Task { await save() }
-                    } label: {
-                        if isSaving {
-                            ProgressView()
-                                .tint(HomeyDashboardTheme.warmBrown)
-                        } else {
-                            Text(mode.saveTitle)
-                        }
-                    }
-                    .disabled(!canSave)
-                }
-            }
         }
         .sheet(isPresented: $isShowingCustomRecurrence) {
             CustomRecurrenceView(
@@ -246,20 +223,7 @@ struct EventEditorView: View {
                 EventEditorErrorBanner(message: message)
             }
 
-            Button {
-                Task { await save() }
-            } label: {
-                if isSaving {
-                    ProgressView()
-                        .tint(.white)
-                        .accessibilityLabel("Saving event")
-                } else {
-                    Text(mode.saveTitle)
-                }
-            }
-            .buttonStyle(DashboardPrimaryButtonStyle())
-            .disabled(!canSave)
-            .accessibilityLabel(mode.saveTitle)
+            bottomActionButtons
 
             if mode.event != nil {
                 Button(role: .destructive) {
@@ -291,6 +255,37 @@ struct EventEditorView: View {
         }
         .padding(28)
         .dashboardCard(cornerRadius: 30)
+    }
+
+    private var bottomActionButtons: some View {
+        HStack(spacing: 12) {
+            Button("Cancel") {
+                dismiss()
+            }
+            .buttonStyle(.plain)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            .frame(maxWidth: .infinity, minHeight: 52)
+            .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 17, style: .continuous).stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+            .disabled(isSaving || isDeleting)
+
+            Button {
+                Task { await save() }
+            } label: {
+                if isSaving {
+                    ProgressView()
+                        .tint(.white)
+                        .accessibilityLabel("Saving event")
+                } else {
+                    Text(mode.saveTitle)
+                }
+            }
+            .buttonStyle(DashboardPrimaryButtonStyle())
+            .frame(maxWidth: .infinity)
+            .disabled(!canSave)
+            .accessibilityLabel(mode.saveTitle)
+        }
     }
 
     private var dateSection: some View {

@@ -307,17 +307,85 @@ final class CalendarService: ObservableObject {
             try await requireAuthenticatedSession()
 
             let categories: [CalendarCategory] = try await client
-                .rpc(
-                    "get_calendar_categories",
-                    params: GetCalendarCategoriesParameters(targetHomeId: homeId)
-                )
+                .from("calendar_categories")
+                .select()
+                .eq("home_id", value: homeId.uuidString)
                 .execute()
                 .value
 
             return sortedCategories(categories)
         } catch {
-            logCalendarError(error, rpcName: "get_calendar_categories", homeId: homeId)
+            logCalendarError(error, rpcName: "calendar_categories.select", homeId: homeId)
             throw CalendarServiceError.loadCategoriesFailed
+        }
+    }
+
+    func resolveMealCategory(homeId: UUID) async throws -> CalendarCategory {
+        if let category = try await fetchMealSystemCategory(homeId: homeId) {
+            logMealCategoryResolution(homeId: homeId, categoryId: category.id, repaired: false)
+            return category
+        }
+
+        if let ensuredCategory = try await ensureMealSystemCategoryViaRPC(homeId: homeId) {
+            logMealCategoryResolution(homeId: homeId, categoryId: ensuredCategory.id, repaired: true)
+            return ensuredCategory
+        }
+
+        do {
+            try await bootstrapMealSystemCategory(homeId: homeId)
+        } catch {
+            logCalendarError(error, rpcName: "calendar_categories.bootstrap_meal", homeId: homeId)
+        }
+
+        if let repairedCategory = try await fetchMealSystemCategory(homeId: homeId) {
+            logMealCategoryResolution(homeId: homeId, categoryId: repairedCategory.id, repaired: true)
+            return repairedCategory
+        }
+
+        throw CalendarServiceError.mealCategoryUnavailable
+    }
+
+    func ensureDefaultSystemCategories(homeId: UUID) async {
+        do {
+            try await requireAuthenticatedSession()
+            let userId = try await authenticatedUserId()
+            let existingCategories = try await fetchCategories(homeId: homeId)
+            let existingSystemKeys = Set(existingCategories.compactMap(\.systemCategoryKey))
+            let missingDefaults = CalendarSystemCategoryDefault.allCases.filter { !existingSystemKeys.contains($0.key) }
+
+            guard !missingDefaults.isEmpty else {
+                return
+            }
+
+            #if DEBUG
+            print("Ensuring default calendar system categories")
+            print("selected_home_id: \(homeId.uuidString)")
+            print("missing_system_keys: \(missingDefaults.map { $0.key.rawValue }.joined(separator: ","))")
+            #endif
+
+            for categoryDefault in missingDefaults {
+                let payload = CreateSystemCalendarCategoryPayload(
+                    homeId: homeId,
+                    name: categoryDefault.name,
+                    colorHex: categoryDefault.colorHex,
+                    iconName: categoryDefault.iconName,
+                    sortOrder: categoryDefault.sortOrder,
+                    systemKey: categoryDefault.key.rawValue,
+                    isSystem: true,
+                    createdBy: userId
+                )
+
+                do {
+                    try await client
+                        .from("calendar_categories")
+                        .insert(payload)
+                        .execute()
+                } catch {
+                    logCalendarError(error, rpcName: "calendar_categories.insert_system_category", homeId: homeId)
+                }
+            }
+        } catch {
+            logCalendarError(error, rpcName: "calendar_categories.ensure_default_system_categories", homeId: homeId)
         }
     }
 
@@ -370,6 +438,30 @@ final class CalendarService: ObservableObject {
         do {
             try await requireAuthenticatedSession()
 
+            if let existingCategory = try await fetchCategory(categoryId: categoryId),
+               existingCategory.capabilities.canChangeColor,
+               !existingCategory.capabilities.canRename,
+               !existingCategory.capabilities.canChangeIcon {
+                guard trimmedName == existingCategory.name,
+                      trimmedIconName == normalizedOptionalString(existingCategory.iconName) else {
+                    throw CalendarServiceError.systemCategoryEditProtected
+                }
+
+                try await client
+                    .from("calendar_categories")
+                    .update(UpdateSystemCalendarCategoryPayload(colorHex: trimmedColorHex))
+                    .eq("id", value: categoryId.uuidString)
+                    .execute()
+                #if DEBUG
+                print("System calendar category color updated")
+                print("category_id: \(categoryId.uuidString)")
+                print("system_key: \(existingCategory.systemKey ?? "nil")")
+                print("old_color_hex: \(existingCategory.colorHex)")
+                print("new_color_hex: \(trimmedColorHex)")
+                #endif
+                return
+            }
+
             try await client
                 .rpc(
                     "update_calendar_category",
@@ -381,6 +473,14 @@ final class CalendarService: ObservableObject {
                     )
                 )
                 .execute()
+            if let updatedCategory = try? await fetchCategory(categoryId: categoryId) {
+                #if DEBUG
+                print("Calendar category updated")
+                print("category_id: \(categoryId.uuidString)")
+                print("system_key: \(updatedCategory.systemKey ?? "nil")")
+                print("new_color_hex: \(trimmedColorHex)")
+                #endif
+            }
         } catch let error as CalendarServiceError {
             throw error
         } catch {
@@ -396,6 +496,11 @@ final class CalendarService: ObservableObject {
         do {
             try await requireAuthenticatedSession()
 
+            if let existingCategory = try await fetchCategory(categoryId: categoryId),
+               !existingCategory.capabilities.canDelete {
+                throw CalendarServiceError.systemCategoryProtected
+            }
+
             try await client
                 .rpc(
                     "delete_calendar_category",
@@ -406,6 +511,9 @@ final class CalendarService: ObservableObject {
             logCalendarError(error, rpcName: "delete_calendar_category", categoryId: categoryId)
             if isCalendarCategoryPermissionError(error) {
                 throw CalendarServiceError.categoryPermissionDenied
+            }
+            if let error = error as? CalendarServiceError {
+                throw error
             }
             throw CalendarServiceError.deleteCategoryFailed
         }
@@ -482,6 +590,10 @@ final class CalendarService: ObservableObject {
 
     private func requireAuthenticatedSession() async throws {
         _ = try await client.auth.session
+    }
+
+    private func authenticatedUserId() async throws -> UUID {
+        try await client.auth.session.user.id
     }
 
     private func normalizedEventInput(
@@ -597,6 +709,90 @@ final class CalendarService: ObservableObject {
 
             return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
+    }
+
+    private func fetchCategory(categoryId: UUID) async throws -> CalendarCategory? {
+        let categories: [CalendarCategory] = try await client
+            .from("calendar_categories")
+            .select()
+            .eq("id", value: categoryId.uuidString)
+            .limit(1)
+            .execute()
+            .value
+
+        return categories.first
+    }
+
+    private func fetchMealSystemCategory(homeId: UUID) async throws -> CalendarCategory? {
+        let categories: [CalendarCategory] = try await client
+            .from("calendar_categories")
+            .select()
+            .eq("home_id", value: homeId.uuidString)
+            .eq("system_key", value: CalendarSystemCategoryKey.meal.rawValue)
+            .eq("is_system", value: true)
+            .limit(2)
+            .execute()
+            .value
+
+        if categories.count > 1 {
+            #if DEBUG
+            print("Duplicate meal system categories detected for Home \(homeId)")
+            #endif
+        }
+
+        return categories.first
+    }
+
+    private func ensureMealSystemCategoryViaRPC(homeId: UUID) async throws -> CalendarCategory? {
+        do {
+            let categoryId: UUID = try await client
+                .rpc(
+                    "ensure_meal_calendar_category",
+                    params: EnsureMealCalendarCategoryParameters(requestedHomeId: homeId)
+                )
+                .execute()
+                .value
+
+            return try await fetchCategory(categoryId: categoryId)
+        } catch {
+            logCalendarError(error, rpcName: "ensure_meal_calendar_category", homeId: homeId)
+            return nil
+        }
+    }
+
+    private func bootstrapMealSystemCategory(homeId: UUID) async throws {
+        let userId = try await authenticatedUserId()
+        let existingCategories = try await fetchCategories(homeId: homeId)
+        let sortOrder = (existingCategories.map(\.sortOrder).max() ?? -1) + 1
+        let payload = CreateSystemCalendarCategoryPayload(
+            homeId: homeId,
+            name: "Meal",
+            colorHex: "A0643A",
+            iconName: "fork.knife",
+            sortOrder: sortOrder,
+            systemKey: CalendarSystemCategoryKey.meal.rawValue,
+            isSystem: true,
+            createdBy: userId
+        )
+
+        do {
+            try await client
+                .from("calendar_categories")
+                .insert(payload)
+                .execute()
+        } catch {
+            logCalendarError(error, rpcName: "calendar_categories.insert_meal_system_category", homeId: homeId)
+            throw error
+        }
+    }
+
+    private func logMealCategoryResolution(homeId: UUID, categoryId: UUID, repaired: Bool) {
+        #if DEBUG
+        print("Meal calendar category resolved")
+        print("selected_home_id: \(homeId.uuidString)")
+        print("resolved_meal_category_id: \(categoryId.uuidString)")
+        print("meal_category_repaired: \(repaired)")
+        #endif
     }
 
     private func deduplicatedEvents(_ events: [CalendarEvent], sourceOperation: String) -> [CalendarEvent] {
@@ -742,6 +938,9 @@ enum CalendarServiceError: LocalizedError, Equatable {
     case deleteCategoryFailed
     case reorderCategoriesFailed
     case categoryPermissionDenied
+    case systemCategoryEditProtected
+    case systemCategoryProtected
+    case mealCategoryUnavailable
     case realtimeSubscriptionFailed
 
     var errorDescription: String? {
@@ -786,6 +985,12 @@ enum CalendarServiceError: LocalizedError, Equatable {
             return "We could not reorder calendar categories."
         case .categoryPermissionDenied:
             return "You no longer have permission to manage Calendar Categories."
+        case .systemCategoryEditProtected:
+            return "This is a Homey system category. Its name and icon are fixed, but you can change its color."
+        case .systemCategoryProtected:
+            return "Homey system categories cannot be deleted."
+        case .mealCategoryUnavailable:
+            return "Homey could not prepare the Meal calendar category for this Home."
         case .realtimeSubscriptionFailed:
             return "We could not start live calendar updates."
         }
@@ -799,6 +1004,27 @@ private struct NormalizedCalendarEventInput {
     let timezone: String
     let assignedUserIds: [UUID]
     let recurrence: CalendarRecurrenceInput
+}
+
+private struct CalendarSystemCategoryDefault: CaseIterable {
+    let key: CalendarSystemCategoryKey
+    let name: String
+    let colorHex: String
+    let iconName: String
+    let sortOrder: Int
+
+    static let allCases: [CalendarSystemCategoryDefault] = [
+        CalendarSystemCategoryDefault(key: .family, name: "Family", colorHex: "4F7CAC", iconName: "house.fill", sortOrder: 0),
+        CalendarSystemCategoryDefault(key: .school, name: "School", colorHex: "F2C14E", iconName: "graduationcap.fill", sortOrder: 1),
+        CalendarSystemCategoryDefault(key: .work, name: "Work", colorHex: "577590", iconName: "briefcase.fill", sortOrder: 2),
+        CalendarSystemCategoryDefault(key: .sports, name: "Sports", colorHex: "5C946E", iconName: "figure.run", sortOrder: 3),
+        CalendarSystemCategoryDefault(key: .appointment, name: "Appointment", colorHex: "43AA8B", iconName: "cross.case.fill", sortOrder: 4),
+        CalendarSystemCategoryDefault(key: .meal, name: "Meal", colorHex: "A0643A", iconName: "fork.knife", sortOrder: 5),
+        CalendarSystemCategoryDefault(key: .chore, name: "Chore", colorHex: "90BE6D", iconName: "checklist", sortOrder: 6),
+        CalendarSystemCategoryDefault(key: .birthday, name: "Birthday", colorHex: "EC6F91", iconName: "gift.fill", sortOrder: 7),
+        CalendarSystemCategoryDefault(key: .holiday, name: "Holiday", colorHex: "E76F51", iconName: "party.popper.fill", sortOrder: 8),
+        CalendarSystemCategoryDefault(key: .other, name: "Other", colorHex: "9E9E9E", iconName: "tag.fill", sortOrder: 9)
+    ]
 }
 
 private struct CreateCalendarEventParameters: Encodable {
@@ -1042,11 +1268,49 @@ private struct CreateCalendarCategoryParameters: Encodable {
     }
 }
 
+private struct CreateSystemCalendarCategoryPayload: Encodable {
+    let homeId: UUID
+    let name: String
+    let colorHex: String
+    let iconName: String
+    let sortOrder: Int
+    let systemKey: String
+    let isSystem: Bool
+    let createdBy: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case homeId = "home_id"
+        case name
+        case colorHex = "color_hex"
+        case iconName = "icon_name"
+        case sortOrder = "sort_order"
+        case systemKey = "system_key"
+        case isSystem = "is_system"
+        case createdBy = "created_by"
+    }
+}
+
+private struct UpdateSystemCalendarCategoryPayload: Encodable {
+    let colorHex: String
+
+    enum CodingKeys: String, CodingKey {
+        case colorHex = "color_hex"
+    }
+}
+
 private struct GetCalendarCategoriesParameters: Encodable {
     let targetHomeId: UUID
 
     enum CodingKeys: String, CodingKey {
         case targetHomeId = "target_home_id"
+    }
+}
+
+private struct EnsureMealCalendarCategoryParameters: Encodable {
+    let requestedHomeId: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case requestedHomeId = "requested_home_id"
     }
 }
 

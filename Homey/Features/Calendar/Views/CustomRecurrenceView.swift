@@ -83,13 +83,7 @@ struct CustomRecurrenceView: View {
                             EventEditorErrorBanner(message: message)
                         }
 
-                        Button {
-                            save()
-                        } label: {
-                            Text("Save Repeat")
-                        }
-                        .buttonStyle(DashboardPrimaryButtonStyle())
-                        .disabled(!canSave)
+                        bottomActionButtons
                     }
                     .padding(.horizontal, 28)
                     .padding(.top, 28)
@@ -98,15 +92,6 @@ struct CustomRecurrenceView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                 }
                 .scrollIndicators(.hidden)
-            }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        onCancel()
-                        dismiss()
-                    }
-                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
-                }
             }
         }
         .presentationDetents([.large])
@@ -117,6 +102,30 @@ struct CustomRecurrenceView: View {
         }
         .onChange(of: endOption) { _, newValue in
             normalizeEndValues(for: newValue)
+        }
+    }
+
+    private var bottomActionButtons: some View {
+        HStack(spacing: 12) {
+            Button("Cancel") {
+                onCancel()
+                dismiss()
+            }
+            .buttonStyle(.plain)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            .frame(maxWidth: .infinity, minHeight: 52)
+            .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 17, style: .continuous).stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+
+            Button {
+                save()
+            } label: {
+                Text("Save Repeat")
+            }
+            .buttonStyle(DashboardPrimaryButtonStyle())
+            .frame(maxWidth: .infinity)
+            .disabled(!canSave)
         }
     }
 

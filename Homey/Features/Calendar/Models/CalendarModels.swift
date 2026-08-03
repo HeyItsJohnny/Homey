@@ -252,9 +252,47 @@ struct CalendarCategory: Codable, Identifiable, Hashable {
     let colorHex: String
     let iconName: String?
     let sortOrder: Int
+    let systemKey: String?
+    let isSystem: Bool
     let createdBy: UUID?
     let createdAt: Date
     let updatedAt: Date
+
+    var systemCategoryKey: CalendarSystemCategoryKey? {
+        guard isSystem, let systemKey else {
+            return nil
+        }
+
+        return CalendarSystemCategoryKey(rawValue: systemKey)
+    }
+
+    var isProtectedSystemCategory: Bool {
+        isSystem
+    }
+
+    var isMealSystemCategory: Bool {
+        systemCategoryKey == .meal
+    }
+
+    var capabilities: CalendarCategoryCapabilities {
+        CalendarCategoryCapabilities(isSystemCategory: isProtectedSystemCategory)
+    }
+
+    func replacingColorHex(_ colorHex: String) -> CalendarCategory {
+        CalendarCategory(
+            id: id,
+            homeId: homeId,
+            name: name,
+            colorHex: colorHex,
+            iconName: iconName,
+            sortOrder: sortOrder,
+            systemKey: systemKey,
+            isSystem: isSystem,
+            createdBy: createdBy,
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -263,8 +301,78 @@ struct CalendarCategory: Codable, Identifiable, Hashable {
         case colorHex = "color_hex"
         case iconName = "icon_name"
         case sortOrder = "sort_order"
+        case systemKey = "system_key"
+        case isSystem = "is_system"
         case createdBy = "created_by"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+
+    init(
+        id: UUID,
+        homeId: UUID,
+        name: String,
+        colorHex: String,
+        iconName: String?,
+        sortOrder: Int,
+        systemKey: String? = nil,
+        isSystem: Bool = false,
+        createdBy: UUID?,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.homeId = homeId
+        self.name = name
+        self.colorHex = colorHex
+        self.iconName = iconName
+        self.sortOrder = sortOrder
+        self.systemKey = systemKey
+        self.isSystem = isSystem
+        self.createdBy = createdBy
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        homeId = try container.decode(UUID.self, forKey: .homeId)
+        name = try container.decode(String.self, forKey: .name)
+        colorHex = try container.decode(String.self, forKey: .colorHex)
+        iconName = try container.decodeIfPresent(String.self, forKey: .iconName)
+        sortOrder = try container.decode(Int.self, forKey: .sortOrder)
+        systemKey = try container.decodeIfPresent(String.self, forKey: .systemKey)
+        isSystem = try container.decodeIfPresent(Bool.self, forKey: .isSystem) ?? false
+        createdBy = try container.decodeIfPresent(UUID.self, forKey: .createdBy)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    }
+}
+
+enum CalendarSystemCategoryKey: String, Codable, CaseIterable {
+    case family
+    case school
+    case work
+    case sports
+    case appointment
+    case meal
+    case chore
+    case birthday
+    case holiday
+    case other
+}
+
+struct CalendarCategoryCapabilities: Hashable {
+    let canRename: Bool
+    let canDelete: Bool
+    let canChangeColor: Bool
+    let canChangeIcon: Bool
+
+    init(isSystemCategory: Bool) {
+        canRename = !isSystemCategory
+        canDelete = !isSystemCategory
+        canChangeColor = true
+        canChangeIcon = !isSystemCategory
     }
 }

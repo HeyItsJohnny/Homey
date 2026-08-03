@@ -102,12 +102,22 @@ final class CalendarCategoriesViewModel: ObservableObject {
 
         do {
             try await calendarService.updateCategory(categoryId: categoryId, name: name, colorHex: colorHex, iconName: iconName)
+            replaceCategoryColorLocally(categoryId: categoryId, colorHex: colorHex)
+            postCalendarRefresh()
             await reload()
             postCalendarRefresh()
             return .success
         } catch CalendarServiceError.categoryPermissionDenied {
             errorMessage = CalendarServiceError.categoryPermissionDenied.localizedDescription
             return .permissionDenied
+        } catch CalendarServiceError.systemCategoryEditProtected {
+            await reload()
+            errorMessage = CalendarServiceError.systemCategoryEditProtected.localizedDescription
+            return .failure
+        } catch CalendarServiceError.systemCategoryProtected {
+            await reload()
+            errorMessage = CalendarServiceError.systemCategoryProtected.localizedDescription
+            return .failure
         } catch {
             errorMessage = error.localizedDescription
             return .failure
@@ -137,6 +147,10 @@ final class CalendarCategoriesViewModel: ObservableObject {
         } catch CalendarServiceError.categoryPermissionDenied {
             errorMessage = CalendarServiceError.categoryPermissionDenied.localizedDescription
             return .permissionDenied
+        } catch CalendarServiceError.systemCategoryProtected {
+            await reload()
+            errorMessage = CalendarServiceError.systemCategoryProtected.localizedDescription
+            return .failure
         } catch {
             errorMessage = error.localizedDescription
             return .failure
@@ -184,6 +198,21 @@ final class CalendarCategoriesViewModel: ObservableObject {
 
     private func postCalendarRefresh() {
         NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+    }
+
+    private func replaceCategoryColorLocally(categoryId: UUID, colorHex: String) {
+        guard let index = categories.firstIndex(where: { $0.id == categoryId }) else {
+            return
+        }
+
+        categories[index] = categories[index].replacingColorHex(colorHex)
+
+        #if DEBUG
+        print("Calendar category shared state replaced")
+        print("updated_category_id: \(categoryId.uuidString)")
+        print("new_color_hex: \(colorHex)")
+        print("shared_category_state_replaced: true")
+        #endif
     }
 }
 

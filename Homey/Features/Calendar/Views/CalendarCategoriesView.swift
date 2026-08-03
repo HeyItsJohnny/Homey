@@ -435,6 +435,16 @@ private struct CategoryRow: View {
                     .foregroundStyle(HomeyDashboardTheme.primaryText)
                     .lineLimit(1)
 
+                if !category.capabilities.canDelete {
+                    Text("System")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 4)
+                        .background(HomeyDashboardTheme.selectedSidebarBackground, in: Capsule())
+                        .accessibilityLabel("Protected system category")
+                }
+
                 Spacer()
 
                 if canManage && !isReordering {
@@ -468,8 +478,8 @@ private struct CalendarCategoryEditorView: View {
             switch self {
             case .create:
                 "Add Category"
-            case .edit:
-                "Edit Category"
+            case let .edit(category):
+                category.isProtectedSystemCategory ? "\(category.name) Category" : "Edit Category"
             }
         }
 
@@ -541,6 +551,18 @@ private struct CalendarCategoryEditorView: View {
         !isSaving && !isDeleting && !trimmedName.isEmpty && isValidColorHex(colorHex)
     }
 
+    private var isSystemCategory: Bool {
+        !(mode.existingCategory?.capabilities.canRename ?? true)
+    }
+
+    private var canChangeIcon: Bool {
+        mode.existingCategory?.capabilities.canChangeIcon ?? true
+    }
+
+    private var canDeleteCategory: Bool {
+        mode.existingCategory?.capabilities.canDelete ?? false
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -551,28 +573,19 @@ private struct CalendarCategoryEditorView: View {
                     VStack(alignment: .leading, spacing: 24) {
                         editorField
                         colorPicker
-                        iconPicker
+                        if canChangeIcon {
+                            iconPicker
+                        } else {
+                            systemIconField
+                        }
 
                         if let validationMessage {
                             CategoryStatusBanner(message: validationMessage, style: .error)
                         }
 
-                        Button {
-                            Task {
-                                await save()
-                            }
-                        } label: {
-                            if isSaving {
-                                ProgressView()
-                                    .tint(.white)
-                            } else {
-                                Text(mode.saveTitle)
-                            }
-                        }
-                        .buttonStyle(DashboardPrimaryButtonStyle())
-                        .disabled(!canSave)
+                        bottomActionButtons
 
-                        if case .edit = mode, onDelete != nil {
+                        if case .edit = mode, onDelete != nil, canDeleteCategory {
                             Button(role: .destructive) {
                                 isShowingDeleteConfirmation = true
                             } label: {
@@ -598,12 +611,6 @@ private struct CalendarCategoryEditorView: View {
                 .scrollIndicators(.hidden)
             }
             .navigationTitle(mode.title)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onCancel)
-                        .disabled(isSaving || isDeleting)
-                }
-            }
             .confirmationDialog(
                 "Delete Category?",
                 isPresented: $isShowingDeleteConfirmation,
@@ -623,24 +630,71 @@ private struct CalendarCategoryEditorView: View {
         .presentationDragIndicator(.visible)
     }
 
+    private var bottomActionButtons: some View {
+        HStack(spacing: 12) {
+            Button("Cancel", action: onCancel)
+                .buttonStyle(.plain)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+                .overlay { RoundedRectangle(cornerRadius: 17, style: .continuous).stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+                .disabled(isSaving || isDeleting)
+
+            Button {
+                Task {
+                    await save()
+                }
+            } label: {
+                if isSaving {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Text(mode.saveTitle)
+                }
+            }
+            .buttonStyle(DashboardPrimaryButtonStyle())
+            .frame(maxWidth: .infinity)
+            .disabled(!canSave)
+        }
+    }
+
     private var editorField: some View {
         VStack(alignment: .leading, spacing: 9) {
             Text("Name")
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
 
-            TextField("Category name", text: $name)
-                .textInputAutocapitalization(.words)
-                .autocorrectionDisabled(false)
-                .font(.body.weight(.medium))
-                .foregroundStyle(HomeyDashboardTheme.primaryText)
+            if isSystemCategory {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(name)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    Text("System category names are protected.")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                }
                 .padding(.horizontal, 16)
-                .frame(minHeight: 56)
+                .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
                 .background(HomeyDashboardTheme.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
                 }
+            } else {
+                TextField("Category name", text: $name)
+                    .textInputAutocapitalization(.words)
+                    .autocorrectionDisabled(false)
+                    .font(.body.weight(.medium))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 56)
+                    .background(HomeyDashboardTheme.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                    }
+            }
         }
     }
 
@@ -706,6 +760,39 @@ private struct CalendarCategoryEditorView: View {
                     .buttonStyle(.plain)
                     .accessibilityLabel(icon ?? "No icon")
                 }
+            }
+        }
+    }
+
+    private var systemIconField: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Text("Icon")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+            HStack(spacing: 12) {
+                Image(systemName: iconName ?? "fork.knife")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                    .frame(width: 44, height: 44)
+                    .background(HomeyDashboardTheme.selectedSidebarBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Homey Meal")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    Text("System category icons are protected.")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                }
+
+                Spacer()
+            }
+            .padding(12)
+            .background(HomeyDashboardTheme.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
             }
         }
     }

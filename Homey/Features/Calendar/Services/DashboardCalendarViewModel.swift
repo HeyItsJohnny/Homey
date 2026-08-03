@@ -5,6 +5,7 @@ import Foundation
 final class DashboardCalendarViewModel: ObservableObject {
     @Published private(set) var eventsTodayCount = 0
     @Published private(set) var upcomingEvents: [CalendarEvent] = []
+    @Published private(set) var categories: [CalendarCategory] = []
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
 
@@ -73,9 +74,11 @@ final class DashboardCalendarViewModel: ObservableObject {
             let now = Date()
             async let todayEvents = calendarService.fetchEventsForDay(homeId: homeId, date: now)
             async let upcoming = calendarService.fetchUpcomingEvents(homeId: homeId, from: now, limit: 3)
+            async let loadedCategories = calendarService.fetchCategories(homeId: homeId)
 
             let loadedTodayEvents = try await todayEvents
             let loadedUpcomingEvents = try await upcoming
+            let resolvedCategories = try await loadedCategories
 
             guard !Task.isCancelled else {
                 return
@@ -85,6 +88,7 @@ final class DashboardCalendarViewModel: ObservableObject {
                 .filter { $0.overlapsDay(now, calendar: calendar) }
                 .count
             upcomingEvents = loadedUpcomingEvents
+            categories = resolvedCategories
         } catch {
             guard !Task.isCancelled else {
                 return
@@ -136,6 +140,7 @@ final class DashboardCalendarViewModel: ObservableObject {
     private func clearCalendarData() {
         eventsTodayCount = 0
         upcomingEvents = []
+        categories = []
         errorMessage = nil
         isLoading = false
     }

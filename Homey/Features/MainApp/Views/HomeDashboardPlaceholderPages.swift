@@ -12,9 +12,15 @@ struct ListsView: View {
     }
 }
 
-struct MealsView: View {
+struct ProjectsView: View {
     var body: some View {
-        PlaceholderModuleView(title: "Meals", subtitle: "Coming soon")
+        PlaceholderModuleView(title: "Projects", subtitle: "Coming soon")
+    }
+}
+
+struct TripsView: View {
+    var body: some View {
+        PlaceholderModuleView(title: "Trips", subtitle: "Manage trips with other households")
     }
 }
 
@@ -56,8 +62,12 @@ struct ChangeHomeView: View {
     ListsView()
 }
 
-#Preview("Meals Placeholder") {
-    MealsView()
+#Preview("Projects Placeholder") {
+    ProjectsView()
+}
+
+#Preview("Trips Placeholder") {
+    TripsView()
 }
 
 #Preview("Groceries Placeholder") {

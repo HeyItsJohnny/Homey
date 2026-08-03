@@ -29,6 +29,7 @@ final class HomeService: ObservableObject {
 
     private let client = SupabaseManager.shared.client
     private var loadedMembersHomeID: UUID?
+    private var loadingMembersHomeID: UUID?
     private var loadedInvitationsHomeID: UUID?
     private var loadedInvitationUserID: UUID?
 
@@ -96,6 +97,8 @@ final class HomeService: ObservableObject {
                 )
                 .execute()
                 .value
+
+            await CalendarService().ensureDefaultSystemCategories(homeId: createdHomeID)
 
             homes = try await fetchHomes(for: userID)
             setSelectedHomeID(createdHomeID)
@@ -195,6 +198,93 @@ final class HomeService: ObservableObject {
         return members
     }
 
+    func currentMembershipForSelectedHome() -> HomeMemberDisplay? {
+        guard loadedMembersHomeID == selectedHomeID else {
+            return nil
+        }
+
+        return members.first(where: { $0.isCurrentUser })
+    }
+
+    func currentMembershipForSelectedHome(currentUserID: UUID?) -> HomeMemberDisplay? {
+        guard loadedMembersHomeID == selectedHomeID else {
+            return nil
+        }
+
+        if let currentUserID {
+            return members.first { $0.userId == currentUserID }
+        }
+
+        return currentMembershipForSelectedHome()
+    }
+
+    var selectedHomeRole: HomeMemberRole? {
+        currentMembershipForSelectedHome()?.role ?? selectedHome()?.role
+    }
+
+    func selectedHomeRole(currentUserID: UUID?) -> HomeMemberRole? {
+        currentMembershipForSelectedHome(currentUserID: currentUserID)?.role ?? selectedHome()?.role
+    }
+
+    var permissionResolutionState: PermissionResolutionState {
+        permissionResolutionState(currentUserID: nil)
+    }
+
+    func permissionResolutionState(currentUser: UserProfile?) -> PermissionResolutionState {
+        permissionResolutionState(currentUserID: currentUser?.id)
+    }
+
+    func permissionResolutionState(currentUserID: UUID?) -> PermissionResolutionState {
+        guard let selectedHomeID else {
+            return .unavailable
+        }
+
+        if let currentUserID,
+           let currentMembership = currentMembershipForSelectedHome(currentUserID: currentUserID),
+           currentMembership.homeId == selectedHomeID,
+           currentMembership.userId == currentUserID {
+            let permissions = HomePermissions(role: currentMembership.role)
+            #if DEBUG
+            if permissions == .restrictive {
+                print("Warning: matching Home membership resolved restrictive meal permissions")
+                print("authenticated_user_id: \(currentUserID.uuidString)")
+                print("selected_home_id: \(selectedHomeID.uuidString)")
+                print("current_membership_user_id: \(currentMembership.userId.uuidString)")
+                print("current_membership_home_id: \(currentMembership.homeId.uuidString)")
+                print("decoded_role: \(currentMembership.role.rawValue)")
+            }
+            #endif
+            return .resolved(permissions)
+        }
+
+        if let selectedHome = selectedHome(),
+           let role = selectedHome.role {
+            return .resolved(HomePermissions(role: role))
+        }
+
+        if isLoadingMembers || loadingMembersHomeID == selectedHomeID {
+            return .loading
+        }
+
+        if loadedMembersHomeID == selectedHomeID {
+            return .unavailable
+        }
+
+        if selectedHome() != nil {
+            return .loading
+        }
+
+        return .unavailable
+    }
+
+    var homePermissions: HomePermissions {
+        permissionResolutionState.permissions
+    }
+
+    func homePermissions(currentUser: UserProfile?) -> HomePermissions {
+        permissionResolutionState(currentUser: currentUser).permissions
+    }
+
     func memberCountForSelectedHome() -> Int? {
         guard loadedMembersHomeID == selectedHomeID else {
             return nil
@@ -208,7 +298,7 @@ final class HomeService: ObservableObject {
     }
 
     func loadMembers(for homeID: UUID, currentUser: UserProfile, forceRefresh: Bool = false) async {
-        guard !isLoadingMembers else {
+        if isLoadingMembers && loadingMembersHomeID == homeID && !forceRefresh {
             return
         }
 
@@ -217,17 +307,53 @@ final class HomeService: ObservableObject {
         }
 
         isLoadingMembers = true
+        loadingMembersHomeID = homeID
         membersErrorMessage = nil
 
         if loadedMembersHomeID != homeID {
             members = []
+            loadedMembersHomeID = nil
         }
+
+        #if DEBUG
+        print("Resolving Home permissions")
+        print("authenticated_user_id: \(currentUser.id.uuidString)")
+        print("selected_home_id: \(selectedHomeID?.uuidString ?? "nil")")
+        print("requested_members_home_id: \(homeID.uuidString)")
+        #endif
 
         do {
             let loadedMembers = try await fetchMembers(for: homeID, currentUser: currentUser)
+
+            guard loadingMembersHomeID == homeID, selectedHomeID == homeID else {
+                #if DEBUG
+                print("Ignoring stale Home members response")
+                print("loaded_members_home_id: \(homeID.uuidString)")
+                print("current_selected_home_id: \(selectedHomeID?.uuidString ?? "nil")")
+                #endif
+                return
+            }
+
             members = HomeMemberDisplay.sorted(loadedMembers)
             loadedMembersHomeID = homeID
+
+            #if DEBUG
+            let currentMember = currentMembershipForSelectedHome()
+            let resolvedRole = currentMember?.role ?? selectedHome()?.role
+            let resolvedPermissions = HomePermissions(role: resolvedRole)
+            print("loaded_members_home_id: \(homeID.uuidString)")
+            print("current_membership_user_id: \(currentMember?.userId.uuidString ?? "nil")")
+            print("current_membership_home_id: \(currentMember?.homeId.uuidString ?? "nil")")
+            print("decoded_role: \(resolvedRole?.rawValue ?? "nil")")
+            print("permission_loading_state: resolved")
+            print("meals_can_create: \(resolvedPermissions.meals.canCreate)")
+            print("meals_can_edit: \(resolvedPermissions.meals.canEdit)")
+            #endif
         } catch {
+            guard loadingMembersHomeID == homeID, selectedHomeID == homeID else {
+                return
+            }
+
             membersErrorMessage = homeErrorMessage(for: error)
 
             #if DEBUG
@@ -243,7 +369,12 @@ final class HomeService: ObservableObject {
             #endif
         }
 
-        isLoadingMembers = false
+        if loadingMembersHomeID == homeID {
+            loadingMembersHomeID = nil
+        }
+        if selectedHomeID == homeID {
+            isLoadingMembers = false
+        }
     }
 
     func refreshMembers(for homeID: UUID, currentUser: UserProfile) async {
@@ -704,6 +835,8 @@ final class HomeService: ObservableObject {
         selectedHomeID = id
         members = []
         loadedMembersHomeID = nil
+        loadingMembersHomeID = nil
+        isLoadingMembers = false
         membersErrorMessage = nil
         pendingInvitations = []
         loadedInvitationsHomeID = nil

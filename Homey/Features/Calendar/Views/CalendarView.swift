@@ -329,6 +329,7 @@ struct CalendarView: View {
                     CalendarDayCell(
                         date: day,
                         events: viewModel.events(on: day),
+                        categories: viewModel.categories,
                         isCurrentMonth: viewModel.isDateInVisibleMonth(day),
                         isSelected: viewModel.isSelected(day),
                         isToday: viewModel.isToday(day)
@@ -362,6 +363,7 @@ struct CalendarView: View {
                     WeekDayColumn(
                         date: day,
                         events: viewModel.events(on: day),
+                        categories: viewModel.categories,
                         isSelected: viewModel.isSelected(day),
                         isToday: viewModel.isToday(day),
                         assignedMembers: assignedMembers(for:),
@@ -399,7 +401,7 @@ struct CalendarView: View {
                         Button {
                             presentEditEditor(for: event)
                         } label: {
-                            AgendaEventRow(event: event, assignedMembers: assignedMembers(for: event))
+                            AgendaEventRow(event: event, categories: viewModel.categories, assignedMembers: assignedMembers(for: event))
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens event details")
@@ -621,6 +623,7 @@ private extension EventEditorCompletion {
 private struct CalendarDayCell: View {
     let date: Date
     let events: [CalendarEvent]
+    let categories: [CalendarCategory]
     let isCurrentMonth: Bool
     let isSelected: Bool
     let isToday: Bool
@@ -644,7 +647,7 @@ private struct CalendarDayCell: View {
                 HStack(spacing: 4) {
                     ForEach(Array(events.prefix(3).enumerated()), id: \.offset) { _, event in
                         Circle()
-                            .fill(event.indicatorColor)
+                            .fill(CalendarEventColorResolver.color(for: event, categories: categories))
                             .frame(width: 7, height: 7)
                     }
 
@@ -721,6 +724,7 @@ private struct CalendarDayCell: View {
 private struct WeekDayColumn: View {
     let date: Date
     let events: [CalendarEvent]
+    let categories: [CalendarCategory]
     let isSelected: Bool
     let isToday: Bool
     let assignedMembers: (CalendarEvent) -> [HomeMemberDisplay]
@@ -758,7 +762,7 @@ private struct WeekDayColumn: View {
                         Button {
                             onSelectEvent(event)
                         } label: {
-                            WeekEventChip(event: event, assignedMembers: assignedMembers(event))
+                            WeekEventChip(event: event, categories: categories, assignedMembers: assignedMembers(event))
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens event details")
@@ -832,13 +836,14 @@ private struct WeekDayColumn: View {
 
 private struct WeekEventChip: View {
     let event: CalendarEvent
+    let categories: [CalendarCategory]
     let assignedMembers: [HomeMemberDisplay]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 7) {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
-                    .fill(event.indicatorColor)
+                    .fill(CalendarEventColorResolver.color(for: event, categories: categories))
                     .frame(width: 5, height: 34)
                     .accessibilityHidden(true)
 
@@ -897,12 +902,13 @@ private struct WeekEventChip: View {
 
 private struct AgendaEventRow: View {
     let event: CalendarEvent
+    let categories: [CalendarCategory]
     let assignedMembers: [HomeMemberDisplay]
 
     var body: some View {
         HStack(alignment: .top, spacing: 13) {
             RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .fill(event.indicatorColor)
+                .fill(CalendarEventColorResolver.color(for: event, categories: categories))
                 .frame(width: 8, height: 48)
                 .accessibilityHidden(true)
 
@@ -1073,12 +1079,6 @@ private enum CalendarViewFormatters {
         formatter.dateFormat = "MMM d, yyyy"
         return formatter
     }()
-}
-
-private extension CalendarEvent {
-    var indicatorColor: Color {
-        Color(hex: categoryColorHex) ?? HomeyDashboardTheme.warmBrown
-    }
 }
 
 extension Color {
