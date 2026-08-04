@@ -36,6 +36,17 @@ final class MealPlannerService: ObservableObject {
         try await calendarService.fetchCategories(homeId: homeId)
     }
 
+    func fetchHouseholdFavorites(homeId: UUID, memberUserIds: Set<UUID>) async throws -> [HouseholdMealFavorite] {
+        try await mealService.fetchHouseholdFavorites(homeId: homeId, memberUserIds: memberUserIds)
+    }
+
+    func fetchRecentPlannedMeals(homeId: UUID, weekStart: Date, weekEnd: Date) async throws -> [PlannedMeal] {
+        guard let historyStart = calendar.date(byAdding: .day, value: -7, to: weekStart) else {
+            throw MealPlannerServiceError.invalidDateRange
+        }
+        return try await fetchPlannedMeals(homeId: homeId, startDate: historyStart, endDate: weekEnd)
+    }
+
     func fetchPlannedMeals(homeId: UUID, startDate: Date, endDate: Date) async throws -> [PlannedMeal] {
         guard endDate > startDate else {
             throw MealPlannerServiceError.invalidDateRange

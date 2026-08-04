@@ -5,6 +5,7 @@ struct MealPlannerView: View {
     let meals: [Meal]
     let favoriteMeals: [Meal]
     let collections: [MealCollection]
+    let householdMembers: [HomeMemberDisplay]
     let permissions: HomePermissions
     let selectedHomeID: UUID?
     let weekStartsOn: Int?
@@ -16,6 +17,8 @@ struct MealPlannerView: View {
     @State private var activeAddSlot: MealPlannerSlot?
     @State private var pendingSelection: MealPlannerPendingSelection?
     @State private var moveTarget: MealPlannerMoveTarget?
+    @State private var isAutoPlanPresented = false
+    @State private var isResetPlanConfirmationPresented = false
 
     private let defaultSlotTypes: [MealType] = [.breakfast, .lunch, .dinner, .snack]
 
@@ -79,6 +82,37 @@ struct MealPlannerView: View {
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $isAutoPlanPresented) {
+            AutoPlanSheet(
+                viewModel: viewModel,
+                meals: meals,
+                favoriteMeals: favoriteMeals,
+                collections: collections,
+                householdMembers: householdMembers,
+                permissions: permissions,
+                onDismiss: { isAutoPlanPresented = false }
+            )
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
+        .alert("Reset Plan", isPresented: $isResetPlanConfirmationPresented) {
+            Button("No", role: .cancel) { }
+            Button("Yes", role: .destructive) {
+                Task {
+                    await viewModel.resetVisibleWeekPlan(permissions: permissions)
+                }
+            }
+        } message: {
+            Text(resetPlanConfirmationMessage)
+        }
+        .overlay {
+            if viewModel.isResettingPlan {
+                ResetPlanProgressDialog(
+                    completedCount: viewModel.resetPlanCompletedCount,
+                    totalCount: viewModel.resetPlanTotalCount
+                )
+            }
+        }
     }
 
     private var loadTaskID: String {
@@ -138,7 +172,13 @@ struct MealPlannerView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Go to today")
 
-            Button("Auto Plan") { onComingSoon("Auto Plan is coming in a future Meals phase.") }
+            Button("Auto Plan") {
+                if permissions.meals.canRunAutoPlan {
+                    isAutoPlanPresented = true
+                } else {
+                    onComingSoon("You do not have permission to run Auto Plan.")
+                }
+            }
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(HomeyDashboardTheme.warmBrown)
                 .padding(.horizontal, 16)
@@ -146,6 +186,22 @@ struct MealPlannerView: View {
                 .background(HomeyDashboardTheme.cardBackground, in: Capsule())
                 .overlay { Capsule().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
                 .buttonStyle(.plain)
+
+            Button("Reset Plan") {
+                if permissions.meals.canClearMealPlan {
+                    isResetPlanConfirmationPresented = true
+                } else {
+                    onComingSoon("You do not have permission to reset this week's meal plan.")
+                }
+            }
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .frame(minHeight: 38)
+                .background(Color.red, in: Capsule())
+                .buttonStyle(.plain)
+                .disabled(viewModel.plannedMealCount == 0 || viewModel.isSaving || viewModel.isResettingPlan)
+                .opacity((viewModel.plannedMealCount == 0 || viewModel.isResettingPlan) ? 0.55 : 1)
 
             Menu {
                 Button("Generate Shopping List") { onComingSoon("Shopping lists are coming in the next phase.") }
@@ -177,7 +233,7 @@ struct MealPlannerView: View {
     private var content: some View {
         if selectedHomeID == nil {
             MealPlannerMessageCard(title: "Choose a Home", message: "Select a Home before planning meals.", systemImage: "house.fill")
-        } else if !permissions.meals.canView {
+        } else if !permissions.meals.canViewMealPlan {
             MealPlannerMessageCard(title: "Meal Plan Unavailable", message: "You do not have permission to view this Home's meal plan.", systemImage: "lock.fill")
         } else if viewModel.isLoading && viewModel.plannedMeals.isEmpty {
             MealPlannerLoadingGrid()
@@ -298,6 +354,540 @@ struct MealPlannerView: View {
         formatter.setLocalizedDateFormatFromTemplate("EEE d")
         return formatter
     }()
+
+    private var resetPlanConfirmationMessage: String {
+        "Do you want to reset the plan for the week of \(viewModel.resetPlanWeekStartTitle)?"
+    }
+}
+
+private struct ResetPlanProgressDialog: View {
+    let completedCount: Int
+    let totalCount: Int
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+
+            VStack(spacing: 14) {
+                ProgressView(value: progress)
+                    .tint(HomeyDashboardTheme.warmBrown)
+
+                VStack(spacing: 4) {
+                    Text("Resetting Meal Plan")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                    Text(progressText)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .padding(22)
+            .frame(maxWidth: 340)
+            .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.12), radius: 22, x: 0, y: 12)
+        }
+        .transition(.opacity)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Resetting meal plan")
+        .accessibilityValue(progressText)
+    }
+
+    private var progress: Double {
+        guard totalCount > 0 else { return 0 }
+        return Double(min(completedCount, totalCount)) / Double(totalCount)
+    }
+
+    private var progressText: String {
+        guard totalCount > 0 else {
+            return "Preparing reset..."
+        }
+        return "Removing \(min(completedCount, totalCount)) of \(totalCount) planned meals..."
+    }
+}
+
+private enum AutoPlanSheetFlowState {
+    case configuration
+    case preview
+}
+
+private struct AutoPlanSheet: View {
+    @ObservedObject var viewModel: MealPlannerViewModel
+    let meals: [Meal]
+    let favoriteMeals: [Meal]
+    let collections: [MealCollection]
+    let householdMembers: [HomeMemberDisplay]
+    let permissions: HomePermissions
+    let onDismiss: () -> Void
+
+    @State private var configuration: AutoPlanConfiguration
+    @State private var manualReplacementTarget: AutoPlanManualReplacementTarget?
+    @State private var flowState: AutoPlanSheetFlowState = .configuration
+
+    init(
+        viewModel: MealPlannerViewModel,
+        meals: [Meal],
+        favoriteMeals: [Meal],
+        collections: [MealCollection],
+        householdMembers: [HomeMemberDisplay],
+        permissions: HomePermissions,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.viewModel = viewModel
+        self.meals = meals
+        self.favoriteMeals = favoriteMeals
+        self.collections = collections
+        self.householdMembers = householdMembers
+        self.permissions = permissions
+        self.onDismiss = onDismiss
+        _configuration = State(initialValue: viewModel.defaultAutoPlanConfiguration())
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                HomeyDashboardTheme.appBackground.ignoresSafeArea()
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        switch flowState {
+                        case .configuration:
+                            configurationContent
+                        case .preview:
+                            if let draft = viewModel.autoPlanDraft {
+                                previewContent(draft)
+                            } else {
+                                configurationContent
+                            }
+                        }
+                    }
+                    .padding(24)
+                    .frame(maxWidth: 900)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
+            .navigationTitle(flowState == .preview ? "Auto Plan Preview" : "Auto Plan")
+            .navigationBarTitleDisplayMode(.inline)
+            .sheet(item: $manualReplacementTarget) { target in
+                MealPlannerPickerView(
+                    title: "Choose \(target.mealType.displayName)",
+                    meals: meals,
+                    favoriteMeals: favoriteMeals,
+                    collections: collections,
+                    preselectedMealType: target.mealType,
+                    onCancel: { manualReplacementTarget = nil },
+                    onSelectMeal: { meal in
+                        viewModel.manuallySelectAutoPlanMeal(meal, for: target.slotId)
+                        manualReplacementTarget = nil
+                    }
+                )
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+            }
+        }
+    }
+
+    private var configurationContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Auto Plan only fills empty meal slots. Existing plans will not be changed.")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Week")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                Text(viewModel.visibleWeekTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Days")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 8)], spacing: 8) {
+                    ForEach(viewModel.autoPlanSelectableWeekDays(), id: \.self) { day in
+                        autoPlanToggleChip(
+                            title: Self.dayFormatter.string(from: day),
+                            isSelected: configuration.selectedDates.contains(day)
+                        ) {
+                            toggle(day, in: \.selectedDates)
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Meal Types")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 8)], spacing: 8) {
+                    ForEach([MealType.breakfast, .lunch, .dinner, .snack]) { mealType in
+                        autoPlanToggleChip(
+                            title: mealType.displayName,
+                            systemImage: mealType.systemImageName,
+                            isSelected: configuration.selectedMealTypes.contains(mealType)
+                        ) {
+                            toggle(mealType, in: \.selectedMealTypes)
+                        }
+                    }
+                }
+            }
+
+            Picker("Recipe Pool", selection: $configuration.recipePool) {
+                ForEach(AutoPlanRecipePoolMode.allCases) { pool in
+                    Text(pool.title).tag(pool)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text(configuration.recipePool.description)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+
+            Toggle("Allow repeats when necessary", isOn: $configuration.allowsRepeats)
+                .font(.subheadline.weight(.semibold))
+                .tint(HomeyDashboardTheme.warmBrown)
+
+            if viewModel.autoPlanDraft == nil, let message = viewModel.autoPlanResultMessage {
+                MealPlannerMessageCard(
+                    title: "Auto Plan Result",
+                    message: message,
+                    systemImage: "info.circle"
+                )
+            }
+
+            if viewModel.autoPlanDraft == nil, let errorMessage = viewModel.errorMessage {
+                MealPlannerMessageCard(
+                    title: "Auto Plan Error",
+                    message: errorMessage,
+                    systemImage: "exclamationmark.triangle"
+                )
+            }
+
+            if let unavailableMessage = viewModel.autoPlanUnavailableMessage() {
+                MealPlannerMessageCard(
+                    title: "Auto Plan Unavailable",
+                    message: unavailableMessage,
+                    systemImage: "calendar.badge.exclamationmark"
+                )
+            } else {
+                if let disabledReason = generateDisabledReason {
+                    Text(disabledReason)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                }
+
+                Button {
+                    #if DEBUG
+                    print("AutoPlan Generate button tapped")
+                    #endif
+                    Task {
+                        await viewModel.generateAutoPlan(configuration: configuration, meals: meals, members: householdMembers, permissions: permissions)
+                        if viewModel.autoPlanDraft != nil {
+                            #if DEBUG
+                            print("preview_navigation_requested")
+                            #endif
+                            flowState = .preview
+                        }
+                    }
+                } label: {
+                    if viewModel.isAutoPlanGenerating {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .tint(.white)
+                            Text("Generating...")
+                        }
+                    } else {
+                        Text("Generate Plan")
+                    }
+                }
+                .buttonStyle(DashboardPrimaryButtonStyle())
+                .disabled(generateDisabledReason != nil || viewModel.isAutoPlanGenerating)
+            }
+        }
+        .padding(18)
+        .dashboardCard(cornerRadius: 24)
+    }
+
+    private func previewContent(_ draft: AutoPlanDraft) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Button {
+                    flowState = .configuration
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.left")
+                        Text("Options")
+                    }
+                }
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button("Regenerate All Suggestions") {
+                    viewModel.regenerateAutoPlanSuggestions()
+                }
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                .buttonStyle(.plain)
+            }
+
+            Text("Preview")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+            fairnessSummary(for: draft)
+
+            ForEach(groupedSlots(draft.slots), id: \.date) { group in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(Self.fullDayFormatter.string(from: group.date))
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                    ForEach(group.slots) { slot in
+                        AutoPlanPreviewRow(
+                            slot: slot,
+                            attributionText: attributionText(for: slot.suggestion, recipePool: draft.configuration.recipePool),
+                            onReroll: { viewModel.rerollAutoPlanSlot(slot.id) },
+                            onReplace: { manualReplacementTarget = AutoPlanManualReplacementTarget(slotId: slot.id, mealType: slot.mealType) },
+                            onRemove: { viewModel.removeAutoPlanSuggestion(slot.id) }
+                        )
+                    }
+                }
+                .padding(14)
+                .background(HomeyDashboardTheme.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+
+            if let message = viewModel.autoPlanResultMessage {
+                MealPlannerMessageCard(
+                    title: "Auto Plan Result",
+                    message: message,
+                    systemImage: draft.creatableSlots.isEmpty ? "info.circle" : "checkmark.circle"
+                )
+            }
+
+            if let errorMessage = viewModel.errorMessage {
+                MealPlannerMessageCard(
+                    title: "Auto Plan Error",
+                    message: errorMessage,
+                    systemImage: "exclamationmark.triangle"
+                )
+            }
+
+            Button {
+                Task {
+                    await viewModel.applyAutoPlan(permissions: permissions)
+                    onDismiss()
+                }
+            } label: {
+                if viewModel.isAutoPlanApplying {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Text("Apply Plan")
+                }
+            }
+            .buttonStyle(DashboardPrimaryButtonStyle())
+            .disabled(viewModel.isAutoPlanApplying || draft.creatableSlots.isEmpty)
+        }
+        .padding(18)
+        .dashboardCard(cornerRadius: 24)
+        .onAppear {
+            #if DEBUG
+            print("AUTO PLAN PREVIEW APPEARED")
+            print("preview_suggestion_count: \(draft.creatableSlots.count)")
+            print("preview_existing_count: \(draft.slots.filter(\.isFilled).count)")
+            print("preview_unfilled_count: \(draft.slots.filter { $0.suggestion?.status == .noSuggestion }.count)")
+            #endif
+        }
+    }
+
+    private var generateDisabledReason: String? {
+        viewModel.autoPlanDisabledReason(configuration: configuration, permissions: permissions)
+    }
+
+    private func fairnessSummary(for draft: AutoPlanDraft) -> some View {
+        let represented = draft.memberSuggestionCounts.filter { $0.value > 0 }
+        let creatableSuggestions = draft.creatableSlots
+        let favoriteSuggestionCount = creatableSuggestions.filter { $0.suggestion?.favoriteMemberIds.isEmpty == false }.count
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(summaryTitle(for: draft, favoriteSuggestionCount: favoriteSuggestionCount, suggestionCount: creatableSuggestions.count, representedCount: represented.count))
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+            if draft.configuration.recipePool == .includeFavorites && !represented.isEmpty {
+                Text(represented.map { "\(viewModel.memberName(for: $0.key)): \($0.value)" }.joined(separator: "  "))
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            }
+        }
+    }
+
+    private func summaryTitle(for draft: AutoPlanDraft, favoriteSuggestionCount: Int, suggestionCount: Int, representedCount: Int) -> String {
+        if draft.configuration.recipePool == .allRecipes {
+            return "Planning from all eligible recipes."
+        }
+        if favoriteSuggestionCount == 0 {
+            return "No eligible favorites matched these meal types, so Auto Plan used other recipes."
+        }
+        if representedCount > 0 {
+            return "Favorites from \(representedCount) household members are represented."
+        }
+        return "\(favoriteSuggestionCount) of \(suggestionCount) suggestions include member favorites."
+    }
+
+    private func autoPlanToggleChip(title: String, systemImage: String? = nil, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let systemImage {
+                    Image(systemName: systemImage)
+                }
+                Text(title)
+                    .lineLimit(1)
+            }
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(isSelected ? .white : HomeyDashboardTheme.primaryText)
+            .frame(maxWidth: .infinity, minHeight: 40)
+            .background(isSelected ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.appBackground.opacity(0.58), in: Capsule())
+            .overlay {
+                Capsule().stroke(isSelected ? Color.clear : HomeyDashboardTheme.softBorder, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func toggle<T: Hashable>(_ value: T, in keyPath: WritableKeyPath<AutoPlanConfiguration, Set<T>>) {
+        if configuration[keyPath: keyPath].contains(value) {
+            configuration[keyPath: keyPath].remove(value)
+        } else {
+            configuration[keyPath: keyPath].insert(value)
+        }
+    }
+
+    private func groupedSlots(_ slots: [AutoPlanSlot]) -> [(date: Date, slots: [AutoPlanSlot])] {
+        Dictionary(grouping: slots, by: \.date)
+            .map { (date: $0.key, slots: $0.value) }
+            .sorted { $0.date < $1.date }
+    }
+
+    private func attributionText(for suggestion: AutoPlanSuggestion?, recipePool: AutoPlanRecipePoolMode) -> String {
+        guard let suggestion else { return "" }
+        guard !suggestion.favoriteMemberIds.isEmpty else {
+            return suggestion.status == .manuallySelected ? "Manually selected" : "Recipe library"
+        }
+        let names = suggestion.favoriteMemberIds.map { viewModel.memberName(for: $0) }
+        if recipePool == .allRecipes {
+            if names.count == 1 {
+                return "Favorited by \(names[0])"
+            }
+            return "Favorited by \(names.dropLast().joined(separator: ", ")) and \(names.last ?? "")"
+        }
+        if names.count == 1 {
+            return "\(names[0])'s favorite"
+        }
+        return "Favorited by \(names.dropLast().joined(separator: ", ")) and \(names.last ?? "")"
+    }
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEE MMM d")
+        return formatter
+    }()
+
+    private static let fullDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEEE, MMM d")
+        return formatter
+    }()
+}
+
+private struct AutoPlanPreviewRow: View {
+    let slot: AutoPlanSlot
+    let attributionText: String
+    let onReroll: () -> Void
+    let onReplace: () -> Void
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: slot.mealType.systemImageName)
+                .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                .frame(width: 40, height: 40)
+                .background(HomeyDashboardTheme.selectedSidebarBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(slot.mealType.displayName)
+                        .font(.subheadline.weight(.bold))
+                    Text(slot.suggestion?.status.title ?? "No Suggestion")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(statusColor)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(statusColor.opacity(0.12), in: Capsule())
+                }
+                Text(slot.suggestion?.meal?.name ?? slot.existingPlannedMeals.first?.meal.name ?? "No eligible recipe")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    .lineLimit(2)
+                if !attributionText.isEmpty {
+                    Text(attributionText)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                }
+            }
+
+            Spacer()
+
+            if slot.suggestion?.status == .suggested {
+                Button("Reroll", action: onReroll)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                    .buttonStyle(.plain)
+            }
+            if slot.suggestion?.status != .existing {
+                Button("Replace", action: onReplace)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                    .buttonStyle(.plain)
+            }
+            if slot.suggestion?.isCreatable == true {
+                Button("Remove", action: onRemove)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                    .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+        .background(HomeyDashboardTheme.appBackground.opacity(0.46), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private var statusColor: Color {
+        switch slot.suggestion?.status {
+        case .existing:
+            return HomeyDashboardTheme.sageAccent
+        case .suggested, .manuallySelected:
+            return HomeyDashboardTheme.warmBrown
+        case .noSuggestion, nil:
+            return HomeyDashboardTheme.secondaryText
+        }
+    }
+}
+
+private struct AutoPlanManualReplacementTarget: Identifiable {
+    let slotId: AutoPlanSlotID
+    let mealType: MealType
+
+    var id: String {
+        slotId.description
+    }
 }
 
 struct UpcomingMealsPreviewView: View {

@@ -338,6 +338,7 @@ struct MealsView: View {
             meals: viewModel.unfilteredMeals,
             favoriteMeals: viewModel.favoriteMeals,
             collections: viewModel.collections,
+            householdMembers: homeService.membersForSelectedHome(),
             permissions: permissions,
             selectedHomeID: homeService.selectedHomeID,
             weekStartsOn: homeService.selectedHome()?.weekStartsOn,

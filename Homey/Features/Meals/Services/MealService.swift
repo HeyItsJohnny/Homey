@@ -13,6 +13,7 @@ protocol MealServicing: AnyObject {
     func searchMeals(homeId: UUID, query: String) async throws -> [Meal]
     func fetchMeals(homeId: UUID, mealType: MealType) async throws -> [Meal]
     func fetchFavoriteMeals(homeId: UUID) async throws -> [Meal]
+    func fetchHouseholdFavorites(homeId: UUID, memberUserIds: Set<UUID>) async throws -> [HouseholdMealFavorite]
     func setFavorite(mealId: UUID, isFavorite: Bool) async throws
     func isFavorite(mealId: UUID) async throws -> Bool
     func fetchCollections(homeId: UUID) async throws -> [MealCollection]
@@ -171,6 +172,41 @@ final class MealService: ObservableObject, MealServicing {
             throw error
         } catch {
             logMealError(error, operation: "fetchFavoriteMeals", homeId: homeId)
+            throw MealServiceError.loadFavoritesFailed
+        }
+    }
+
+    func fetchHouseholdFavorites(homeId: UUID, memberUserIds: Set<UUID>) async throws -> [HouseholdMealFavorite] {
+        do {
+            try await requireAuthenticatedSession()
+            guard !memberUserIds.isEmpty else { return [] }
+
+            let meals = try await fetchMeals(homeId: homeId)
+            let homeMealIds = Set(meals.map(\.id))
+            guard !homeMealIds.isEmpty else { return [] }
+
+            let favorites: [HouseholdMealFavorite] = try await client
+                .from("meal_favorites")
+                .select("meal_id, user_id, created_at")
+                .execute()
+                .value
+
+            let scopedFavorites = favorites.filter { favorite in
+                homeMealIds.contains(favorite.mealId) && memberUserIds.contains(favorite.userId)
+            }
+
+            #if DEBUG
+            print("Auto Plan household favorites loaded")
+            print("selected_home_id: \(homeId.uuidString)")
+            print("member_count: \(memberUserIds.count)")
+            print("household_favorite_row_count: \(scopedFavorites.count)")
+            #endif
+
+            return scopedFavorites
+        } catch let error as MealServiceError {
+            throw error
+        } catch {
+            logMealError(error, operation: "fetchHouseholdFavorites", homeId: homeId)
             throw MealServiceError.loadFavoritesFailed
         }
     }

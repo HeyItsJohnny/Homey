@@ -12,6 +12,13 @@ struct MealPermissions: Equatable, Hashable, Sendable {
     let canCreateCollections: Bool
     let canEditCollections: Bool
     let canDeleteCollections: Bool
+    let canViewMealPlan: Bool
+    let canPlanMeals: Bool
+    let canRunAutoPlan: Bool
+    let canApplyAutoPlan: Bool
+    let canRemovePlannedMeals: Bool
+    let canReplaceExistingPlan: Bool
+    let canClearMealPlan: Bool
 
     init(
         canView: Bool,
@@ -24,7 +31,14 @@ struct MealPermissions: Equatable, Hashable, Sendable {
         canDeletePhotos: Bool,
         canCreateCollections: Bool,
         canEditCollections: Bool,
-        canDeleteCollections: Bool
+        canDeleteCollections: Bool,
+        canViewMealPlan: Bool,
+        canPlanMeals: Bool,
+        canRunAutoPlan: Bool,
+        canApplyAutoPlan: Bool,
+        canRemovePlannedMeals: Bool,
+        canReplaceExistingPlan: Bool,
+        canClearMealPlan: Bool
     ) {
         self.canView = canView
         self.canCreate = canCreate
@@ -37,6 +51,13 @@ struct MealPermissions: Equatable, Hashable, Sendable {
         self.canCreateCollections = canCreateCollections
         self.canEditCollections = canEditCollections
         self.canDeleteCollections = canDeleteCollections
+        self.canViewMealPlan = canViewMealPlan
+        self.canPlanMeals = canPlanMeals
+        self.canRunAutoPlan = canRunAutoPlan
+        self.canApplyAutoPlan = canApplyAutoPlan
+        self.canRemovePlannedMeals = canRemovePlannedMeals
+        self.canReplaceExistingPlan = canReplaceExistingPlan
+        self.canClearMealPlan = canClearMealPlan
     }
 
     init(role: HomeMemberRole?) {
@@ -55,7 +76,14 @@ struct MealPermissions: Equatable, Hashable, Sendable {
                 canDeletePhotos: false,
                 canCreateCollections: true,
                 canEditCollections: true,
-                canDeleteCollections: false
+                canDeleteCollections: false,
+                canViewMealPlan: true,
+                canPlanMeals: true,
+                canRunAutoPlan: true,
+                canApplyAutoPlan: true,
+                canRemovePlannedMeals: true,
+                canReplaceExistingPlan: false,
+                canClearMealPlan: false
             )
         case nil:
             self = .restrictive
@@ -73,7 +101,14 @@ struct MealPermissions: Equatable, Hashable, Sendable {
         canDeletePhotos: true,
         canCreateCollections: true,
         canEditCollections: true,
-        canDeleteCollections: true
+        canDeleteCollections: true,
+        canViewMealPlan: true,
+        canPlanMeals: true,
+        canRunAutoPlan: true,
+        canApplyAutoPlan: true,
+        canRemovePlannedMeals: true,
+        canReplaceExistingPlan: true,
+        canClearMealPlan: true
     )
 
     static let restrictive = MealPermissions(
@@ -87,6 +122,13 @@ struct MealPermissions: Equatable, Hashable, Sendable {
         canDeletePhotos: false,
         canCreateCollections: false,
         canEditCollections: false,
-        canDeleteCollections: false
+        canDeleteCollections: false,
+        canViewMealPlan: false,
+        canPlanMeals: false,
+        canRunAutoPlan: false,
+        canApplyAutoPlan: false,
+        canRemovePlannedMeals: false,
+        canReplaceExistingPlan: false,
+        canClearMealPlan: false
     )
 }
