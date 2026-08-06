@@ -45,7 +45,7 @@ struct MealsView: View {
                         canFavorite: mealPermissions.canFavorite,
                         isFavorite: viewModel.isFavorite,
                         onToggleFavorite: toggleFavorite,
-                        onSelectMeal: { meal in path.append(MealsRoute.detail(meal.id)) }
+                        onSelectMeal: openMealEditor
                     )
                 case .addMeal:
                     switch effectivePermissionResolution {
@@ -74,16 +74,6 @@ struct MealsView: View {
                             )
                         }
                     }
-                case .detail(let mealID):
-                    MealDetailDestination(
-                        mealID: mealID,
-                        selectedHomeID: homeService.selectedHomeID,
-                        viewModel: viewModel,
-                        canFavorite: mealPermissions.canFavorite,
-                        canEdit: mealPermissions.canEdit,
-                        onToggleFavorite: toggleFavorite,
-                        onEdit: { path.append(MealsRoute.editMeal(mealID)) }
-                    )
                 case .editMeal(let mealID):
                     switch effectivePermissionResolution {
                     case .loading:
@@ -323,7 +313,7 @@ struct MealsView: View {
                 canFavorite: mealPermissions.canFavorite,
                 isFavorite: viewModel.isFavorite,
                 onToggleFavorite: toggleFavorite,
-                onSelectMeal: { meal in path.append(MealsRoute.detail(meal.id)) },
+                onSelectMeal: openMealEditor,
                 onSeeAll: { path.append(MealsRoute.library) }
             )
 
@@ -343,7 +333,7 @@ struct MealsView: View {
             selectedHomeID: homeService.selectedHomeID,
             weekStartsOn: homeService.selectedHome()?.weekStartsOn,
             timezone: homeService.selectedHome()?.timezone,
-            onSelectMeal: { meal in path.append(MealsRoute.detail(meal.id)) },
+            onSelectMeal: openMealEditor,
             onOpenCalendar: onOpenCalendar,
             onComingSoon: { message in comingSoonMessage = message }
         )
@@ -357,7 +347,7 @@ struct MealsView: View {
             canFavorite: mealPermissions.canFavorite,
             isFavorite: viewModel.isFavorite,
             onToggleFavorite: toggleFavorite,
-            onSelectMeal: { meal in path.append(MealsRoute.detail(meal.id)) },
+            onSelectMeal: openMealEditor,
             onSeeAll: nil
         )
     }
@@ -372,7 +362,7 @@ struct MealsView: View {
             selectedHomeID: homeService.selectedHomeID,
             weekStartsOn: homeService.selectedHome()?.weekStartsOn,
             timezone: homeService.selectedHome()?.timezone,
-            onSelectMeal: { meal in path.append(MealsRoute.detail(meal.id)) },
+            onSelectMeal: openMealEditor,
             onShowPlanner: { selectedTab = .mealPlan }
         )
     }
@@ -452,6 +442,14 @@ struct MealsView: View {
         Task { await viewModel.toggleFavorite(meal, permissions: permissions) }
     }
 
+    private func openMealEditor(_ meal: Meal) {
+        guard mealPermissions.canEdit else {
+            comingSoonMessage = "You do not have permission to edit meals in this Home."
+            return
+        }
+        path.append(MealsRoute.editMeal(meal.id))
+    }
+
     private func handleSavedMeal(mealID: UUID, meal: Meal?) {
         if let meal {
             viewModel.replaceMeal(meal)
@@ -460,132 +458,6 @@ struct MealsView: View {
                 _ = await viewModel.refreshMeal(id: mealID, homeId: homeService.selectedHomeID)
             }
         }
-    }
-}
-
-private struct MealDetailDestination: View {
-    let mealID: UUID
-    let selectedHomeID: UUID?
-    @ObservedObject var viewModel: MealsViewModel
-    let canFavorite: Bool
-    let canEdit: Bool
-    let onToggleFavorite: (Meal) -> Void
-    let onEdit: () -> Void
-
-    @State private var loadState: MealDetailLoadState = .idle
-
-    private var resolvedMeal: Meal? {
-        viewModel.meal(id: mealID) ?? loadState.loadedMeal
-    }
-
-    var body: some View {
-        Group {
-            if let meal = resolvedMeal {
-                MealDetailView(
-                    meal: meal,
-                    isFavorite: viewModel.isFavorite(meal),
-                    canFavorite: canFavorite,
-                    canEdit: canEdit,
-                    onToggleFavorite: { onToggleFavorite(meal) },
-                    onEdit: onEdit
-                )
-            } else {
-                switch loadState {
-                case .idle, .loading:
-                    MealMessageCard(
-                        title: "Loading Meal",
-                        message: "Loading this meal…",
-                        systemImage: "hourglass"
-                    )
-                case .loaded:
-                    EmptyView()
-                case .unavailable:
-                    MealMessageCard(
-                        title: "Meal Unavailable",
-                        message: "We could not find this meal. It may have been moved, archived, or deleted.",
-                        systemImage: "fork.knife"
-                    )
-                case .failed(let message):
-                    MealMessageCard(
-                        title: "Meal Unavailable",
-                        message: message,
-                        systemImage: "exclamationmark.triangle.fill"
-                    )
-                }
-            }
-        }
-        .task(id: detailLoadTaskID) {
-            await loadMealIfNeeded()
-        }
-    }
-
-    private var detailLoadTaskID: String {
-        "\(mealID.uuidString)-\(selectedHomeID?.uuidString ?? "no-home")"
-    }
-
-    private func loadMealIfNeeded() async {
-        let containsMeal = viewModel.meal(id: mealID) != nil
-        logDetailLoad("open detail", containsMeal: containsMeal)
-
-        guard !containsMeal else {
-            loadState = .idle
-            return
-        }
-
-        guard let selectedHomeID else {
-            logDetailLoad("unavailable: no selected Home", containsMeal: false)
-            loadState = .unavailable
-            return
-        }
-
-        loadState = .loading
-        logDetailLoad("targeted fetch started", containsMeal: false)
-        guard let fetchedMeal = await viewModel.refreshMeal(id: mealID, homeId: selectedHomeID) else {
-            logDetailLoad("unavailable: targeted fetch returned nil", containsMeal: viewModel.meal(id: mealID) != nil)
-            loadState = .unavailable
-            return
-        }
-
-        guard fetchedMeal.homeId == selectedHomeID else {
-            logDetailLoad("unavailable: fetched meal Home mismatch", containsMeal: false, fetchedMeal: fetchedMeal)
-            loadState = .unavailable
-            return
-        }
-
-        logDetailLoad("targeted fetch succeeded", containsMeal: viewModel.meal(id: mealID) != nil, fetchedMeal: fetchedMeal)
-        loadState = .loaded(fetchedMeal)
-    }
-
-    private func logDetailLoad(_ reason: String, containsMeal: Bool, fetchedMeal: Meal? = nil) {
-        #if DEBUG
-        print("========== MEAL DETAIL LOAD ==========")
-        print("reason: \(reason)")
-        print("route_meal_id: \(mealID.uuidString)")
-        print("selected_home_id: \(selectedHomeID?.uuidString ?? "nil")")
-        print("shared_view_model: \(ObjectIdentifier(viewModel))")
-        print("shared_view_model_contains_meal: \(containsMeal)")
-        if let fetchedMeal {
-            print("fetched_meal_id: \(fetchedMeal.id.uuidString)")
-            print("fetched_home_id: \(fetchedMeal.homeId.uuidString)")
-            print("fetched_is_archived: \(fetchedMeal.isArchived)")
-        }
-        print("======================================")
-        #endif
-    }
-}
-
-private enum MealDetailLoadState: Equatable {
-    case idle
-    case loading
-    case loaded(Meal)
-    case unavailable
-    case failed(String)
-
-    var loadedMeal: Meal? {
-        if case .loaded(let meal) = self {
-            return meal
-        }
-        return nil
     }
 }
 
@@ -611,7 +483,6 @@ private enum MealsLandingTab: String, CaseIterable, Identifiable {
 private enum MealsRoute: Hashable {
     case library
     case addMeal
-    case detail(UUID)
     case editMeal(UUID)
 }
 

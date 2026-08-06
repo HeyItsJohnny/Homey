@@ -22,6 +22,7 @@ final class MealEditorViewModel: ObservableObject {
     @Published var existingPhotoURL: URL?
     @Published var selectedPhotoData: Data?
     @Published var selectedPhotoImage: UIImage?
+    @Published private(set) var isProcessingPhoto = false
     @Published var ingredients: [MealEditorIngredient] = []
     @Published var steps: [MealEditorStep] = []
     @Published var isDraft = true
@@ -189,8 +190,13 @@ final class MealEditorViewModel: ObservableObject {
     func uploadPhotoIfNeeded(homeId: UUID, mealId: UUID) async throws -> MealPhoto? {
         guard let selectedPhotoData else { return nil }
         do {
-            let compressedData = try compressedImageData(from: selectedPhotoData)
-            return try await mealService.uploadMealPhoto(homeId: homeId, mealId: mealId, imageData: compressedData, fileExtension: "jpg")
+            logPhotoDiagnostic(
+                operation: "meal_photo_upload_started",
+                homeId: homeId,
+                mealId: mealId,
+                byteCount: selectedPhotoData.count
+            )
+            return try await mealService.uploadMealPhoto(homeId: homeId, mealId: mealId, imageData: selectedPhotoData, fileExtension: "jpg")
         } catch {
             logSaveDiagnostic(
                 error: error,
@@ -241,15 +247,35 @@ final class MealEditorViewModel: ObservableObject {
         errorMessage = nil
     }
 
-    func setPhotoData(_ data: Data) {
+    func setPhotoData(_ data: Data) async {
+        isProcessingPhoto = true
+        defer { isProcessingPhoto = false }
+
         do {
-            selectedPhotoData = try compressedImageData(from: data)
-            selectedPhotoImage = UIImage(data: selectedPhotoData ?? data)
+            let processedPhoto = try processedJPEGPhoto(from: data)
+            selectedPhotoData = processedPhoto.data
+            selectedPhotoImage = processedPhoto.image
             validationErrors.removeAll { $0.field == .photo }
+            logPhotoDiagnostic(
+                operation: "meal_photo_processed",
+                homeId: nil,
+                mealId: persistedMealID,
+                originalPixelSize: processedPhoto.originalPixelSize,
+                resizedPixelSize: processedPhoto.resizedPixelSize,
+                originalByteCount: processedPhoto.originalByteCount,
+                byteCount: processedPhoto.data.count
+            )
         } catch {
             selectedPhotoData = nil
             selectedPhotoImage = nil
             validationErrors.append(MealEditorValidationError(field: .photo, message: "We could not prepare that photo. Please choose another image."))
+            logSaveDiagnostic(
+                error: error,
+                operation: "photo_selection_processing",
+                homeId: nil,
+                mealId: persistedMealID,
+                isDraft: nil
+            )
         }
     }
 
@@ -258,6 +284,7 @@ final class MealEditorViewModel: ObservableObject {
         existingPhotoURL = nil
         selectedPhotoData = nil
         selectedPhotoImage = nil
+        isProcessingPhoto = false
     }
 
     func toggleMealType(_ mealType: MealType) {
@@ -414,11 +441,25 @@ final class MealEditorViewModel: ObservableObject {
         do {
             if let uploadedPhoto = try await uploadPhotoIfNeeded(homeId: homeId, mealId: createdMealID) {
                 draft.primaryPhotoPath = uploadedPhoto.path
+                logPhotoDiagnostic(
+                    operation: "primary_photo_path_update_started",
+                    homeId: homeId,
+                    mealId: createdMealID,
+                    path: uploadedPhoto.path,
+                    byteCount: selectedPhotoData?.count
+                )
                 _ = try await mealService.saveMealRecipe(
                     homeId: homeId,
                     mealId: createdMealID,
                     draft: draft,
                     isDraft: saveAsDraft
+                )
+                logPhotoDiagnostic(
+                    operation: "primary_photo_path_update_succeeded",
+                    homeId: homeId,
+                    mealId: createdMealID,
+                    path: uploadedPhoto.path,
+                    byteCount: selectedPhotoData?.count
                 )
             }
             return createdMealID
@@ -443,8 +484,25 @@ final class MealEditorViewModel: ObservableObject {
             uploadedPhoto = try await uploadPhotoIfNeeded(homeId: homeId, mealId: mealId)
             if let uploadedPhoto {
                 draft.primaryPhotoPath = uploadedPhoto.path
+                logPhotoDiagnostic(
+                    operation: "primary_photo_path_update_started",
+                    homeId: homeId,
+                    mealId: mealId,
+                    path: uploadedPhoto.path,
+                    byteCount: selectedPhotoData?.count
+                )
             }
-            return try await mealService.saveMealRecipe(homeId: homeId, mealId: mealId, draft: draft, isDraft: saveAsDraft)
+            let savedMealId = try await mealService.saveMealRecipe(homeId: homeId, mealId: mealId, draft: draft, isDraft: saveAsDraft)
+            if let uploadedPhoto {
+                logPhotoDiagnostic(
+                    operation: "primary_photo_path_update_succeeded",
+                    homeId: homeId,
+                    mealId: mealId,
+                    path: uploadedPhoto.path,
+                    byteCount: selectedPhotoData?.count
+                )
+            }
+            return savedMealId
         } catch {
             if let uploadedPhoto {
                 do {
@@ -516,6 +574,43 @@ final class MealEditorViewModel: ObservableObject {
             print("validation_errors: \(validationErrors.map(\.message))")
         }
         print("=================================================")
+        #endif
+    }
+
+    private func logPhotoDiagnostic(
+        operation: String,
+        homeId: UUID?,
+        mealId: UUID?,
+        path: String? = nil,
+        originalPixelSize: CGSize? = nil,
+        resizedPixelSize: CGSize? = nil,
+        originalByteCount: Int? = nil,
+        byteCount: Int? = nil
+    ) {
+        #if DEBUG
+        print("========== MEAL PHOTO DIAGNOSTIC ==========")
+        print("operation: \(operation)")
+        print("editor_mode: \(isCreatingNewMeal ? "create" : "edit")")
+        print("bucket: meal-images")
+        print("home_id: \(homeId?.uuidString ?? "nil")")
+        print("persisted_meal_id: \(persistedMealID?.uuidString ?? "nil")")
+        print("upload_meal_id: \(mealId?.uuidString ?? "nil")")
+        if let path { print("path: \(path)") }
+        print("file_extension: jpg")
+        print("mime_type: image/jpeg")
+        if let originalPixelSize {
+            print("original_pixels: \(Int(originalPixelSize.width))x\(Int(originalPixelSize.height))")
+        }
+        if let resizedPixelSize {
+            print("resized_pixels: \(Int(resizedPixelSize.width))x\(Int(resizedPixelSize.height))")
+        }
+        if let originalByteCount {
+            print("original_bytes: \(originalByteCount)")
+        }
+        if let byteCount {
+            print("compressed_bytes: \(byteCount)")
+        }
+        print("===========================================")
         #endif
     }
 
@@ -743,11 +838,11 @@ final class MealEditorViewModel: ObservableObject {
         return intValue
     }
 
-    private func compressedImageData(from data: Data) throws -> Data {
+    private func processedJPEGPhoto(from data: Data) throws -> ProcessedMealPhoto {
         guard !data.isEmpty, let image = UIImage(data: data) else {
             throw MealServiceError.invalidPhotoData
         }
-        let maxDimension: CGFloat = 1800
+        let maxDimension: CGFloat = 2048
         let size = image.size
         let scale = min(1, maxDimension / max(size.width, size.height))
         let targetSize = CGSize(width: size.width * scale, height: size.height * scale)
@@ -759,8 +854,22 @@ final class MealEditorViewModel: ObservableObject {
         guard let jpegData = renderedImage.jpegData(compressionQuality: 0.82), !jpegData.isEmpty else {
             throw MealServiceError.invalidPhotoData
         }
-        return jpegData
+        return ProcessedMealPhoto(
+            data: jpegData,
+            image: renderedImage,
+            originalPixelSize: size,
+            resizedPixelSize: targetSize,
+            originalByteCount: data.count
+        )
     }
+}
+
+private struct ProcessedMealPhoto {
+    let data: Data
+    let image: UIImage
+    let originalPixelSize: CGSize
+    let resizedPixelSize: CGSize
+    let originalByteCount: Int
 }
 
 private extension String {

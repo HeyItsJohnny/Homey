@@ -271,35 +271,14 @@ struct MealEditorView: View {
         let hasPhoto = viewModel.hasPhoto
         return MealEditorCard(title: "Photo") {
             VStack(alignment: .leading, spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .fill(HomeyDashboardTheme.selectedSidebarBackground)
-                    if let image = viewModel.selectedPhotoImage {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFill()
-                    } else if let url = viewModel.existingPhotoURL {
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image.resizable().scaledToFill()
-                            case .empty:
-                                ProgressView().tint(HomeyDashboardTheme.warmBrown)
-                            case .failure:
-                                photoPlaceholder
-                            @unknown default:
-                                photoPlaceholder
-                            }
-                        }
-                    } else {
-                        photoPlaceholder
-                    }
+                MealPhotoPreviewContainer(
+                    height: photoBoxHeight,
+                    fixedWidth: photoBoxWidth,
+                    isProcessing: viewModel.isProcessingPhoto,
+                    accessibilityLabel: hasPhoto ? "Meal photo" : "No meal photo selected"
+                ) {
+                    photoContent
                 }
-                .frame(height: horizontalSizeClass == .compact ? 220 : 300)
-                .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-                .overlay { RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
-                .shadow(color: HomeyDashboardTheme.shadow.opacity(0.28), radius: 14, x: 0, y: 8)
-                .accessibilityLabel(hasPhoto ? "Meal photo" : "No meal photo selected")
 
                 HStack(spacing: 10) {
                     PhotosPicker(selection: $selectedPhotoItem, matching: .images) {
@@ -308,6 +287,7 @@ struct MealEditorView: View {
                     }
                     .buttonStyle(.bordered)
                     .tint(HomeyDashboardTheme.warmBrown)
+                    .disabled(viewModel.isProcessingPhoto || viewModel.isSaving)
 
                     if hasPhoto {
                         Button(role: .destructive) {
@@ -317,10 +297,41 @@ struct MealEditorView: View {
                                 .frame(minHeight: 44)
                         }
                         .buttonStyle(.bordered)
+                        .disabled(viewModel.isProcessingPhoto || viewModel.isSaving)
                     }
                 }
                 validationText(for: .photo)
             }
+        }
+    }
+
+    private var photoBoxHeight: CGFloat {
+        horizontalSizeClass == .compact ? 220 : 300
+    }
+
+    private var photoBoxWidth: CGFloat? {
+        horizontalSizeClass == .compact ? nil : 350
+    }
+
+    @ViewBuilder
+    private var photoContent: some View {
+        if let image = viewModel.selectedPhotoImage {
+            MealPhotoPreviewImage(image: Image(uiImage: image))
+        } else if let url = viewModel.existingPhotoURL {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    MealPhotoPreviewImage(image: image)
+                case .empty:
+                    ProgressView().tint(HomeyDashboardTheme.warmBrown)
+                case .failure:
+                    photoPlaceholder
+                @unknown default:
+                    photoPlaceholder
+                }
+            }
+        } else {
+            photoPlaceholder
         }
     }
 
@@ -490,9 +501,11 @@ struct MealEditorView: View {
                 validationText(for: .ingredients)
                 ForEach(groupedIngredients, id: \.section) { group in
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(group.section)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(HomeyDashboardTheme.primaryText)
+                        if shouldShowIngredientSectionTitle(group.section) {
+                            Text(group.section)
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                        }
                         ForEach(group.items) { ingredient in
                             IngredientRow(
                                 ingredient: ingredient,
@@ -505,6 +518,10 @@ struct MealEditorView: View {
                 }
             }
         }
+    }
+
+    private func shouldShowIngredientSectionTitle(_ section: String) -> Bool {
+        groupedIngredients.count > 1 || section != "Ingredients"
     }
 
     private var directionsCard: some View {
@@ -770,8 +787,14 @@ struct MealEditorView: View {
     private func loadPhoto(from item: PhotosPickerItem) async {
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else { return }
-            viewModel.setPhotoData(data)
+            await viewModel.setPhotoData(data)
         } catch {
+            #if DEBUG
+            print("========== MEAL PHOTO SELECTION FAILED ==========")
+            print("localizedDescription: \(error.localizedDescription)")
+            print(String(reflecting: error))
+            print("=================================================")
+            #endif
             viewModel.errorMessage = "We could not load that photo. Please choose another image."
         }
     }
@@ -910,6 +933,54 @@ private struct MealEditorCard<HeaderAccessory: View, Content: View>: View {
         .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: 26, style: .continuous).stroke(HomeyDashboardTheme.softBorder.opacity(0.85), lineWidth: 1) }
         .shadow(color: HomeyDashboardTheme.shadow.opacity(0.22), radius: 14, x: 0, y: 7)
+    }
+}
+
+private struct MealPhotoPreviewContainer<Content: View>: View {
+    let height: CGFloat
+    let fixedWidth: CGFloat?
+    let isProcessing: Bool
+    let accessibilityLabel: String
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(HomeyDashboardTheme.selectedSidebarBackground)
+
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+
+            if isProcessing {
+                Color.black.opacity(0.18)
+                ProgressView()
+                    .tint(HomeyDashboardTheme.warmBrown)
+            }
+        }
+        .frame(width: fixedWidth)
+        .frame(maxWidth: fixedWidth == nil ? .infinity : fixedWidth)
+        .frame(height: height)
+        .clipped()
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+        .shadow(color: HomeyDashboardTheme.shadow.opacity(0.28), radius: 14, x: 0, y: 8)
+        .accessibilityLabel(accessibilityLabel)
+    }
+}
+
+private struct MealPhotoPreviewImage: View {
+    let image: Image
+
+    var body: some View {
+        image
+            .resizable()
+            .scaledToFill()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
     }
 }
 

@@ -619,23 +619,30 @@ final class MealService: ObservableObject, MealServicing {
 
     func uploadMealPhoto(homeId: UUID, mealId: UUID, imageData: Data, fileExtension: String) async throws -> MealPhoto {
         var objectPath: String?
-        var contentType: String?
+        let contentType = "image/jpeg"
+        let normalizedExtension = normalizedFileExtension(fileExtension)
         do {
             let userId = try await authenticatedUserId()
             guard !imageData.isEmpty else {
                 throw MealServiceError.invalidPhotoData
             }
-            let normalizedExtension = normalizedFileExtension(fileExtension)
             let photoId = UUID()
-            objectPath = "\(homeId.uuidString.lowercased())/\(mealId.uuidString.lowercased())/\(photoId.uuidString.lowercased()).\(normalizedExtension)"
-            contentType = "image/\(normalizedExtension == "jpg" ? "jpeg" : normalizedExtension)"
+            objectPath = mealPhotoPath(
+                homeId: homeId,
+                mealId: mealId,
+                photoId: photoId,
+                fileExtension: normalizedExtension
+            )
 
             #if DEBUG
-            print("Uploading meal photo")
+            print("Meal photo upload started")
             print("bucket: \(imageBucket)")
-            print("objectPath: \(objectPath ?? "")")
-            print("contentType: \(contentType ?? "")")
-            print("imageDataBytes: \(imageData.count)")
+            print("home_id: \(homeId.uuidString)")
+            print("persisted_meal_id: \(mealId.uuidString)")
+            print("path: \(objectPath ?? "")")
+            print("file_extension: \(normalizedExtension)")
+            print("mime_type: \(contentType)")
+            print("compressed_bytes: \(imageData.count)")
             #endif
 
             try await client.storage
@@ -650,28 +657,59 @@ final class MealService: ObservableObject, MealServicing {
                     )
                 )
 
+            #if DEBUG
+            print("upload_succeeded")
+            #endif
+
+            let uploadedPath = objectPath ?? ""
             let photoPayload = CreateMealPhotoPayload(
                 mealId: mealId,
                 homeId: homeId,
-                path: objectPath ?? "",
+                path: uploadedPath,
                 fileExtension: normalizedExtension,
                 contentType: contentType,
                 uploadedBy: userId
             )
-            return try await client
-                .from("meal_photos")
-                .insert(photoPayload)
-                .select()
-                .single()
-                .execute()
-                .value
+            do {
+                return try await client
+                    .from("meal_photos")
+                    .insert(photoPayload)
+                    .select()
+                    .single()
+                    .execute()
+                    .value
+            } catch {
+                logMealError(
+                    error,
+                    operation: "meal_photo_metadata_insert_nonfatal",
+                    homeId: homeId,
+                    mealId: mealId,
+                    payloadDescription: "bucket=\(imageBucket), objectPath=\(uploadedPath), fileExtension=\(normalizedExtension), contentType=\(contentType), imageDataBytes=\(imageData.count)"
+                )
+                #if DEBUG
+                print("meal_photo_metadata_insert_failed_nonfatal")
+                #endif
+                return MealPhoto(
+                    id: photoId,
+                    mealId: mealId,
+                    homeId: homeId,
+                    path: uploadedPath,
+                    fileExtension: normalizedExtension,
+                    contentType: contentType,
+                    caption: nil,
+                    sortOrder: 0,
+                    uploadedBy: userId,
+                    createdAt: Date(),
+                    updatedAt: Date()
+                )
+            }
         } catch let error as MealServiceError {
             logMealError(
                 error,
                 operation: "uploadMealPhoto_preflight",
                 homeId: homeId,
                 mealId: mealId,
-                payloadDescription: "bucket=\(imageBucket), objectPath=\(objectPath ?? "nil"), contentType=\(contentType ?? "nil"), imageDataBytes=\(imageData.count)"
+                payloadDescription: "bucket=\(imageBucket), objectPath=\(objectPath ?? "nil"), fileExtension=\(normalizedExtension), contentType=\(contentType), imageDataBytes=\(imageData.count)"
             )
             throw error
         } catch {
@@ -680,7 +718,7 @@ final class MealService: ObservableObject, MealServicing {
                 operation: "uploadMealPhoto",
                 homeId: homeId,
                 mealId: mealId,
-                payloadDescription: "bucket=\(imageBucket), objectPath=\(objectPath ?? "nil"), contentType=\(contentType ?? "nil"), imageDataBytes=\(imageData.count)"
+                payloadDescription: "bucket=\(imageBucket), objectPath=\(objectPath ?? "nil"), fileExtension=\(normalizedExtension), contentType=\(contentType), imageDataBytes=\(imageData.count)"
             )
             throw MealServiceError.uploadPhotoFailed
         }
@@ -991,6 +1029,15 @@ final class MealService: ObservableObject, MealServicing {
         return numerator / denominator
     }
 
+    private func mealPhotoPath(homeId: UUID, mealId: UUID, photoId: UUID, fileExtension: String) -> String {
+        let normalizedExtension = normalizedFileExtension(fileExtension)
+        return [
+            homeId.uuidString.lowercased(),
+            mealId.uuidString.lowercased(),
+            "\(photoId.uuidString.lowercased()).\(normalizedExtension)"
+        ].joined(separator: "/")
+    }
+
     private func normalizedFileExtension(_ value: String) -> String {
         let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "."))
@@ -998,8 +1045,6 @@ final class MealService: ObservableObject, MealServicing {
         switch cleaned {
         case "jpeg", "jpg":
             return "jpg"
-        case "png", "heic", "webp":
-            return cleaned
         default:
             return "jpg"
         }
