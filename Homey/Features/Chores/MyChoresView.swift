@@ -4,65 +4,269 @@ import SwiftUI
 struct MyChoresView: View {
     @EnvironmentObject private var homeService: HomeService
     @StateObject private var viewModel = MyChoresViewModel()
+    @State private var selectedOccurrence: ChoreOccurrence?
 
     var body: some View {
         ChoreShellCard(title: "My Chores", systemImage: "checklist") {
-            if viewModel.isLoading && viewModel.occurrences.isEmpty {
-                ChoreLoadingState(message: "Loading your chores...")
-            } else if let errorMessage = viewModel.errorMessage {
-                ChoreMessageState(
-                    title: "Unable to Load Chores",
-                    message: errorMessage,
-                    systemImage: "exclamationmark.triangle.fill",
-                    buttonTitle: "Try Again"
-                ) {
-                    viewModel.reload()
-                }
-            } else if viewModel.occurrences.isEmpty {
-                ChoreMessageState(
-                    title: "No Chores Yet",
-                    message: "Assigned chores will appear here.",
-                    systemImage: "checkmark.circle"
-                )
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(viewModel.occurrences) { occurrence in
-                        ChoreOccurrenceRow(occurrence: occurrence)
+            VStack(alignment: .leading, spacing: 14) {
+                weeklyHeader
 
-                        if occurrence.id != viewModel.occurrences.last?.id {
-                            Divider()
-                                .overlay(HomeyDashboardTheme.softBorder)
-                        }
+                if viewModel.isLoading && viewModel.occurrences.isEmpty {
+                    ChoreLoadingState(message: "Loading your chores...")
+                } else if let errorMessage = viewModel.errorMessage {
+                    ChoreMessageState(
+                        title: "Unable to Load Chores",
+                        message: errorMessage,
+                        systemImage: "exclamationmark.triangle.fill",
+                        buttonTitle: "Try Again"
+                    ) {
+                        viewModel.reload()
                     }
+                } else {
+                    weeklyPlanner
+                    MyChoresWeekSummaryCard(summary: viewModel.summary)
                 }
             }
         }
-        .task(id: homeService.selectedHomeID) {
-            await viewModel.load(homeId: homeService.selectedHomeID)
+        .gesture(
+            DragGesture(minimumDistance: 36)
+                .onEnded { value in
+                    if value.translation.width < -50 {
+                        viewModel.moveToNextWeek()
+                    } else if value.translation.width > 50 {
+                        viewModel.moveToPreviousWeek()
+                    }
+                }
+        )
+        .task(id: loadTaskID) {
+            let selectedHome = homeService.selectedHome()
+            await viewModel.configure(
+                homeId: homeService.selectedHomeID,
+                weekStartsOn: selectedHome?.weekStartsOn,
+                timezone: selectedHome?.timezone
+            )
         }
         .task {
             for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
                 viewModel.reload()
             }
         }
+        .sheet(item: $selectedOccurrence) { occurrence in
+            ChoreOccurrenceDetailView(
+                initialOccurrence: occurrence,
+                homeTimezone: homeService.selectedHome()?.timezone ?? TimeZone.autoupdatingCurrent.identifier
+            )
+        }
+    }
+
+    private var loadTaskID: String {
+        let selectedHome = homeService.selectedHome()
+        return "\(homeService.selectedHomeID?.uuidString ?? "no-home")-\(selectedHome?.weekStartsOn ?? -1)-\(selectedHome?.timezone ?? "")"
+    }
+
+    private var weeklyHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Button {
+                viewModel.moveToPreviousWeek()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .frame(width: 38, height: 38)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            .background(HomeyDashboardTheme.cardBackground, in: Circle())
+            .overlay { Circle().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+            .accessibilityLabel("Previous week")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("This Week")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                Text(viewModel.visibleWeekTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            }
+            .accessibilityElement(children: .combine)
+
+            Button {
+                viewModel.moveToNextWeek()
+            } label: {
+                Image(systemName: "chevron.right")
+                    .frame(width: 38, height: 38)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            .background(HomeyDashboardTheme.cardBackground, in: Circle())
+            .overlay { Circle().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+            .accessibilityLabel("Next week")
+
+            Spacer()
+
+            Text("\(viewModel.plannedChoreCount) Chores")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .lineLimit(1)
+
+            Button("Today") { viewModel.moveToToday() }
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                .padding(.horizontal, 16)
+                .frame(minHeight: 38)
+                .background(HomeyDashboardTheme.cardBackground, in: Capsule())
+                .overlay { Capsule().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Go to today")
+        }
+    }
+
+    private var weeklyPlanner: some View {
+        ScrollView(.horizontal) {
+            HStack(alignment: .top, spacing: 10) {
+                ForEach(viewModel.daySections) { section in
+                    MyChoresDayColumn(
+                        section: section,
+                        isToday: viewModel.isToday(section.date),
+                        isSelected: viewModel.isSelectedDay(section.date),
+                        onSelectDay: { viewModel.selectDay(section.date) },
+                        onSelectOccurrence: { selectedOccurrence = $0 }
+                    )
+                    .frame(width: 210, alignment: .top)
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
+        .accessibilityLabel("Weekly chore planner")
     }
 }
 
 @MainActor
 private final class MyChoresViewModel: ObservableObject {
     @Published private(set) var occurrences: [ChoreOccurrence] = []
+    @Published private(set) var weekDays: [Date] = []
+    @Published private(set) var selectedDate: Date?
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
 
     private let repository: ChoresRepository
     private var activeHomeId: UUID?
+    private var timezone = TimeZone.autoupdatingCurrent.identifier
+    private var calendar = Calendar.autoupdatingCurrent
+    private var visibleWeekAnchor = Date()
+    private var categoriesById: [UUID: ChoreCategory] = [:]
+    private var roomsById: [UUID: ChoreRoom] = [:]
+
+    private static let dayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "d"
+        return formatter
+    }()
+
+    private static let monthYearFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM"
+        return formatter
+    }()
+
+    private static let monthDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d"
+        return formatter
+    }()
+
+    private static let monthDayYearFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MMM d, yyyy"
+        return formatter
+    }()
+
+    private static let weekdayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE"
+        return formatter
+    }()
+
+    private static let fullDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE, MMMM d"
+        return formatter
+    }()
 
     init(repository: ChoresRepository? = nil) {
         self.repository = repository ?? ChoresRepository()
+        configureCalendar(weekStartsOn: nil, timezone: nil)
+        updateWeekDays()
     }
 
-    func load(homeId: UUID?) async {
-        guard let homeId else {
+    var visibleWeekTitle: String {
+        guard let range = visibleWeekRange,
+              let inclusiveEnd = calendar.date(byAdding: .day, value: -1, to: range.end) else {
+            return "This Week"
+        }
+
+        if calendar.isDate(range.start, equalTo: inclusiveEnd, toGranularity: .month) {
+            let month = Self.monthYearFormatter.string(from: range.start)
+            let startDay = Self.dayFormatter.string(from: range.start)
+            let endDay = Self.dayFormatter.string(from: inclusiveEnd)
+            return "\(month) \(startDay)-\(endDay)"
+        }
+
+        if calendar.component(.year, from: range.start) == calendar.component(.year, from: inclusiveEnd) {
+            return "\(Self.monthDayFormatter.string(from: range.start)) - \(Self.monthDayYearFormatter.string(from: inclusiveEnd))"
+        }
+
+        return "\(Self.monthDayYearFormatter.string(from: range.start)) - \(Self.monthDayYearFormatter.string(from: inclusiveEnd))"
+    }
+
+    var summary: MyChoresWeekSummary {
+        let eligibleOccurrences = occurrences.filter { !$0.isExcludedFromWeeklySummary }
+        let approved = eligibleOccurrences.filter { $0.status == .completed }.count
+        let pendingApproval = eligibleOccurrences.filter { $0.status == .awaitingApproval }.count
+        let toDo = eligibleOccurrences.filter { occurrence in
+            switch occurrence.displayStatus {
+            case .overdue:
+                return true
+            case .stored(let status):
+                return status == .notStarted || status == .inProgress || status == .needsRedo
+            }
+        }.count
+        return MyChoresWeekSummary(toDo: toDo, pendingApproval: pendingApproval, approved: approved, total: eligibleOccurrences.count)
+    }
+
+    var plannedChoreCount: Int {
+        occurrences.filter { !$0.isExcludedFromWeeklySummary }.count
+    }
+
+    var daySections: [MyChoresDaySectionModel] {
+        weekDays.map { day in
+            let dayOccurrences = occurrences
+                .filter { calendar.isDate($0.dueAt, inSameDayAs: day) }
+                .sortedForMyChoresWeek()
+            return MyChoresDaySectionModel(
+                date: day,
+                title: Self.weekdayFormatter.string(from: day),
+                dayNumber: Self.dayFormatter.string(from: day),
+                accessibilityDateTitle: Self.fullDateFormatter.string(from: day),
+                occurrences: dayOccurrences
+            )
+        }
+    }
+
+    func configure(homeId: UUID?, weekStartsOn: Int?, timezone: String?) async {
+        let previousHomeId = activeHomeId
+        let previousWeekStart = calendar.firstWeekday
+        let previousTimezone = self.timezone
+        activeHomeId = homeId
+        configureCalendar(weekStartsOn: weekStartsOn, timezone: timezone)
+        if previousHomeId != homeId || previousWeekStart != calendar.firstWeekday || previousTimezone != self.timezone {
+            selectedDate = nil
+            visibleWeekAnchor = calendar.startOfDay(for: Date())
+        }
+        updateWeekDays()
+        await load()
+    }
+
+    func load() async {
+        guard let homeId = activeHomeId else {
             activeHomeId = nil
             occurrences = []
             errorMessage = nil
@@ -70,17 +274,28 @@ private final class MyChoresViewModel: ObservableObject {
             return
         }
 
-        activeHomeId = homeId
+        guard let range = visibleWeekRange else {
+            occurrences = []
+            errorMessage = "Unable to load this week."
+            isLoading = false
+            return
+        }
+
         isLoading = true
         errorMessage = nil
 
         do {
-            let range = ChoreDateRange.upcoming()
-            occurrences = try await repository.fetchMyActionableOccurrences(
+            async let loadedOccurrences = repository.fetchMyOccurrences(
                 homeId: homeId,
                 from: range.start,
                 through: range.end
             )
+            async let loadedCategories = repository.fetchCategories(homeId: homeId)
+            async let loadedRooms = repository.fetchRooms(homeId: homeId)
+            let (occurrences, categories, rooms) = try await (loadedOccurrences, loadedCategories, loadedRooms)
+            self.occurrences = occurrences.filter { $0.status != .cancelled }
+            categoriesById = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+            roomsById = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0) })
         } catch {
             occurrences = []
             errorMessage = error.localizedDescription
@@ -91,8 +306,436 @@ private final class MyChoresViewModel: ObservableObject {
 
     func reload() {
         Task {
-            await load(homeId: activeHomeId)
+            await load()
         }
+    }
+
+    func moveToPreviousWeek() {
+        guard let newAnchor = calendar.date(byAdding: .day, value: -7, to: visibleWeekAnchor) else { return }
+        visibleWeekAnchor = newAnchor
+        selectedDate = nil
+        updateWeekDays()
+        reload()
+    }
+
+    func moveToNextWeek() {
+        guard let newAnchor = calendar.date(byAdding: .day, value: 7, to: visibleWeekAnchor) else { return }
+        visibleWeekAnchor = newAnchor
+        selectedDate = nil
+        updateWeekDays()
+        reload()
+    }
+
+    func moveToToday() {
+        let today = calendar.startOfDay(for: Date())
+        visibleWeekAnchor = today
+        selectedDate = today
+        updateWeekDays()
+        reload()
+    }
+
+    func selectDay(_ day: Date) {
+        selectedDate = calendar.startOfDay(for: day)
+    }
+
+    func isSelectedDay(_ day: Date) -> Bool {
+        selectedDate.map { calendar.isDate(day, inSameDayAs: $0) } ?? false
+    }
+
+    func isToday(_ day: Date) -> Bool {
+        calendar.isDateInToday(day)
+    }
+
+    func weekdaySymbol(for day: Date) -> String {
+        Self.weekdayFormatter.string(from: day)
+    }
+
+    func dayNumber(for day: Date) -> String {
+        Self.dayFormatter.string(from: day)
+    }
+
+    func accessibilityLabel(for day: Date) -> String {
+        Self.fullDateFormatter.string(from: day)
+    }
+
+    func categoryName(for occurrence: ChoreOccurrence) -> String? {
+        occurrence.categoryIdSnapshot.flatMap { categoriesById[$0]?.name }
+    }
+
+    func roomName(for occurrence: ChoreOccurrence) -> String? {
+        occurrence.roomIdSnapshot.flatMap { roomsById[$0]?.name }
+    }
+
+    private var visibleWeekRange: (start: Date, end: Date)? {
+        let start = startOfWeek(containing: visibleWeekAnchor)
+        guard let end = calendar.date(byAdding: .day, value: 7, to: start) else {
+            return nil
+        }
+        return (start, end)
+    }
+
+    private func configureCalendar(weekStartsOn: Int?, timezone: String?) {
+        calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timezone.flatMap(TimeZone.init(identifier:)) ?? .autoupdatingCurrent
+        calendar.firstWeekday = weekStartsOn == 2 ? 2 : (weekStartsOn == 1 ? 1 : Calendar.autoupdatingCurrent.firstWeekday)
+        self.timezone = calendar.timeZone.identifier
+        Self.configureFormatters(calendar: calendar)
+    }
+
+    private func updateWeekDays() {
+        guard let range = visibleWeekRange else {
+            weekDays = []
+            return
+        }
+        weekDays = (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: range.start) }
+    }
+
+    private func startOfWeek(containing date: Date) -> Date {
+        let startOfDay = calendar.startOfDay(for: date)
+        let weekday = calendar.component(.weekday, from: startOfDay)
+        let daysFromWeekStart = (weekday - calendar.firstWeekday + 7) % 7
+        return calendar.date(byAdding: .day, value: -daysFromWeekStart, to: startOfDay) ?? startOfDay
+    }
+
+    private static func configureFormatters(calendar: Calendar) {
+        [dayFormatter, monthYearFormatter, monthDayFormatter, monthDayYearFormatter, weekdayFormatter, fullDateFormatter].forEach { formatter in
+            formatter.calendar = calendar
+            formatter.timeZone = calendar.timeZone
+        }
+    }
+}
+
+private struct MyChoresWeekSummary: Equatable {
+    let toDo: Int
+    let pendingApproval: Int
+    let approved: Int
+    let total: Int
+
+    var progress: Double {
+        guard total > 0 else { return 0 }
+        return Double(approved) / Double(total)
+    }
+
+    var progressPercent: Int {
+        Int((progress * 100).rounded())
+    }
+}
+
+private struct MyChoresDaySectionModel: Identifiable {
+    let date: Date
+    let title: String
+    let dayNumber: String
+    let accessibilityDateTitle: String
+    let occurrences: [ChoreOccurrence]
+
+    var id: Date { date }
+}
+
+private struct MyChoresWeekSummaryCard: View {
+    let summary: MyChoresWeekSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    summaryMetric(title: "To Do", value: summary.toDo, color: HomeyDashboardTheme.softRed)
+                    summaryMetric(title: "Pending Approval", value: summary.pendingApproval, color: HomeyDashboardTheme.orangeAccent)
+                    summaryMetric(title: "Approved", value: summary.approved, color: HomeyDashboardTheme.sageAccent)
+                }
+
+                VStack(spacing: 10) {
+                    summaryMetric(title: "To Do", value: summary.toDo, color: HomeyDashboardTheme.softRed)
+                    summaryMetric(title: "Pending Approval", value: summary.pendingApproval, color: HomeyDashboardTheme.orangeAccent)
+                    summaryMetric(title: "Approved", value: summary.approved, color: HomeyDashboardTheme.sageAccent)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(HomeyDashboardTheme.softBorder.opacity(0.45))
+                        Capsule()
+                            .fill(HomeyDashboardTheme.sageAccent)
+                            .frame(width: proxy.size.width * summary.progress)
+                    }
+                }
+                .frame(height: 9)
+                .accessibilityHidden(true)
+
+                Text("\(summary.progressPercent)% Complete")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            }
+        }
+        .padding(16)
+        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("This week. To do \(summary.toDo). Pending approval \(summary.pendingApproval). Approved \(summary.approved). \(summary.progressPercent) percent complete.")
+    }
+
+    private func summaryMetric(title: String, value: Int, color: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .lineLimit(2)
+            Text("\(value)")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+}
+
+private struct MyChoresDayColumn: View {
+    let section: MyChoresDaySectionModel
+    let isToday: Bool
+    let isSelected: Bool
+    let onSelectDay: () -> Void
+    let onSelectOccurrence: (ChoreOccurrence) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button(action: onSelectDay) {
+                VStack(spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text(section.title)
+                            .font(.caption.weight(.bold))
+                        if isToday {
+                            Text("Today")
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(HomeyDashboardTheme.cardBackground, in: Capsule())
+                                .overlay { Capsule().stroke(HomeyDashboardTheme.warmBrown.opacity(0.35), lineWidth: 1) }
+                        }
+                    }
+
+                    Text(section.dayNumber)
+                        .font(.headline.weight(.bold))
+                }
+                .foregroundStyle(isSelected || isToday ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.primaryText)
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .background(
+                    isSelected || isToday ? HomeyDashboardTheme.selectedSidebarBackground : HomeyDashboardTheme.appBackground.opacity(0.48),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(isSelected || isToday ? HomeyDashboardTheme.warmBrown.opacity(0.42) : Color.clear, lineWidth: 1)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(section.accessibilityDateTitle), \(section.occurrences.count) chores")
+
+            VStack(alignment: .leading, spacing: 7) {
+                if section.occurrences.isEmpty {
+                    Text("No chores")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText.opacity(0.72))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                        .accessibilityLabel("No chores")
+                } else {
+                    ForEach(section.occurrences) { occurrence in
+                        MyChoresOccurrenceCard(
+                            occurrence: occurrence,
+                            dateTitle: section.accessibilityDateTitle,
+                            onTap: { onSelectOccurrence(occurrence) }
+                        )
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, minHeight: 190, alignment: .topLeading)
+            .background(HomeyDashboardTheme.appBackground.opacity(0.42), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .padding(10)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(HomeyDashboardTheme.softBorder.opacity(0.82), lineWidth: 1) }
+        .shadow(color: HomeyDashboardTheme.shadow.opacity(0.08), radius: 7, x: 0, y: 4)
+    }
+}
+
+private struct MyChoresOccurrenceCard: View {
+    let occurrence: ChoreOccurrence
+    let dateTitle: String
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(occurrence.titleSnapshot)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .multilineTextAlignment(.leading)
+
+                Text(scheduleText)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                    .lineLimit(1)
+
+                Text(pointsText)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                    .lineLimit(1)
+
+                Text(statusText)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(statusKind.color)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, minHeight: 66, alignment: .leading)
+            .background(statusKind.backgroundColor, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(statusKind.color.opacity(0.62), lineWidth: 1.5)
+            }
+        }
+        .buttonStyle(.plain)
+        .hoverEffect(.lift)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var statusKind: MyChoresStatusKind {
+        switch occurrence.displayStatus {
+        case .overdue:
+            return .actionNeeded
+        case .stored(let status):
+            switch status {
+            case .notStarted, .inProgress, .needsRedo:
+                return .actionNeeded
+            case .awaitingApproval:
+                return .pendingApproval
+            case .completed:
+                return .approved
+            case .skipped, .cancelled:
+                return .neutral(status.displayName)
+            }
+        }
+    }
+
+    private var scheduleText: String {
+        if occurrence.isAllDay {
+            return "All Day"
+        }
+        return occurrence.dueAt.formatted(date: .omitted, time: .shortened)
+    }
+
+    private var pointsText: String {
+        "\(occurrence.pointsValue) \(occurrence.pointsValue == 1 ? "point" : "points")"
+    }
+
+    private var statusText: String {
+        occurrence.displayStatus.displayName
+    }
+
+    private var accessibilityLabel: String {
+        [
+            occurrence.titleSnapshot,
+            dateTitle,
+            scheduleText,
+            pointsText,
+            statusText
+        ].joined(separator: ". ")
+    }
+}
+
+private enum MyChoresStatusKind: Equatable {
+    case actionNeeded
+    case pendingApproval
+    case approved
+    case neutral(String)
+
+    var title: String {
+        switch self {
+        case .actionNeeded:
+            return "Action Needed"
+        case .pendingApproval:
+            return "Pending Approval"
+        case .approved:
+            return "Approved"
+        case .neutral(let title):
+            return title
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .actionNeeded:
+            return HomeyDashboardTheme.softRed
+        case .pendingApproval:
+            return HomeyDashboardTheme.orangeAccent
+        case .approved:
+            return HomeyDashboardTheme.sageAccent
+        case .neutral:
+            return HomeyDashboardTheme.secondaryText
+        }
+    }
+
+    var backgroundColor: Color {
+        switch self {
+        case .actionNeeded, .pendingApproval, .approved:
+            return color.opacity(0.12)
+        case .neutral:
+            return HomeyDashboardTheme.cardBackground
+        }
+    }
+}
+
+private struct MyChoresStatusChip: View {
+    let kind: MyChoresStatusKind
+
+    var body: some View {
+        Text(kind.title)
+            .font(.caption.weight(.bold))
+            .foregroundStyle(kind.color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(kind.color.opacity(0.12), in: Capsule())
+            .lineLimit(1)
+    }
+}
+
+private extension ChoreOccurrence {
+    var isExcludedFromWeeklySummary: Bool {
+        status == .skipped || status == .cancelled
+    }
+}
+
+private extension Array where Element == ChoreOccurrence {
+    func sortedForMyChoresWeek() -> [ChoreOccurrence] {
+        sorted { lhs, rhs in
+            if lhs.isAllDay != rhs.isAllDay {
+                return !lhs.isAllDay && rhs.isAllDay
+            }
+
+            if lhs.dueAt != rhs.dueAt {
+                return lhs.dueAt < rhs.dueAt
+            }
+
+            return lhs.titleSnapshot.localizedStandardCompare(rhs.titleSnapshot) == .orderedAscending
+        }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 

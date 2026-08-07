@@ -97,9 +97,9 @@ enum ChoreOccurrenceStatus: String, Codable, CaseIterable, Identifiable, Sendabl
         case .inProgress:
             return "In Progress"
         case .awaitingApproval:
-            return "Awaiting Approval"
+            return "Pending Approval"
         case .completed:
-            return "Completed"
+            return "Approved"
         case .needsRedo:
             return "Needs Redo"
         case .skipped:
@@ -137,9 +137,9 @@ enum ChoreAssigneeStatus: String, Codable, CaseIterable, Identifiable, Sendable 
         case .inProgress:
             return "In Progress"
         case .awaitingApproval:
-            return "Awaiting Approval"
+            return "Pending Approval"
         case .completed:
-            return "Completed"
+            return "Approved"
         case .needsRedo:
             return "Needs Redo"
         case .skipped:

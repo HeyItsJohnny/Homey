@@ -440,4 +440,26 @@ struct ChorePointTransaction: Codable, Identifiable, Hashable, Sendable {
         case createdBy = "created_by"
         case createdAt = "created_at"
     }
+
+    private enum AlternateCodingKeys: String, CodingKey {
+        case points
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let alternateContainer = try decoder.container(keyedBy: AlternateCodingKeys.self)
+
+        id = try container.decode(UUID.self, forKey: .id)
+        homeId = try container.decode(UUID.self, forKey: .homeId)
+        userId = try container.decode(UUID.self, forKey: .userId)
+        transactionType = try container.decode(ChorePointTransactionType.self, forKey: .transactionType)
+        pointsDelta = try container.decodeIfPresent(Int.self, forKey: .pointsDelta)
+            ?? alternateContainer.decode(Int.self, forKey: .points)
+        occurrenceId = try container.decodeIfPresent(UUID.self, forKey: .occurrenceId)
+        submissionId = try container.decodeIfPresent(UUID.self, forKey: .submissionId)
+        rewardId = try container.decodeIfPresent(UUID.self, forKey: .rewardId)
+        note = try container.decodeIfPresent(String.self, forKey: .note)
+        createdBy = try container.decodeIfPresent(UUID.self, forKey: .createdBy)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
 }

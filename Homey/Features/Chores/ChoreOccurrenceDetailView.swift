@@ -184,6 +184,10 @@ struct ChoreOccurrenceDetailView: View {
                 completedSummary(for: occurrence)
             } else if occurrence.status == .awaitingApproval, canManageChores {
                 reviewPlaceholder
+            } else if occurrence.status == .awaitingApproval {
+                Text("This chore is pending approval.")
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
             } else if occurrence.status == .cancelled || occurrence.status == .skipped {
                 Text("This chore is read-only.")
                     .font(.subheadline)
@@ -222,16 +226,16 @@ struct ChoreOccurrenceDetailView: View {
                 Button {
                     Task { await viewModel.startChore() }
                 } label: {
-                    actionLabel("Start Chore", systemImage: "play.fill")
+                    actionLabel(occurrence.status == .needsRedo ? "Start Again" : "Start Chore", systemImage: "play.fill")
                 }
                 .buttonStyle(DashboardPrimaryButtonStyle())
                 .disabled(viewModel.isPerformingAction)
-                .accessibilityLabel("Start Chore")
+                .accessibilityLabel(occurrence.status == .needsRedo ? "Start Again" : "Start Chore")
             }
 
-            if occurrence.status == .inProgress || occurrence.status == .needsRedo {
+            if occurrence.status == .inProgress {
                 if occurrence.requiresPhoto {
-                    Text("Photo proof is required. Complete this chore from My Chores when photo upload is available.")
+                    Text("Photo proof is required before this chore can be submitted.")
                         .font(.subheadline)
                         .foregroundStyle(HomeyDashboardTheme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
@@ -545,25 +549,30 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
     }
 
     func claimChore() async {
-        await performAction {
+        await performAction(failureMessage: "Unable to claim chore.") {
             try await repository.claimOpenChore(occurrenceId: occurrenceId)
         }
     }
 
     func startChore() async {
-        await performAction {
-            try await repository.startChore(occurrenceId: occurrenceId)
+        await performAction(failureMessage: "Unable to start chore.") {
+            occurrence = try await repository.startChore(occurrenceId: occurrenceId)
         }
     }
 
     func submitChore() async {
-        await performAction {
+        guard occurrence?.requiresPhoto != true else {
+            actionErrorMessage = "This chore requires a photo before submission."
+            return
+        }
+
+        await performAction(failureMessage: "Unable to submit chore.") {
             _ = try await repository.submitChore(occurrenceId: occurrenceId, note: completionNote, photoPath: nil)
             completionNote = ""
         }
     }
 
-    private func performAction(_ action: () async throws -> Void) async {
+    private func performAction(failureMessage: String, _ action: () async throws -> Void) async {
         guard !isPerformingAction else {
             return
         }
@@ -578,7 +587,7 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
             NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
             await reload()
         } catch {
-            actionErrorMessage = "Unable to update this chore."
+            actionErrorMessage = failureMessage
         }
     }
 }

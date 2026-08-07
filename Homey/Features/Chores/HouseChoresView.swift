@@ -157,12 +157,13 @@ struct HouseChoresActiveView: View {
 }
 
 struct HouseChoresApprovalsView: View {
+    @EnvironmentObject private var authenticationService: AuthenticationService
     @EnvironmentObject private var homeService: HomeService
     @StateObject private var viewModel = HouseChoresApprovalsViewModel()
 
     var body: some View {
         HouseChoresSectionCard(title: "Approvals") {
-            if viewModel.isLoading && viewModel.occurrences.isEmpty {
+            if viewModel.isLoading && viewModel.approvalItems.isEmpty {
                 ChoreLoadingState(message: "Loading approvals...")
             } else if let errorMessage = viewModel.errorMessage {
                 ChoreMessageState(
@@ -173,7 +174,7 @@ struct HouseChoresApprovalsView: View {
                 ) {
                     viewModel.reload()
                 }
-            } else if viewModel.occurrences.isEmpty {
+            } else if viewModel.approvalItems.isEmpty {
                 ChoreMessageState(
                     title: "No Approvals Waiting",
                     message: "Submitted chores that require review will appear here.",
@@ -181,24 +182,61 @@ struct HouseChoresApprovalsView: View {
                 )
             } else {
                 VStack(spacing: 0) {
-                    ForEach(viewModel.occurrences) { occurrence in
-                        ChoreOccurrenceRow(occurrence: occurrence)
+                    ForEach(viewModel.approvalItems) { item in
+                        ChoreApprovalRow(
+                            item: item,
+                            memberName: memberName(for: item.submission.submittedBy),
+                            isReviewing: viewModel.reviewingOccurrenceId == item.occurrence.id,
+                            onApprove: {
+                                Task {
+                                    await viewModel.review(item, decision: .approved)
+                                }
+                            },
+                            onNeedsRedo: {
+                                Task {
+                                    await viewModel.review(item, decision: .needsRedo)
+                                }
+                            }
+                        )
 
-                        if occurrence.id != viewModel.occurrences.last?.id {
+                        if item.id != viewModel.approvalItems.last?.id {
                             Divider()
                                 .overlay(HomeyDashboardTheme.softBorder)
                         }
                     }
                 }
             }
+
+            if let actionErrorMessage = viewModel.actionErrorMessage {
+                Text(actionErrorMessage)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(HomeyDashboardTheme.destructiveRed)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .task(id: homeService.selectedHomeID) {
+            await loadMembersIfNeeded()
             await viewModel.load(homeId: homeService.selectedHomeID)
         }
         .task {
             for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
                 viewModel.reload()
             }
+        }
+    }
+
+    private func memberName(for userId: UUID) -> String {
+        homeService.membersForSelectedHome().first { $0.userId == userId }?.displayName ?? "Submitted member"
+    }
+
+    private func loadMembersIfNeeded() async {
+        guard let selectedHome = homeService.selectedHome(),
+              let currentUser = authenticationService.currentUser else {
+            return
+        }
+
+        if !homeService.hasLoadedMembersForSelectedHome() {
+            await homeService.loadMembers(for: selectedHome.id, currentUser: currentUser)
         }
     }
 }
@@ -297,6 +335,78 @@ private struct ChoreNameList: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct ChoreApprovalRow: View {
+    let item: ChoreApprovalItem
+    let memberName: String
+    let isReviewing: Bool
+    let onApprove: () -> Void
+    let onNeedsRedo: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ChoreOccurrenceRow(occurrence: item.occurrence)
+
+            VStack(alignment: .leading, spacing: 8) {
+                approvalDetail("Member", memberName)
+                approvalDetail("Due", item.occurrence.dueAt.formatted(date: .abbreviated, time: item.occurrence.isAllDay ? .omitted : .shortened))
+                approvalDetail("Submitted", item.submission.submittedAt.formatted(date: .abbreviated, time: .shortened))
+                approvalDetail("Points", "\(item.occurrence.pointsValue) points")
+
+                if let note = item.submission.note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+                    approvalDetail("Note", note)
+                }
+
+                if item.occurrence.requiresPhoto || item.submission.photoPath != nil {
+                    approvalDetail("Photo", item.submission.photoPath == nil ? "Required, not attached" : "Provided")
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(HomeyDashboardTheme.secondaryText)
+
+            HStack(spacing: 10) {
+                Button(action: onApprove) {
+                    Label("Approve", systemImage: "checkmark.seal.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(DashboardPrimaryButtonStyle())
+                .disabled(isReviewing)
+
+                Button(action: onNeedsRedo) {
+                    Label("Needs Redo", systemImage: "arrow.counterclockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.destructiveRed)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 44)
+                .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(HomeyDashboardTheme.destructiveRed.opacity(0.35), lineWidth: 1)
+                }
+                .buttonStyle(.plain)
+                .disabled(isReviewing)
+            }
+
+            if isReviewing {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(HomeyDashboardTheme.warmBrown)
+            }
+        }
+        .padding(.vertical, 12)
+    }
+
+    private func approvalDetail(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("\(label):")
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+            Text(value)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 }
 
@@ -574,9 +684,11 @@ private final class HouseChoresActiveViewModel: ObservableObject {
 
 @MainActor
 private final class HouseChoresApprovalsViewModel: ObservableObject {
-    @Published private(set) var occurrences: [ChoreOccurrence] = []
+    @Published private(set) var approvalItems: [ChoreApprovalItem] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var reviewingOccurrenceId: UUID?
     @Published private(set) var errorMessage: String?
+    @Published var actionErrorMessage: String?
 
     private let repository: ChoresRepository
     private var activeHomeId: UUID?
@@ -594,16 +706,51 @@ private final class HouseChoresApprovalsViewModel: ObservableObject {
         activeHomeId = homeId
         isLoading = true
         errorMessage = nil
+        actionErrorMessage = nil
 
         do {
             let range = ChoreDateRange.upcoming()
-            occurrences = try await repository.fetchOccurrencesAwaitingApproval(homeId: homeId, from: range.start, through: range.end)
+            let occurrences = try await repository.fetchOccurrencesAwaitingApproval(homeId: homeId, from: range.start, through: range.end)
+            var loadedItems: [ChoreApprovalItem] = []
+
+            for occurrence in occurrences {
+                if let submission = try await repository.fetchPendingSubmission(occurrenceId: occurrence.id) {
+                    loadedItems.append(ChoreApprovalItem(occurrence: occurrence, submission: submission))
+                }
+            }
+
+            approvalItems = loadedItems
         } catch {
-            occurrences = []
+            approvalItems = []
             errorMessage = error.localizedDescription
         }
 
         isLoading = false
+    }
+
+    func review(_ item: ChoreApprovalItem, decision: ChoreApprovalDecision) async {
+        guard reviewingOccurrenceId == nil else {
+            return
+        }
+
+        let occurrence = item.occurrence
+        reviewingOccurrenceId = occurrence.id
+        actionErrorMessage = nil
+        defer { reviewingOccurrenceId = nil }
+
+        do {
+            try await repository.reviewSubmission(
+                submissionId: item.submission.id,
+                decision: decision,
+                adminNote: nil,
+                pointsAwarded: decision == .approved ? max(0, occurrence.pointsValue) : 0
+            )
+            NotificationCenter.default.post(name: .homeyChoresDidChange, object: nil)
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+            await load(homeId: activeHomeId)
+        } catch {
+            actionErrorMessage = decision == .approved ? "Unable to approve chore." : "Unable to request redo."
+        }
     }
 
     func reload() {
@@ -614,10 +761,18 @@ private final class HouseChoresApprovalsViewModel: ObservableObject {
 
     private func reset() {
         activeHomeId = nil
-        occurrences = []
+        approvalItems = []
         errorMessage = nil
+        actionErrorMessage = nil
         isLoading = false
     }
+}
+
+private struct ChoreApprovalItem: Identifiable, Hashable {
+    let occurrence: ChoreOccurrence
+    let submission: ChoreSubmission
+
+    var id: UUID { submission.id }
 }
 
 @MainActor

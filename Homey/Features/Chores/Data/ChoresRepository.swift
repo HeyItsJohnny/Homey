@@ -628,15 +628,34 @@ final class ChoresRepository {
         try await callOccurrenceRPC("claim_open_chore", occurrenceId: occurrenceId)
     }
 
-    func startChore(occurrenceId: UUID) async throws {
-        try await callOccurrenceRPC("start_chore", occurrenceId: occurrenceId)
+    @discardableResult
+    func startChore(occurrenceId: UUID) async throws -> ChoreOccurrence {
+        do {
+            try await requireAuthenticatedSession()
+            let updatedOccurrence: ChoreOccurrence = try await client
+                .rpc("start_chore", params: StartChoreRPCParameters(requestedOccurrenceId: occurrenceId))
+                .execute()
+                .value
+            logChoreOperation("start_chore", entityId: occurrenceId, updatedStatus: updatedOccurrence.status)
+            return updatedOccurrence
+        } catch {
+            logChoreError(error, operation: "start_chore", categoryId: occurrenceId)
+            throw ChoreRepositoryError.map(error)
+        }
     }
 
     func submitChore(occurrenceId: UUID, note: String?, photoPath: String?) async throws -> UUID {
         do {
             try await requireAuthenticatedSession()
             let submissionId: UUID = try await client
-                .rpc("submit_chore", params: SubmitChoreParameters(occurrenceId: occurrenceId, note: normalizedOptionalString(note), photoPath: normalizedOptionalString(photoPath)))
+                .rpc(
+                    "submit_chore",
+                    params: SubmitChoreRPCParameters(
+                        requestedOccurrenceId: occurrenceId,
+                        requestedCompletionNote: normalizedOptionalString(note),
+                        requestedPhotoPath: normalizedOptionalString(photoPath)
+                    )
+                )
                 .execute()
                 .value
             return submissionId
@@ -650,10 +669,37 @@ final class ChoresRepository {
         do {
             try await requireAuthenticatedSession()
             try await client
-                .rpc("review_chore_submission", params: ReviewChoreSubmissionParameters(submissionId: submissionId, decision: decision.rawValue, adminNote: normalizedOptionalString(adminNote), pointsAwarded: pointsAwarded))
+                .rpc(
+                    "review_chore_submission",
+                    params: ReviewChoreSubmissionRPCParameters(
+                        requestedSubmissionId: submissionId,
+                        requestedDecision: decision.rawValue,
+                        requestedAdminNote: normalizedOptionalString(adminNote),
+                        requestedPointsAwarded: pointsAwarded
+                    )
+                )
                 .execute()
         } catch {
             logChoreError(error, operation: "review_chore_submission", categoryId: submissionId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func fetchPendingSubmission(occurrenceId: UUID) async throws -> ChoreSubmission? {
+        do {
+            try await requireAuthenticatedSession()
+            let submissions: [ChoreSubmission] = try await client
+                .from("chore_submissions")
+                .select()
+                .eq("occurrence_id", value: occurrenceId.uuidString)
+                .eq("status", value: ChoreSubmissionStatus.pending.rawValue)
+                .order("submitted_at", ascending: false)
+                .limit(1)
+                .execute()
+                .value
+            return submissions.first
+        } catch {
+            logChoreError(error, operation: "chore_submissions.select_pending", categoryId: occurrenceId)
             throw ChoreRepositoryError.map(error)
         }
     }
@@ -668,6 +714,27 @@ final class ChoresRepository {
             return balance
         } catch {
             logChoreError(error, operation: "get_my_chore_point_balance", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func fetchMyPointTransactions(homeId: UUID, limit: Int, offset: Int) async throws -> [ChorePointTransaction] {
+        let userId = try await authenticatedUserId()
+        do {
+            try await requireAuthenticatedSession()
+            let transactions: [ChorePointTransaction] = try await client
+                .from("chore_point_transactions")
+                .select()
+                .eq("home_id", value: homeId.uuidString)
+                .eq("user_id", value: userId.uuidString)
+                .order("created_at", ascending: false)
+                .order("id", ascending: false)
+                .range(from: offset, to: offset + max(limit, 1) - 1)
+                .execute()
+                .value
+            return transactions
+        } catch {
+            logChoreError(error, operation: "chore_point_transactions.select_mine", homeId: homeId)
             throw ChoreRepositoryError.map(error)
         }
     }
@@ -719,7 +786,7 @@ final class ChoresRepository {
         do {
             try await requireAuthenticatedSession()
             try await client
-                .rpc(rpcName, params: OccurrenceIdParameters(occurrenceId: occurrenceId))
+                .rpc(rpcName, params: RequestedOccurrenceRPCParameters(requestedOccurrenceId: occurrenceId))
                 .execute()
         } catch {
             logChoreError(error, operation: rpcName, categoryId: occurrenceId)
@@ -766,6 +833,18 @@ final class ChoresRepository {
             print("PostGREST hint: \(postgrestError.hint ?? "")")
         }
         print("============================================")
+        #endif
+    }
+
+    private func logChoreOperation(_ operation: String, entityId: UUID, updatedStatus: ChoreOccurrenceStatus? = nil) {
+        #if DEBUG
+        print("========== CHORE OPERATION ==========")
+        print("operation: \(operation)")
+        print("entity_id: \(entityId.uuidString)")
+        if let updatedStatus {
+            print("updated_status: \(updatedStatus.rawValue)")
+        }
+        print("=====================================")
         #endif
     }
 }
@@ -1160,37 +1239,72 @@ private struct GenerateHomeChoreOccurrencesRPCParameters: Encodable {
     }
 }
 
-private struct OccurrenceIdParameters: Encodable {
-    let occurrenceId: UUID
+private struct RequestedOccurrenceRPCParameters: Encodable {
+    let requestedOccurrenceId: UUID
 
     enum CodingKeys: String, CodingKey {
-        case occurrenceId = "occurrence_id"
+        case requestedOccurrenceId = "requested_occurrence_id"
     }
 }
 
-private struct SubmitChoreParameters: Encodable {
-    let occurrenceId: UUID
-    let note: String?
-    let photoPath: String?
+private struct StartChoreRPCParameters: Encodable {
+    let requestedOccurrenceId: UUID
 
     enum CodingKeys: String, CodingKey {
-        case occurrenceId = "occurrence_id"
-        case note
-        case photoPath = "photo_path"
+        case requestedOccurrenceId = "requested_occurrence_id"
     }
 }
 
-private struct ReviewChoreSubmissionParameters: Encodable {
-    let submissionId: UUID
-    let decision: String
-    let adminNote: String?
-    let pointsAwarded: Int?
+private struct SubmitChoreRPCParameters: Encodable {
+    let requestedOccurrenceId: UUID
+    let requestedCompletionNote: String?
+    let requestedPhotoPath: String?
 
     enum CodingKeys: String, CodingKey {
-        case submissionId = "submission_id"
-        case decision
-        case adminNote = "admin_note"
-        case pointsAwarded = "points_awarded"
+        case requestedOccurrenceId = "requested_occurrence_id"
+        case requestedCompletionNote = "requested_completion_note"
+        case requestedPhotoPath = "requested_photo_path"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(requestedOccurrenceId, forKey: .requestedOccurrenceId)
+        try encodeOptional(requestedCompletionNote, forKey: .requestedCompletionNote, into: &container)
+        try encodeOptional(requestedPhotoPath, forKey: .requestedPhotoPath, into: &container)
+    }
+}
+
+private struct ReviewChoreSubmissionRPCParameters: Encodable {
+    let requestedSubmissionId: UUID
+    let requestedDecision: String
+    let requestedAdminNote: String?
+    let requestedPointsAwarded: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case requestedSubmissionId = "requested_submission_id"
+        case requestedDecision = "requested_decision"
+        case requestedAdminNote = "requested_admin_note"
+        case requestedPointsAwarded = "requested_points_awarded"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(requestedSubmissionId, forKey: .requestedSubmissionId)
+        try container.encode(requestedDecision, forKey: .requestedDecision)
+        try encodeOptional(requestedAdminNote, forKey: .requestedAdminNote, into: &container)
+        try encodeOptional(requestedPointsAwarded, forKey: .requestedPointsAwarded, into: &container)
+    }
+}
+
+private func encodeOptional<Value: Encodable, Key: CodingKey>(
+    _ value: Value?,
+    forKey key: Key,
+    into container: inout KeyedEncodingContainer<Key>
+) throws {
+    if let value {
+        try container.encode(value, forKey: key)
+    } else {
+        try container.encodeNil(forKey: key)
     }
 }
 
@@ -1198,6 +1312,6 @@ private struct HomeIdParameters: Encodable {
     let homeId: UUID
 
     enum CodingKeys: String, CodingKey {
-        case homeId = "home_id"
+        case homeId = "requested_home_id"
     }
 }
