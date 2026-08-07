@@ -48,10 +48,15 @@ struct HomeDashboardView: View {
     private var selectedContent: some View {
         switch selectedDestination {
         case .home:
-            DashboardContentView { focusDate in
-                calendarFocusDate = focusDate
-                selectedDestination = .calendar
-            }
+            DashboardContentView(
+                onOpenCalendar: { focusDate in
+                    calendarFocusDate = focusDate
+                    selectedDestination = .calendar
+                },
+                onOpenChores: {
+                    selectedDestination = .chores
+                }
+            )
         case .chores:
             ChoresView()
         case .calendar:
@@ -143,6 +148,7 @@ private struct DashboardContentView: View {
     @StateObject private var calendarViewModel = DashboardCalendarViewModel()
 
     var onOpenCalendar: (Date?) -> Void = { _ in }
+    var onOpenChores: () -> Void = {}
 
     private var dashboardMetrics: [DashboardMetric] {
         [
@@ -184,7 +190,7 @@ private struct DashboardContentView: View {
                         isLoading: calendarViewModel.isLoading,
                         onOpenCalendar: onOpenCalendar
                     )
-                    DashboardChoresCard()
+                    DashboardChoresCard(onOpenChores: onOpenChores)
                     DashboardGroceriesCard()
                 }
             }
@@ -728,8 +734,10 @@ private struct UpcomingEventsEmptyState: View {
 }
 
 struct DashboardChoresCard: View {
+    var onOpenChores: () -> Void = {}
+
     var body: some View {
-        DashboardSectionCard(title: "Chores", actionTitle: "View All") {
+        DashboardSectionCard(title: "Chores", actionTitle: "View All", action: onOpenChores) {
             VStack(spacing: 0) {
                 ForEach(DashboardPlaceholderData.chores) { chore in
                     ChoreDashboardRow(chore: chore)
@@ -742,7 +750,7 @@ struct DashboardChoresCard: View {
 
                 Spacer(minLength: 16)
 
-                SoftDashboardButton(systemImage: "checklist", title: "Go to Chores")
+                SoftDashboardButton(systemImage: "checklist", title: "Go to Chores", action: onOpenChores)
             }
         }
     }

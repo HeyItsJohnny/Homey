@@ -345,6 +345,48 @@ final class CalendarService: ObservableObject {
         throw CalendarServiceError.mealCategoryUnavailable
     }
 
+    func resolveChoreCategory(homeId: UUID) async throws -> CalendarCategory {
+        let matchingCategories = try await fetchCategories(homeId: homeId).filter { category in
+            category.isSystem
+                && category.systemCategoryKey == .chore
+                && category.name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Chore") == .orderedSame
+        }
+
+        if matchingCategories.count > 1 {
+            #if DEBUG
+            print("Duplicate chore system categories detected for Home \(homeId)")
+            #endif
+        }
+
+        if let category = matchingCategories.first {
+            return category
+        }
+
+        let existingChoresNamedCategory = try await fetchCategories(homeId: homeId).first { category in
+            category.isSystem
+                && category.name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Chores") == .orderedSame
+        }
+
+        if existingChoresNamedCategory != nil {
+            #if DEBUG
+            print("Chore calendar category mismatch detected: existing system category is named Chores, expected Chore")
+            #endif
+            throw CalendarServiceError.choreCategoryUnavailable
+        }
+
+        await ensureDefaultSystemCategories(homeId: homeId)
+
+        if let repairedCategory = try await fetchCategories(homeId: homeId).first(where: { category in
+            category.isSystem
+                && category.systemCategoryKey == .chore
+                && category.name.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Chore") == .orderedSame
+        }) {
+            return repairedCategory
+        }
+
+        throw CalendarServiceError.choreCategoryUnavailable
+    }
+
     func ensureDefaultSystemCategories(homeId: UUID) async {
         do {
             try await requireAuthenticatedSession()
@@ -941,6 +983,7 @@ enum CalendarServiceError: LocalizedError, Equatable {
     case systemCategoryEditProtected
     case systemCategoryProtected
     case mealCategoryUnavailable
+    case choreCategoryUnavailable
     case realtimeSubscriptionFailed
 
     var errorDescription: String? {
@@ -991,6 +1034,8 @@ enum CalendarServiceError: LocalizedError, Equatable {
             return "Homey system categories cannot be deleted."
         case .mealCategoryUnavailable:
             return "Homey could not prepare the Meal calendar category for this Home."
+        case .choreCategoryUnavailable:
+            return "Homey could not prepare the Chore calendar category for this Home."
         case .realtimeSubscriptionFailed:
             return "We could not start live calendar updates."
         }

@@ -149,3 +149,9 @@ final class DashboardCalendarViewModel: ObservableObject {
 extension Notification.Name {
     static let homeyCalendarEventsDidChange = Notification.Name("homeyCalendarEventsDidChange")
 }
+
+enum HomeyCalendarRefreshReason {
+    static let userInfoKey = "reason"
+    static let calendarEventsChanged = "calendar_events_changed"
+    static let choreEditSaved = "chore_edit_saved"
+}

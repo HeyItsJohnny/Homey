@@ -132,6 +132,17 @@ final class CalendarViewModel: ObservableObject {
         }
     }
 
+    func reloadAfterExternalCalendarChange(reason: String) async {
+        guard let activeHomeId else {
+            return
+        }
+
+        let visibleRange = currentVisibleRange()
+        logCalendarRefresh(reason: reason, homeId: activeHomeId, visibleRange: visibleRange)
+        await reload()
+        logCalendarReloadComplete()
+    }
+
     func setDisplayMode(_ mode: CalendarDisplayMode) async {
         guard displayMode != mode else {
             return
@@ -566,6 +577,37 @@ final class CalendarViewModel: ObservableObject {
         selectedDayEvents = events(on: selectedDate)
     }
 
+    private func currentVisibleRange() -> (start: Date, end: Date)? {
+        switch displayMode {
+        case .month:
+            guard let monthInterval = calendar.dateInterval(of: .month, for: visibleMonth) else {
+                return nil
+            }
+            return (monthInterval.start, monthInterval.end)
+        case .week:
+            return visibleWeekRange()
+        }
+    }
+
+    private func logCalendarRefresh(reason: String, homeId: UUID, visibleRange: (start: Date, end: Date)?) {
+        #if DEBUG
+        print("========== CHORE CALENDAR REFRESH ==========")
+        print("reason: \(reason)")
+        print("home_id: \(homeId.uuidString)")
+        print("visible_range_start: \(visibleRange.map { CalendarRefreshLogFormatter.string(from: $0.start) } ?? "nil")")
+        print("visible_range_end: \(visibleRange.map { CalendarRefreshLogFormatter.string(from: $0.end) } ?? "nil")")
+        print("============================================")
+        #endif
+    }
+
+    private func logCalendarReloadComplete() {
+        #if DEBUG
+        print("========== CALENDAR RELOAD COMPLETE ==========")
+        print("event_count: \(events.count)")
+        print("==============================================")
+        #endif
+    }
+
     private func moveWeek(by value: Int) async {
         let selectedWeekdayOffset = daysFromStartOfWeek(to: selectedDate)
         let currentWeekStart = startOfWeek(containing: visibleWeekAnchor)
@@ -612,6 +654,18 @@ final class CalendarViewModel: ObservableObject {
         let weekday = calendar.component(.weekday, from: date)
         let endOfWeekday = ((calendar.firstWeekday + 5) % 7) + 1
         return (endOfWeekday - weekday + 7) % 7
+    }
+}
+
+private enum CalendarRefreshLogFormatter {
+    static let formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    static func string(from date: Date) -> String {
+        formatter.string(from: date)
     }
 }
 

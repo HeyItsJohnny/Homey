@@ -1,11 +1,5 @@
 import SwiftUI
 
-struct ChoresView: View {
-    var body: some View {
-        PlaceholderModuleView(title: "Chores", subtitle: "Coming soon")
-    }
-}
-
 struct ListsView: View {
     var body: some View {
         PlaceholderModuleView(title: "Lists", subtitle: "Coming soon")
@@ -52,10 +46,6 @@ struct ChangeHomeView: View {
     var body: some View {
         PlaceholderModuleView(title: "Change Home", subtitle: "Coming soon")
     }
-}
-
-#Preview("Chores Placeholder") {
-    ChoresView()
 }
 
 #Preview("Lists Placeholder") {

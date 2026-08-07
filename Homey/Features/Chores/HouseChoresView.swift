@@ -1,0 +1,674 @@
+import Combine
+import SwiftUI
+
+struct HouseChoresView: View {
+    @State private var selectedSection: HouseChoresSection = .activeChores
+
+    var body: some View {
+        ChoreShellCard(title: "House Chores", systemImage: "house.and.flag.fill") {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12)], spacing: 12) {
+                ForEach(HouseChoresSection.allCases) { section in
+                    Button {
+                        selectedSection = section
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: section.systemImage)
+                                .font(.headline.weight(.semibold))
+                                .frame(width: 28)
+
+                            Text(section.title)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .foregroundStyle(selectedSection == section ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.primaryText)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, minHeight: 62, alignment: .leading)
+                        .background(
+                            selectedSection == section ? HomeyDashboardTheme.selectedSidebarBackground : HomeyDashboardTheme.appBackground,
+                            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            selectedSectionContent
+        }
+    }
+
+    @ViewBuilder
+    private var selectedSectionContent: some View {
+        switch selectedSection {
+        case .activeChores:
+            HouseChoresActiveView()
+        case .approvals:
+            HouseChoresApprovalsView()
+        case .categoriesRooms:
+            HouseChoresCategoriesRoomsView()
+        case .settings:
+            HouseChoresSettingsView()
+        }
+    }
+}
+
+private enum HouseChoresSection: String, CaseIterable, Identifiable {
+    case activeChores
+    case approvals
+    case categoriesRooms
+    case settings
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .activeChores:
+            return "Active Chores"
+        case .approvals:
+            return "Approvals"
+        case .categoriesRooms:
+            return "Categories & Rooms"
+        case .settings:
+            return "Settings"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .activeChores:
+            return "checklist"
+        case .approvals:
+            return "checkmark.seal"
+        case .categoriesRooms:
+            return "square.grid.2x2"
+        case .settings:
+            return "gearshape"
+        }
+    }
+}
+
+struct HouseChoresActiveView: View {
+    @EnvironmentObject private var authenticationService: AuthenticationService
+    @EnvironmentObject private var homeService: HomeService
+    @StateObject private var viewModel = HouseChoresActiveViewModel()
+    @State private var editingChore: ChoreTemplate?
+
+    var body: some View {
+        HouseChoresSectionCard(title: "Active Chores") {
+            if viewModel.isLoading && viewModel.summaries.isEmpty {
+                ChoreLoadingState(message: "Loading active chores...")
+            } else if let errorMessage = viewModel.errorMessage {
+                ChoreMessageState(
+                    title: "Unable to Load Active Chores",
+                    message: errorMessage,
+                    systemImage: "exclamationmark.triangle.fill",
+                    buttonTitle: "Try Again"
+                ) {
+                    viewModel.reload()
+                }
+            } else if viewModel.summaries.isEmpty {
+                ChoreMessageState(
+                    title: "No active chores yet.",
+                    message: "Use Add Chore to create your first household chore.",
+                    systemImage: "checklist"
+                )
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 16)], spacing: 16) {
+                    ForEach(viewModel.summaries) { summary in
+                        ChoreSummaryCard(summary: summary, members: homeService.membersForSelectedHome()) {
+                            editingChore = summary.chore
+                        }
+                    }
+                }
+            }
+        }
+        .task(id: homeService.selectedHomeID) {
+            await loadMembersIfNeeded()
+            await viewModel.load(homeId: homeService.selectedHomeID)
+        }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
+                viewModel.reload()
+            }
+        }
+        .sheet(item: $editingChore) { chore in
+            ChoreEditorView(
+                mode: .edit(templateId: chore.id),
+                homeId: homeService.selectedHomeID,
+                timezone: homeService.selectedHome()?.timezone ?? TimeZone.autoupdatingCurrent.identifier
+            )
+        }
+    }
+
+    private func loadMembersIfNeeded() async {
+        guard let selectedHome = homeService.selectedHome(),
+              let currentUser = authenticationService.currentUser else {
+            return
+        }
+
+        if !homeService.hasLoadedMembersForSelectedHome() {
+            await homeService.loadMembers(for: selectedHome.id, currentUser: currentUser)
+        }
+    }
+}
+
+struct HouseChoresApprovalsView: View {
+    @EnvironmentObject private var homeService: HomeService
+    @StateObject private var viewModel = HouseChoresApprovalsViewModel()
+
+    var body: some View {
+        HouseChoresSectionCard(title: "Approvals") {
+            if viewModel.isLoading && viewModel.occurrences.isEmpty {
+                ChoreLoadingState(message: "Loading approvals...")
+            } else if let errorMessage = viewModel.errorMessage {
+                ChoreMessageState(
+                    title: "Unable to Load Approvals",
+                    message: errorMessage,
+                    systemImage: "exclamationmark.triangle.fill",
+                    buttonTitle: "Try Again"
+                ) {
+                    viewModel.reload()
+                }
+            } else if viewModel.occurrences.isEmpty {
+                ChoreMessageState(
+                    title: "No Approvals Waiting",
+                    message: "Submitted chores that require review will appear here.",
+                    systemImage: "checkmark.seal"
+                )
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(viewModel.occurrences) { occurrence in
+                        ChoreOccurrenceRow(occurrence: occurrence)
+
+                        if occurrence.id != viewModel.occurrences.last?.id {
+                            Divider()
+                                .overlay(HomeyDashboardTheme.softBorder)
+                        }
+                    }
+                }
+            }
+        }
+        .task(id: homeService.selectedHomeID) {
+            await viewModel.load(homeId: homeService.selectedHomeID)
+        }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
+                viewModel.reload()
+            }
+        }
+    }
+}
+
+struct HouseChoresCategoriesRoomsView: View {
+    @EnvironmentObject private var homeService: HomeService
+    @StateObject private var viewModel = HouseChoresCategoriesRoomsViewModel()
+
+    var body: some View {
+        HouseChoresSectionCard(title: "Categories & Rooms") {
+            if viewModel.isLoading && viewModel.categories.isEmpty && viewModel.rooms.isEmpty {
+                ChoreLoadingState(message: "Loading categories and rooms...")
+            } else if let errorMessage = viewModel.errorMessage {
+                ChoreMessageState(
+                    title: "Unable to Load Categories & Rooms",
+                    message: errorMessage,
+                    systemImage: "exclamationmark.triangle.fill",
+                    buttonTitle: "Try Again"
+                ) {
+                    viewModel.reload()
+                }
+            } else {
+                HStack(alignment: .top, spacing: 18) {
+                    ChoreNameList(title: "Categories", names: viewModel.categories.map(\.name), emptyMessage: "No categories yet.")
+                    ChoreNameList(title: "Rooms", names: viewModel.rooms.map(\.name), emptyMessage: "No rooms yet.")
+                }
+            }
+        }
+        .task(id: homeService.selectedHomeID) {
+            await viewModel.load(homeId: homeService.selectedHomeID)
+        }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
+                viewModel.reload()
+            }
+        }
+    }
+}
+
+struct HouseChoresSettingsView: View {
+    var body: some View {
+        HouseChoresSectionCard(title: "Settings") {
+            ChoreMessageState(
+                title: "Chore Settings",
+                message: "House chore settings will be configured here.",
+                systemImage: "gearshape"
+            )
+        }
+    }
+}
+
+private struct HouseChoresSectionCard<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+            content
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(HomeyDashboardTheme.appBackground, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+    }
+}
+
+private struct ChoreNameList: View {
+    let title: String
+    let names: [String]
+    let emptyMessage: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+            if names.isEmpty {
+                Text(emptyMessage)
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            } else {
+                ForEach(names, id: \.self) { name in
+                    Text(name)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+                        .padding(.vertical, 3)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct ChoreSummaryCard: View {
+    let summary: HouseChoreSummary
+    let members: [HomeMemberDisplay]
+    let onSelect: () -> Void
+
+    var body: some View {
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(summary.chore.title)
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Text(recurrenceText)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                }
+
+                Text(assignmentText)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                Spacer(minLength: 0)
+
+                HStack(alignment: .lastTextBaseline, spacing: 10) {
+                    Text(pointsText)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(HomeyDashboardTheme.selectedSidebarBackground, in: Capsule())
+
+                    Spacer(minLength: 8)
+
+                    Text(nextDueText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 156, alignment: .topLeading)
+            .dashboardCard(cornerRadius: 22)
+            .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint("Opens Edit Chore")
+    }
+
+    private var recurrenceText: String {
+        guard let recurrenceRule = summary.recurrenceRule else {
+            return "Schedule not set"
+        }
+
+        switch recurrenceRule.frequency {
+        case .none:
+            return "One Time"
+        case .daily:
+            return recurrenceRule.intervalValue == 1 ? "Daily" : "Every \(recurrenceRule.intervalValue) Days"
+        case .weekly:
+            let interval = recurrenceRule.intervalValue == 1 ? "Weekly" : "Every \(recurrenceRule.intervalValue) Weeks"
+            return "\(interval) • \(weekdaySummary(recurrenceRule.weekdays))"
+        case .monthly:
+            if recurrenceRule.intervalValue == 6 {
+                return "Every 6 Months"
+            }
+            let interval = recurrenceRule.intervalValue == 1 ? "Monthly" : "Every \(recurrenceRule.intervalValue) Months"
+            return "\(interval) • Day \(recurrenceRule.dayOfMonth ?? 1)"
+        case .yearly:
+            let month = monthName(recurrenceRule.monthOfYear)
+            let day = recurrenceRule.dayOfMonth ?? 1
+            return "Annually • \(month) \(day)"
+        }
+    }
+
+    private var assignmentText: String {
+        if summary.chore.assignmentMode == .open {
+            return "Anyone can claim"
+        }
+
+        let displayNames = summary.assignees.compactMap { assignee in
+            members.first { $0.userId == assignee.userId }?.displayName
+        }
+
+        if displayNames.count == 1 {
+            return "Assigned to \(displayNames[0])"
+        }
+
+        if displayNames.count == 2 {
+            return "\(displayNames[0]) + \(displayNames[1])"
+        }
+
+        if summary.assignees.count > 2 {
+            return "\(summary.assignees.count) people assigned"
+        }
+
+        return "No assignees"
+    }
+
+    private var pointsText: String {
+        "\(summary.chore.pointsValue) \(summary.chore.pointsValue == 1 ? "point" : "points")"
+    }
+
+    private var nextDueText: String {
+        guard let nextOccurrence = summary.nextOccurrence else {
+            return "No upcoming date"
+        }
+
+        let calendar = Calendar.current
+        let dateText: String
+        if calendar.isDateInToday(nextOccurrence.dueAt) {
+            dateText = "Due today"
+        } else if calendar.isDateInTomorrow(nextOccurrence.dueAt) {
+            dateText = "Next: Tomorrow"
+        } else {
+            dateText = "Next: \(nextOccurrence.dueAt.formatted(date: .abbreviated, time: .omitted))"
+        }
+
+        guard !nextOccurrence.isAllDay else {
+            return dateText
+        }
+
+        return "\(dateText) • \(nextOccurrence.dueAt.formatted(date: .omitted, time: .shortened))"
+    }
+
+    private var accessibilityLabel: String {
+        "\(summary.chore.title). \(recurrenceText). \(assignmentText). \(pointsText). \(nextDueText)."
+    }
+
+    private func weekdaySummary(_ weekdays: [Int]) -> String {
+        let names = weekdays
+            .sorted()
+            .compactMap { Self.weekdayNames[$0] }
+
+        guard !names.isEmpty else {
+            return "Weekdays not set"
+        }
+
+        if names.count == 1 {
+            return names[0]
+        }
+
+        if names.count == 2 {
+            return "\(names[0]) and \(names[1])"
+        }
+
+        return names.joined(separator: ", ")
+    }
+
+    private func monthName(_ month: Int?) -> String {
+        guard let month, (1...12).contains(month) else {
+            return "Month not set"
+        }
+
+        return Calendar.current.shortMonthSymbols[month - 1]
+    }
+
+    private static let weekdayNames: [Int: String] = [
+        0: "Sunday",
+        1: "Monday",
+        2: "Tuesday",
+        3: "Wednesday",
+        4: "Thursday",
+        5: "Friday",
+        6: "Saturday"
+    ]
+}
+
+private struct HouseChoreSummary: Identifiable, Hashable {
+    let chore: ChoreTemplate
+    let recurrenceRule: ChoreRecurrenceRule?
+    let assignees: [ChoreTemplateAssignee]
+    let nextOccurrence: ChoreOccurrence?
+
+    var id: UUID {
+        chore.id
+    }
+}
+
+@MainActor
+private final class HouseChoresActiveViewModel: ObservableObject {
+    @Published private(set) var summaries: [HouseChoreSummary] = []
+    @Published private(set) var isLoading = false
+    @Published private(set) var errorMessage: String?
+
+    private let repository: ChoresRepository
+    private var activeHomeId: UUID?
+
+    init(repository: ChoresRepository? = nil) {
+        self.repository = repository ?? ChoresRepository()
+    }
+
+    func load(homeId: UUID?) async {
+        guard let homeId else {
+            reset()
+            return
+        }
+
+        activeHomeId = homeId
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            let range = ChoreDateRange.upcoming()
+            async let loadedChores = repository.fetchTemplates(homeId: homeId, includeArchived: false)
+            async let loadedOccurrences = repository.fetchHouseChoreOccurrences(homeId: homeId, from: range.start, through: range.end)
+            let chores = try await loadedChores.filter { $0.isActive && $0.archivedAt == nil }
+            let occurrences = try await loadedOccurrences
+            var loadedSummaries: [HouseChoreSummary] = []
+
+            for chore in chores {
+                let recurrenceRule = try await repository.fetchRecurrenceRule(templateId: chore.id)
+                let assignees = try await repository.fetchTemplateAssignees(templateId: chore.id)
+                let nextOccurrence = occurrences
+                    .filter { $0.templateId == chore.id }
+                    .sorted { $0.dueAt < $1.dueAt }
+                    .first
+
+                loadedSummaries.append(
+                    HouseChoreSummary(
+                        chore: chore,
+                        recurrenceRule: recurrenceRule,
+                        assignees: assignees,
+                        nextOccurrence: nextOccurrence
+                    )
+                )
+            }
+
+            summaries = loadedSummaries.sorted { lhs, rhs in
+                switch (lhs.nextOccurrence?.dueAt, rhs.nextOccurrence?.dueAt) {
+                case let (lhsDate?, rhsDate?):
+                    return lhsDate < rhsDate
+                case (_?, nil):
+                    return true
+                case (nil, _?):
+                    return false
+                case (nil, nil):
+                    return lhs.chore.title.localizedCaseInsensitiveCompare(rhs.chore.title) == .orderedAscending
+                }
+            }
+        } catch {
+            summaries = []
+            errorMessage = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+
+    func reload() {
+        Task {
+            await load(homeId: activeHomeId)
+        }
+    }
+
+    private func reset() {
+        activeHomeId = nil
+        summaries = []
+        errorMessage = nil
+        isLoading = false
+    }
+}
+
+@MainActor
+private final class HouseChoresApprovalsViewModel: ObservableObject {
+    @Published private(set) var occurrences: [ChoreOccurrence] = []
+    @Published private(set) var isLoading = false
+    @Published private(set) var errorMessage: String?
+
+    private let repository: ChoresRepository
+    private var activeHomeId: UUID?
+
+    init(repository: ChoresRepository? = nil) {
+        self.repository = repository ?? ChoresRepository()
+    }
+
+    func load(homeId: UUID?) async {
+        guard let homeId else {
+            reset()
+            return
+        }
+
+        activeHomeId = homeId
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            let range = ChoreDateRange.upcoming()
+            occurrences = try await repository.fetchOccurrencesAwaitingApproval(homeId: homeId, from: range.start, through: range.end)
+        } catch {
+            occurrences = []
+            errorMessage = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+
+    func reload() {
+        Task {
+            await load(homeId: activeHomeId)
+        }
+    }
+
+    private func reset() {
+        activeHomeId = nil
+        occurrences = []
+        errorMessage = nil
+        isLoading = false
+    }
+}
+
+@MainActor
+private final class HouseChoresCategoriesRoomsViewModel: ObservableObject {
+    @Published private(set) var categories: [ChoreCategory] = []
+    @Published private(set) var rooms: [ChoreRoom] = []
+    @Published private(set) var isLoading = false
+    @Published private(set) var errorMessage: String?
+
+    private let repository: ChoresRepository
+    private var activeHomeId: UUID?
+
+    init(repository: ChoresRepository? = nil) {
+        self.repository = repository ?? ChoresRepository()
+    }
+
+    func load(homeId: UUID?) async {
+        guard let homeId else {
+            reset()
+            return
+        }
+
+        activeHomeId = homeId
+        isLoading = true
+        errorMessage = nil
+
+        do {
+            async let loadedCategories = repository.fetchCategories(homeId: homeId)
+            async let loadedRooms = repository.fetchRooms(homeId: homeId)
+            categories = try await loadedCategories
+            rooms = try await loadedRooms
+        } catch {
+            categories = []
+            rooms = []
+            errorMessage = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+
+    func reload() {
+        Task {
+            await load(homeId: activeHomeId)
+        }
+    }
+
+    private func reset() {
+        activeHomeId = nil
+        categories = []
+        rooms = []
+        errorMessage = nil
+        isLoading = false
+    }
+}

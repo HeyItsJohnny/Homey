@@ -7,8 +7,11 @@ struct CalendarView: View {
     @EnvironmentObject private var homeService: HomeService
     @StateObject private var viewModel = CalendarViewModel()
     @State private var editorPresentation: CalendarEditorPresentation?
+    @State private var chorePresentation: ChoreCalendarPresentation?
     @State private var eventPendingEditScope: CalendarEvent?
     @State private var successMessage: String?
+    @State private var choreRouteErrorMessage: String?
+    @State private var resolvingChoreCalendarEventId: UUID?
 
     private var selectedHome: HomeSummary? {
         homeService.selectedHome()
@@ -82,6 +85,13 @@ struct CalendarView: View {
 
             Task {
                 await viewModel.focus(on: newValue)
+            }
+        }
+        .task {
+            for await notification in NotificationCenter.default.notifications(named: .homeyCalendarEventsDidChange) {
+                let reason = notification.userInfo?[HomeyCalendarRefreshReason.userInfoKey] as? String
+                    ?? HomeyCalendarRefreshReason.calendarEventsChanged
+                await viewModel.reloadAfterExternalCalendarChange(reason: reason)
             }
         }
         .sheet(item: $editorPresentation) { presentation in
@@ -160,6 +170,29 @@ struct CalendarView: View {
                     }
                 }
             )
+        }
+        .sheet(item: $chorePresentation) { presentation in
+            ChoreOccurrenceDetailView(
+                initialOccurrence: presentation.occurrence,
+                homeTimezone: selectedHome?.timezone ?? TimeZone.autoupdatingCurrent.identifier
+            )
+        }
+        .alert(
+            "Unable to find the linked chore.",
+            isPresented: Binding(
+                get: { choreRouteErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        choreRouteErrorMessage = nil
+                    }
+                }
+            )
+        ) {
+            Button("Close", role: .cancel) {
+                choreRouteErrorMessage = nil
+            }
+        } message: {
+            Text(choreRouteErrorMessage ?? "Close this message and try again.")
         }
         .confirmationDialog(
             "Edit Recurring Event",
@@ -281,13 +314,13 @@ struct CalendarView: View {
             }
         }
         .overlay(alignment: .top) {
-            if viewModel.isLoading {
+            if viewModel.isLoading || resolvingChoreCalendarEventId != nil {
                 ProgressView()
                     .tint(HomeyDashboardTheme.warmBrown)
                     .padding(12)
                     .background(HomeyDashboardTheme.cardBackground, in: Capsule())
                     .shadow(color: HomeyDashboardTheme.primaryText.opacity(0.10), radius: 10, x: 0, y: 6)
-                    .accessibilityLabel("Loading calendar events")
+                    .accessibilityLabel(resolvingChoreCalendarEventId == nil ? "Loading calendar events" : "Opening chore")
             }
         }
     }
@@ -530,10 +563,91 @@ struct CalendarView: View {
 
     private func presentEditEditor(for event: CalendarEvent) {
         successMessage = nil
+        Task {
+            await presentEditEditorAfterChoreLinkCheck(for: event)
+        }
+    }
+
+    private func presentEditEditorAfterChoreLinkCheck(for event: CalendarEvent) async {
+        resolvingChoreCalendarEventId = event.eventId
+
+        do {
+            let occurrence = try await ChoresRepository().fetchOccurrence(calendarEventId: event.eventId)
+            guard resolvingChoreCalendarEventId == event.eventId else {
+                return
+            }
+            resolvingChoreCalendarEventId = nil
+
+            if let occurrence {
+                #if DEBUG
+                print("========== CHORE CALENDAR ROUTE ==========")
+                print("calendar_event_id: \(event.eventId.uuidString)")
+                print("occurrence_id: \(occurrence.id.uuidString)")
+                print("==========================================")
+                #endif
+                chorePresentation = ChoreCalendarPresentation(occurrence: occurrence)
+                return
+            }
+
+            if eventLooksLikeChoreEvent(event) {
+                #if DEBUG
+                print("Unable to find linked chore occurrence")
+                print("calendar_event_id: \(event.eventId.uuidString)")
+                #endif
+                choreRouteErrorMessage = "This calendar event is linked to a chore, but Homey could not find the chore occurrence."
+                return
+            }
+        } catch {
+            guard resolvingChoreCalendarEventId == event.eventId else {
+                return
+            }
+            resolvingChoreCalendarEventId = nil
+
+            #if DEBUG
+            print("Unable to resolve chore-linked calendar event")
+            print("calendar_event_id: \(event.eventId.uuidString)")
+            print(String(reflecting: error))
+            #endif
+
+            if eventLooksLikeChoreEvent(event) {
+                choreRouteErrorMessage = "This calendar event is linked to a chore, but Homey could not open it."
+                return
+            }
+        }
+
+        guard resolvingChoreCalendarEventId == nil else {
+            return
+        }
+
         if event.isRecurring {
             eventPendingEditScope = event
         } else {
             editorPresentation = CalendarEditorPresentation(mode: .edit(event), selectedDate: event.occurrenceStartsAt)
+        }
+    }
+
+    private func eventLooksLikeChoreEvent(_ event: CalendarEvent) -> Bool {
+        event.categoryName?.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Chore") == .orderedSame
+    }
+
+    private func isChoreLinkedCalendarEvent(_ event: CalendarEvent) async -> Bool {
+        if await resolveChoreOccurrence(for: event) != nil {
+            return true
+        }
+
+        return false
+    }
+
+    private func resolveChoreOccurrence(for event: CalendarEvent) async -> ChoreOccurrence? {
+        do {
+            return try await ChoresRepository().fetchOccurrence(calendarEventId: event.eventId)
+        } catch {
+            #if DEBUG
+            print("Unable to resolve chore-linked calendar event")
+            print("calendar_event_id: \(event.eventId.uuidString)")
+            print(String(reflecting: error))
+            #endif
+            return nil
         }
     }
 
@@ -604,6 +718,14 @@ private struct CalendarEditorPresentation: Identifiable {
 
     var event: CalendarEvent? {
         mode.event
+    }
+}
+
+private struct ChoreCalendarPresentation: Identifiable {
+    let occurrence: ChoreOccurrence
+
+    var id: UUID {
+        occurrence.id
     }
 }
 
