@@ -340,7 +340,7 @@ private struct AdjustRewardsView: View {
         }
 
         guard !trimmedDescription.isEmpty else {
-            return "Enter a description."
+            return "Description is required."
         }
 
         guard currentRole == .owner || currentRole == .admin else {
@@ -580,6 +580,8 @@ private struct AdjustRewardsView: View {
     }
 
     private func save() async {
+        guard !isSaving else { return }
+
         guard let selectedUserId, let signedPoints else {
             errorMessage = validationMessage
             return
@@ -606,7 +608,16 @@ private struct AdjustRewardsView: View {
             onSaved(selectedUserId)
             dismiss()
         } catch {
-            errorMessage = "Unable to save adjustment."
+            if let repositoryError = error as? ChoreRepositoryError {
+                switch repositoryError {
+                case .pointRemovalExceedsBalance, .adjustmentDescriptionRequired:
+                    errorMessage = repositoryError.localizedDescription
+                default:
+                    errorMessage = "Unable to save adjustment."
+                }
+            } else {
+                errorMessage = "Unable to save adjustment."
+            }
         }
     }
 }

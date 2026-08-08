@@ -809,7 +809,7 @@ final class ChoresRepository {
         description: String,
         transactionAt: Date,
         currentRole: HomeMemberRole?
-    ) async throws -> ChorePointTransaction {
+    ) async throws -> UUID {
         guard currentRole == .owner || currentRole == .admin else {
             throw ChoreRepositoryError.ownerOrAdminRequired
         }
@@ -828,14 +828,11 @@ final class ChoresRepository {
                 description: trimmedDescription,
                 transactionAt: transactionAt
             )
-            let transactions: [ChorePointTransaction] = try await client
+            let transactionId: UUID = try await client
                 .rpc("adjust_chore_points", params: parameters)
                 .execute()
                 .value
-            guard let transaction = transactions.first else {
-                throw ChoreRepositoryError.mutationFailed
-            }
-            return transaction
+            return transactionId
         } catch {
             logChoreError(error, operation: "adjust_chore_points", homeId: homeId)
             throw ChoreRepositoryError.map(error)
@@ -861,6 +858,39 @@ final class ChoresRepository {
             return result
         } catch {
             logChoreError(error, operation: "clear_home_chores", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func fetchChoreHistoryActivities(
+        homeId: UUID,
+        userId: UUID,
+        limit: Int,
+        offset: Int,
+        currentRole: HomeMemberRole?
+    ) async throws -> [ChoreHistoryActivity] {
+        let authenticatedUserId = try await authenticatedUserId()
+        guard authenticatedUserId == userId || currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let activities: [ChoreHistoryActivity] = try await client
+                .rpc(
+                    "get_chore_history",
+                    params: ChoreHistoryRPCParameters(
+                        homeId: homeId,
+                        userId: userId,
+                        limit: max(limit, 1),
+                        offset: max(offset, 0)
+                    )
+                )
+                .execute()
+                .value
+            return activities
+        } catch {
+            logChoreError(error, operation: "get_chore_history", homeId: homeId, categoryId: userId)
             throw ChoreRepositoryError.map(error)
         }
     }
@@ -1496,6 +1526,20 @@ private struct HomeIdParameters: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case homeId = "requested_home_id"
+    }
+}
+
+private struct ChoreHistoryRPCParameters: Encodable {
+    let homeId: UUID
+    let userId: UUID
+    let limit: Int
+    let offset: Int
+
+    enum CodingKeys: String, CodingKey {
+        case homeId = "requested_home_id"
+        case userId = "requested_user_id"
+        case limit = "requested_limit"
+        case offset = "requested_offset"
     }
 }
 

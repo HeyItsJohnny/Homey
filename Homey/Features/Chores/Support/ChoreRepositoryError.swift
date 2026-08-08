@@ -16,6 +16,8 @@ enum ChoreRepositoryError: LocalizedError, Equatable {
     case choreCategoryUnavailable
     case invalidDateRange
     case invalidPointAdjustment
+    case pointRemovalExceedsBalance
+    case adjustmentDescriptionRequired
     case invalidDraft(ChoreValidationError)
     case loadFailed
     case saveFailed
@@ -52,6 +54,10 @@ enum ChoreRepositoryError: LocalizedError, Equatable {
             return "Choose a valid date range."
         case .invalidPointAdjustment:
             return "Enter a valid points adjustment."
+        case .pointRemovalExceedsBalance:
+            return "Cannot remove more points than this member currently has available."
+        case .adjustmentDescriptionRequired:
+            return "Description is required."
         case .invalidDraft(let validationError):
             return validationError.localizedDescription
         case .loadFailed:
@@ -108,6 +114,15 @@ enum ChoreRepositoryError: LocalizedError, Equatable {
         }
         if combined.contains("duplicate") || combined.contains("unique") {
             return .duplicateGenerationIgnored
+        }
+        if combined.contains("cannot remove more points") || combined.contains("negative balance") {
+            return .pointRemovalExceedsBalance
+        }
+        if combined.contains("description") && combined.contains("required") {
+            return .adjustmentDescriptionRequired
+        }
+        if combined.contains("point adjustment") || combined.contains("cannot be zero") {
+            return .invalidPointAdjustment
         }
 
         return .mutationFailed

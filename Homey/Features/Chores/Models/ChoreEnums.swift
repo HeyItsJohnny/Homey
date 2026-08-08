@@ -210,6 +210,25 @@ enum ChorePointTransactionType: String, Codable, CaseIterable, Identifiable, Sen
     }
 }
 
+enum ChoreHistoryActivityType: String, Codable, CaseIterable, Identifiable, Sendable {
+    case choreAssigned = "chore_assigned"
+    case choreStarted = "chore_started"
+    case choreSubmitted = "chore_submitted"
+    case choreApproved = "chore_approved"
+    case choreNeedsRedo = "chore_needs_redo"
+    case choreCompleted = "chore_completed"
+    case choreClaimed = "chore_claimed"
+    case choreSkipped = "chore_skipped"
+    case choreCancelled = "chore_cancelled"
+    case pointsEarned = "points_earned"
+    case pointsAdjustment = "points_adjustment"
+    case rewardRedeemed = "reward_redeemed"
+    case rewardRefunded = "reward_refunded"
+    case rewardFulfilled = "reward_fulfilled"
+
+    var id: String { rawValue }
+}
+
 enum ChoreOccurrenceDisplayStatus: Equatable, Sendable {
     case stored(ChoreOccurrenceStatus)
     case overdue

@@ -27,6 +27,40 @@ struct ClearHomeChoresResult: Codable, Hashable, Sendable {
 
 }
 
+struct ChoreHistoryActivity: Codable, Identifiable, Hashable, Sendable {
+    let id: String
+    let activityType: ChoreHistoryActivityType
+    let homeId: UUID
+    let userId: UUID
+    let title: String
+    let subtitle: String?
+    let occurredAt: Date
+    let pointsDelta: Int?
+    let occurrenceId: UUID?
+    let submissionId: UUID?
+    let approvalId: UUID?
+    let rewardId: UUID?
+    let redemptionId: UUID?
+    let relatedId: UUID?
+
+    enum CodingKeys: String, CodingKey {
+        case id = "activity_id"
+        case activityType = "activity_type"
+        case homeId = "home_id"
+        case userId = "user_id"
+        case title
+        case subtitle
+        case occurredAt = "occurred_at"
+        case pointsDelta = "points_delta"
+        case occurrenceId = "occurrence_id"
+        case submissionId = "submission_id"
+        case approvalId = "approval_id"
+        case rewardId = "reward_id"
+        case redemptionId = "redemption_id"
+        case relatedId = "related_id"
+    }
+}
+
 extension KeyedDecodingContainer {
     func decodeDateOnlyIfPresent(forKey key: Key) throws -> Date? {
         if let date = try? decodeIfPresent(Date.self, forKey: key) {
