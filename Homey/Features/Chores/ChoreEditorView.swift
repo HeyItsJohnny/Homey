@@ -221,34 +221,6 @@ struct ChoreEditorView: View {
                 axis: .vertical,
                 characterLimit: ChoreEditorViewModel.instructionsLimit
             )
-
-            lookupPicker(
-                title: "Category",
-                selectedTitle: viewModel.selectedCategoryName,
-                emptyTitle: "No Category",
-                isLoading: viewModel.isLoadingLookups,
-                errorMessage: viewModel.lookupErrorMessage,
-                retry: { Task { await viewModel.loadLookups() } }
-            ) {
-                Button("No Category") { viewModel.categoryId = nil }
-                ForEach(viewModel.categories) { category in
-                    Button(category.name) { viewModel.categoryId = category.id }
-                }
-            }
-
-            lookupPicker(
-                title: "Room",
-                selectedTitle: viewModel.selectedRoomName,
-                emptyTitle: "No Room",
-                isLoading: viewModel.isLoadingLookups,
-                errorMessage: viewModel.lookupErrorMessage,
-                retry: { Task { await viewModel.loadLookups() } }
-            ) {
-                Button("No Room") { viewModel.roomId = nil }
-                ForEach(viewModel.rooms) { room in
-                    Button(room.name) { viewModel.roomId = room.id }
-                }
-            }
         }
     }
 
@@ -262,10 +234,10 @@ struct ChoreEditorView: View {
             .accessibilityLabel("Assignment type")
 
             if viewModel.assignmentMode == .open {
-                helperText("This chore will be available for any household member to claim.")
+                helperText(viewModel.assignmentHelpText)
             } else {
                 memberSelector
-                completionModeSelector
+                helperText(viewModel.assignmentHelpText)
             }
         }
     }
@@ -327,20 +299,6 @@ struct ChoreEditorView: View {
                 .padding(.horizontal, 14)
                 .background(fieldBackground)
             }
-        }
-    }
-
-    private var completionModeSelector: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionLabel("Completion Rule", supportingText: viewModel.completionModeHelpText)
-
-            Picker("Completion Rule", selection: $viewModel.completionMode) {
-                ForEach(viewModel.availableCompletionModes, id: \.self) { mode in
-                    Text(viewModel.label(for: mode)).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("Completion rule")
         }
     }
 
@@ -524,11 +482,6 @@ struct ChoreEditorView: View {
                 .tint(HomeyDashboardTheme.warmBrown)
                 .accessibilityLabel("Require approval")
             helperText("An owner or admin must approve completion before points are awarded.")
-
-            Toggle("Require Photo Proof", isOn: $viewModel.requiresPhoto)
-                .tint(HomeyDashboardTheme.warmBrown)
-                .accessibilityLabel("Require photo proof")
-            helperText("The member must attach a photo when completing the chore.")
         }
     }
 
@@ -832,8 +785,6 @@ final class ChoreEditorViewModel: ObservableObject {
     @Published var title = "" { didSet { updateSaveErrorForValidation() } }
     @Published var choreDescription = ""
     @Published var instructions = ""
-    @Published var categoryId: UUID?
-    @Published var roomId: UUID?
     @Published var assignmentMode: ChoreAssignmentMode = .assigned {
         didSet { normalizeAssignmentMode() }
     }
@@ -862,13 +813,8 @@ final class ChoreEditorViewModel: ObservableObject {
     @Published var endsOn = Date()
     @Published var occurrenceCount = 10
     @Published var requiresApproval = true
-    @Published var requiresPhoto = false
     @Published var pointsValue = 0 { didSet { if pointsValue < 0 { pointsValue = 0 } } }
-    @Published private(set) var categories: [ChoreCategory] = []
-    @Published private(set) var rooms: [ChoreRoom] = []
     @Published private(set) var members: [HomeMemberDisplay] = []
-    @Published private(set) var isLoadingLookups = false
-    @Published private(set) var lookupErrorMessage: String?
     @Published private(set) var isLoadingChore = false
     @Published private(set) var isSaving = false
     @Published private(set) var isDeleting = false
@@ -893,27 +839,16 @@ final class ChoreEditorViewModel: ObservableObject {
         self.weekdays = [Self.weekdayValue(for: Date())]
     }
 
-    var selectedCategoryName: String {
-        categories.first { $0.id == categoryId }?.name ?? "No Category"
-    }
-
-    var selectedRoomName: String {
-        rooms.first { $0.id == roomId }?.name ?? "No Room"
-    }
-
-    var availableCompletionModes: [ChoreCompletionMode] {
-        assigneeIds.count <= 1 ? [.single] : [.anyAssignee, .everyone]
-    }
-
-    var completionModeHelpText: String {
-        switch completionMode {
-        case .single:
-            return "Only one assigned person needs to complete this chore."
-        case .anyAssignee:
-            return "Only one assigned person needs to complete this chore."
-        case .everyone:
-            return "Every assigned person must complete their part."
+    var assignmentHelpText: String {
+        if assignmentMode == .open {
+            return "This chore is available for any household member to claim."
         }
+
+        if assigneeIds.count <= 1 {
+            return "Only this assigned person needs to complete the chore."
+        }
+
+        return "Everyone assigned must complete their part before the chore is finished."
     }
 
     var canSave: Bool {
@@ -993,7 +928,6 @@ final class ChoreEditorViewModel: ObservableObject {
         endsOn = Calendar.current.date(byAdding: .month, value: 3, to: startDate) ?? startDate
         updateDateDefaults()
         updateSaveErrorForValidation()
-        await loadLookups()
 
         if case .edit(let templateId) = mode {
             isEditingExistingChore = true
@@ -1031,31 +965,6 @@ final class ChoreEditorViewModel: ObservableObject {
         }
     }
 
-    func loadLookups() async {
-        guard let activeHomeId else {
-            categories = []
-            rooms = []
-            lookupErrorMessage = nil
-            return
-        }
-
-        isLoadingLookups = true
-        lookupErrorMessage = nil
-
-        do {
-            async let loadedCategories = repository.fetchCategories(homeId: activeHomeId)
-            async let loadedRooms = repository.fetchRooms(homeId: activeHomeId)
-            categories = try await loadedCategories.filter { $0.archivedAt == nil }
-            rooms = try await loadedRooms.filter { $0.archivedAt == nil }
-        } catch {
-            categories = []
-            rooms = []
-            lookupErrorMessage = "Unable to load categories and rooms."
-        }
-
-        isLoadingLookups = false
-    }
-
     func toggleAssignee(_ userId: UUID) {
         if assigneeIds.contains(userId) {
             assigneeIds.remove(userId)
@@ -1071,17 +980,6 @@ final class ChoreEditorViewModel: ObservableObject {
             weekdays.insert(weekday)
         }
         updateSaveErrorForValidation()
-    }
-
-    func label(for mode: ChoreCompletionMode) -> String {
-        switch mode {
-        case .single:
-            return "One Person"
-        case .anyAssignee:
-            return "Any Assigned"
-        case .everyone:
-            return "Everyone"
-        }
     }
 
     func save(currentRole: HomeMemberRole?) async {
@@ -1232,13 +1130,13 @@ final class ChoreEditorViewModel: ObservableObject {
             title: title,
             description: choreDescription,
             instructions: instructions,
-            categoryId: categoryId,
-            roomId: roomId,
+            categoryId: nil,
+            roomId: nil,
             assignmentMode: assignmentMode,
-            completionMode: completionMode,
+            completionMode: derivedCompletionMode,
             pointsValue: pointsValue,
             requiresApproval: requiresApproval,
-            requiresPhoto: requiresPhoto,
+            requiresPhoto: false,
             frequency: recurrenceOption.frequency,
             intervalValue: recurrenceOption == .everySixMonths ? 6 : intervalValue,
             startDate: Calendar.current.startOfDay(for: startDate),
@@ -1262,6 +1160,14 @@ final class ChoreEditorViewModel: ObservableObject {
         }
 
         return endType == .afterCount ? occurrenceCount : nil
+    }
+
+    private var derivedCompletionMode: ChoreCompletionMode {
+        if assignmentMode == .open || assigneeIds.count <= 1 {
+            return .single
+        }
+
+        return .everyone
     }
 
     private func dueTimeValue() -> ChoreLocalTime? {
@@ -1336,6 +1242,8 @@ final class ChoreEditorViewModel: ObservableObject {
         if assignmentMode == .open {
             assigneeIds = []
             completionMode = .single
+        } else {
+            completionMode = derivedCompletionMode
         }
         isNormalizing = false
         updateSaveErrorForValidation()
@@ -1347,11 +1255,7 @@ final class ChoreEditorViewModel: ObservableObject {
         }
         isNormalizing = true
         if assignmentMode == .assigned {
-            if assigneeIds.count <= 1 {
-                completionMode = .single
-            } else if completionMode == .single {
-                completionMode = .anyAssignee
-            }
+            completionMode = derivedCompletionMode
         }
         isNormalizing = false
         updateSaveErrorForValidation()
@@ -1362,9 +1266,7 @@ final class ChoreEditorViewModel: ObservableObject {
             return
         }
         isNormalizing = true
-        if assignmentMode == .open || assigneeIds.count <= 1 {
-            completionMode = .single
-        }
+        completionMode = derivedCompletionMode
         isNormalizing = false
         updateSaveErrorForValidation()
     }
@@ -1445,14 +1347,11 @@ final class ChoreEditorViewModel: ObservableObject {
         title = chore.title
         choreDescription = chore.description ?? ""
         instructions = chore.instructions ?? ""
-        categoryId = chore.categoryId
-        roomId = chore.roomId
         assignmentMode = chore.assignmentMode
         completionMode = chore.completionMode
         assigneeIds = Set(assignees.map(\.userId))
         pointsValue = chore.pointsValue
         requiresApproval = chore.requiresApproval
-        requiresPhoto = chore.requiresPhoto
 
         if let recurrenceRule {
             startDate = recurrenceRule.startDate

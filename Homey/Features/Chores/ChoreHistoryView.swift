@@ -45,6 +45,11 @@ struct ChoreHistoryView: View {
         .task(id: ChoreHistoryLoadKey(homeId: homeService.selectedHomeID, role: currentRole)) {
             await viewModel.load(homeId: homeService.selectedHomeID, role: currentRole)
         }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
+                viewModel.reload()
+            }
+        }
     }
 }
 

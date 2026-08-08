@@ -233,7 +233,7 @@ private final class MyChoresViewModel: ObservableObject {
     }
 
     var plannedChoreCount: Int {
-        occurrences.filter { !$0.isExcludedFromWeeklySummary }.count
+        occurrences.count
     }
 
     var daySections: [MyChoresDaySectionModel] {
@@ -292,10 +292,17 @@ private final class MyChoresViewModel: ObservableObject {
             )
             async let loadedCategories = repository.fetchCategories(homeId: homeId)
             async let loadedRooms = repository.fetchRooms(homeId: homeId)
-            let (occurrences, categories, rooms) = try await (loadedOccurrences, loadedCategories, loadedRooms)
-            self.occurrences = occurrences.filter { $0.status != .cancelled }
+            let (loadedMyOccurrences, categories, rooms) = try await (loadedOccurrences, loadedCategories, loadedRooms)
+            self.occurrences = loadedMyOccurrences.filter { occurrence in
+                occurrence.dueAt >= range.start &&
+                occurrence.dueAt < range.end &&
+                occurrence.status != .cancelled
+            }
             categoriesById = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
             roomsById = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0) })
+            #if DEBUG
+            logMyChoresWeekBoundary(range: range)
+            #endif
         } catch {
             occurrences = []
             errorMessage = error.localizedDescription
@@ -403,6 +410,21 @@ private final class MyChoresViewModel: ObservableObject {
             formatter.timeZone = calendar.timeZone
         }
     }
+
+    #if DEBUG
+    private func logMyChoresWeekBoundary(range: (start: Date, end: Date)) {
+        let groupedCardCount = daySections.reduce(0) { $0 + $1.occurrences.count }
+        print("========== MY CHORES WEEK BOUNDARY ==========")
+        print("week_start: \(ISO8601DateFormatter().string(from: range.start))")
+        print("next_week_start: \(ISO8601DateFormatter().string(from: range.end))")
+        print("visible_occurrence_count: \(occurrences.count)")
+        print("grouped_card_count: \(groupedCardCount)")
+        if groupedCardCount != occurrences.count {
+            print("WARNING: Weekly chore grouping/count mismatch")
+        }
+        print("==============================================")
+    }
+    #endif
 }
 
 private struct MyChoresWeekSummary: Equatable {

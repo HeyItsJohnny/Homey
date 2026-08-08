@@ -16,6 +16,14 @@ struct HomeSettingsView: View {
     @State private var errorMessage: String?
     @State private var isShowingSaveError = false
     @State private var isShowingDiscardConfirmation = false
+    @State private var isShowingClearChoresDialog = false
+    @State private var isShowingClearChoresConfirmation = false
+    @State private var isShowingClearChoresError = false
+    @State private var clearChoresConfirmationText = ""
+    @State private var clearChoresErrorMessage: String?
+    @State private var isClearingChores = false
+
+    private let choresRepository = ChoresRepository()
 
     private var selectedHome: HomeSummary? {
         homeService.selectedHome()
@@ -45,6 +53,10 @@ struct HomeSettingsView: View {
         hasUnsavedChanges && !trimmedHomeName.isEmpty && !homeService.isLoading
     }
 
+    private var isCurrentUserOwner: Bool {
+        homeService.selectedHomeRole(currentUserID: authenticationService.currentUser?.id) == .owner
+    }
+
     var body: some View {
         ZStack {
             HomeyDashboardTheme.appBackground
@@ -57,7 +69,7 @@ struct HomeSettingsView: View {
                     if selectedHome == nil {
                         missingHomeState
                     } else {
-                        settingsCard
+                        settingsContent
                     }
                 }
                 .padding(.horizontal, 34)
@@ -90,6 +102,40 @@ struct HomeSettingsView: View {
             }
         } message: {
             Text("Your changes have not been saved.")
+        }
+        .confirmationDialog(
+            "Clear All Chores?",
+            isPresented: $isShowingClearChoresDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear Chores", role: .destructive) {
+                clearChoresConfirmationText = ""
+                isShowingClearChoresConfirmation = true
+            }
+        } message: {
+            Text("This will permanently delete all chore data for this Home, including recurring schedules, future and past chore occurrences, approvals, chore point activity, and chore calendar events. Other Homey data will not be affected.")
+        }
+        .sheet(isPresented: $isShowingClearChoresConfirmation) {
+            ClearChoresConfirmationSheet(
+                homeName: selectedHome?.name ?? "this Home",
+                confirmationText: $clearChoresConfirmationText,
+                isClearing: isClearingChores,
+                onCancel: {
+                    guard !isClearingChores else { return }
+                    isShowingClearChoresConfirmation = false
+                },
+                onConfirm: {
+                    Task {
+                        await clearChores()
+                    }
+                }
+            )
+        }
+        .alert("Unable to Clear Chores", isPresented: $isShowingClearChoresError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(clearChoresErrorMessage ?? "Please try again.")
         }
     }
 
@@ -203,6 +249,58 @@ struct HomeSettingsView: View {
         .dashboardCard(cornerRadius: 30)
     }
 
+    private var settingsContent: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            settingsCard
+
+            if isCurrentUserOwner {
+                dangerZoneCard
+            }
+        }
+    }
+
+    private var dangerZoneCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Danger Zone")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.destructiveRed)
+
+                Text("Deletes all chores, schedules, approvals, points activity, and chore calendar events for this Home. This cannot be undone.")
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button {
+                isShowingClearChoresDialog = true
+            } label: {
+                HStack(spacing: 10) {
+                    if isClearingChores {
+                        ProgressView()
+                            .tint(.white)
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "trash.fill")
+                            .accessibilityHidden(true)
+                    }
+
+                    Text(isClearingChores ? "Clearing Chores..." : "Clear Chores")
+                }
+            }
+            .buttonStyle(DashboardDestructiveButtonStyle())
+            .disabled(isClearingChores)
+            .accessibilityLabel("Clear Chores")
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(HomeyDashboardTheme.destructiveRed.opacity(0.08), in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(HomeyDashboardTheme.destructiveRed.opacity(0.28), lineWidth: 1)
+        }
+    }
+
     // MARK: - Actions
 
     private func loadSelectedHome() {
@@ -261,6 +359,45 @@ struct HomeSettingsView: View {
         } else {
             errorMessage = homeService.errorMessage ?? "Unable to save Home settings."
             isShowingSaveError = true
+        }
+    }
+
+    private func clearChores() async {
+        guard !isClearingChores else {
+            return
+        }
+
+        guard clearChoresConfirmationText == "CLEAR" else {
+            return
+        }
+
+        guard let selectedHome else {
+            clearChoresErrorMessage = "Unable to load Home Settings. Please choose a Home and try again."
+            isShowingClearChoresError = true
+            return
+        }
+
+        isClearingChores = true
+        clearChoresErrorMessage = nil
+        successMessage = nil
+        defer { isClearingChores = false }
+
+        do {
+            _ = try await choresRepository.clearHomeChores(
+                homeId: selectedHome.id,
+                currentRole: homeService.selectedHomeRole(currentUserID: authenticationService.currentUser?.id)
+            )
+            clearChoresConfirmationText = ""
+            isShowingClearChoresConfirmation = false
+            NotificationCenter.default.post(name: .homeyChoresDidChange, object: nil)
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+
+            withAnimation(.easeInOut(duration: 0.2)) {
+                successMessage = "All chores have been removed from this Home."
+            }
+        } catch {
+            clearChoresErrorMessage = error.localizedDescription
+            isShowingClearChoresError = true
         }
     }
 
@@ -514,6 +651,116 @@ struct DashboardPrimaryButtonStyle: ButtonStyle {
                 y: 8
             )
             .opacity(configuration.isPressed ? 0.90 : 1)
+    }
+}
+
+private struct DashboardDestructiveButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity, minHeight: 56)
+            .background(
+                HomeyDashboardTheme.destructiveRed.opacity(isEnabled ? 1 : 0.38),
+                in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+            )
+            .shadow(
+                color: HomeyDashboardTheme.destructiveRed.opacity(isEnabled && !configuration.isPressed ? 0.16 : 0.05),
+                radius: 12,
+                x: 0,
+                y: 7
+            )
+            .opacity(configuration.isPressed ? 0.9 : 1)
+    }
+}
+
+private struct ClearChoresConfirmationSheet: View {
+    let homeName: String
+    @Binding var confirmationText: String
+    let isClearing: Bool
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    private var canConfirm: Bool {
+        confirmationText == "CLEAR" && !isClearing
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.destructiveRed)
+                    .frame(width: 46, height: 46)
+                    .background(HomeyDashboardTheme.destructiveRed.opacity(0.12), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Clear All Chores?")
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                    Text(homeName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                }
+            }
+
+            Text("This will permanently delete all chore data for this Home, including recurring schedules, future and past chore occurrences, approvals, chore point activity, and chore calendar events. Other Homey data will not be affected.")
+                .font(.body)
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 9) {
+                settingsLabel("Type CLEAR to confirm", supportingText: "This reset cannot be undone.")
+
+                TextField("CLEAR", text: $confirmationText)
+                    .textInputAutocapitalization(.characters)
+                    .autocorrectionDisabled()
+                    .font(.body.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    .padding(.horizontal, 16)
+                    .frame(minHeight: 54)
+                    .background(HomeyDashboardTheme.appBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                    }
+                    .disabled(isClearing)
+            }
+
+            HStack(spacing: 12) {
+                Button("Cancel", action: onCancel)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isClearing)
+
+                Button(action: onConfirm) {
+                    if isClearing {
+                        ProgressView()
+                            .tint(.white)
+                            .accessibilityLabel("Clearing chores")
+                    } else {
+                        Text("Clear Chores")
+                    }
+                }
+                .buttonStyle(DashboardDestructiveButtonStyle())
+                .disabled(!canConfirm)
+            }
+        }
+        .padding(28)
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(isClearing)
     }
 }
 

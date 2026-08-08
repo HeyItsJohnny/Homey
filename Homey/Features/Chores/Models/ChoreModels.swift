@@ -2,6 +2,31 @@ import Foundation
 
 protocol ChoreDateOnlyDecoding {}
 
+struct ClearHomeChoresResult: Codable, Hashable, Sendable {
+    let choreDefinitionsDeleted: Int
+    let recurrenceRulesDeleted: Int
+    let occurrencesDeleted: Int
+    let calendarEventsDeleted: Int
+    let submissionsDeleted: Int
+    let approvalsDeleted: Int
+    let pointTransactionsDeleted: Int
+    let categoriesDeleted: Int
+    let roomsDeleted: Int
+
+    enum CodingKeys: String, CodingKey {
+        case choreDefinitionsDeleted = "chore_definitions_deleted"
+        case recurrenceRulesDeleted = "recurrence_rules_deleted"
+        case occurrencesDeleted = "occurrences_deleted"
+        case calendarEventsDeleted = "calendar_events_deleted"
+        case submissionsDeleted = "submissions_deleted"
+        case approvalsDeleted = "approvals_deleted"
+        case pointTransactionsDeleted = "point_transactions_deleted"
+        case categoriesDeleted = "categories_deleted"
+        case roomsDeleted = "rooms_deleted"
+    }
+
+}
+
 extension KeyedDecodingContainer {
     func decodeDateOnlyIfPresent(forKey key: Key) throws -> Date? {
         if let date = try? decodeIfPresent(Date.self, forKey: key) {
@@ -443,6 +468,7 @@ struct ChorePointTransaction: Codable, Identifiable, Hashable, Sendable {
 
     private enum AlternateCodingKeys: String, CodingKey {
         case points
+        case description
     }
 
     init(from decoder: Decoder) throws {
@@ -459,6 +485,7 @@ struct ChorePointTransaction: Codable, Identifiable, Hashable, Sendable {
         submissionId = try container.decodeIfPresent(UUID.self, forKey: .submissionId)
         rewardId = try container.decodeIfPresent(UUID.self, forKey: .rewardId)
         note = try container.decodeIfPresent(String.self, forKey: .note)
+            ?? alternateContainer.decodeIfPresent(String.self, forKey: .description)
         createdBy = try container.decodeIfPresent(UUID.self, forKey: .createdBy)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
     }

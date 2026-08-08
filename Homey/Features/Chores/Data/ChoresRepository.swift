@@ -438,7 +438,7 @@ final class ChoresRepository {
                 .select()
                 .eq("home_id", value: homeId.uuidString)
                 .gte("due_at", value: ChoreTimestampFormatter.string(from: startDate))
-                .lte("due_at", value: ChoreTimestampFormatter.string(from: endDate))
+                .lt("due_at", value: ChoreTimestampFormatter.string(from: endDate))
                 .order("due_at", ascending: true)
                 .execute()
                 .value
@@ -705,21 +705,49 @@ final class ChoresRepository {
     }
 
     func fetchMyPointBalance(homeId: UUID) async throws -> Int {
+        let userId = try await authenticatedUserId()
+        return try await fetchPointBalance(homeId: homeId, userId: userId, currentRole: .member)
+    }
+
+    func fetchPointBalance(homeId: UUID, userId: UUID, currentRole: HomeMemberRole?) async throws -> Int {
+        let authenticatedUserId = try await authenticatedUserId()
+        guard authenticatedUserId == userId || currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
         do {
             try await requireAuthenticatedSession()
-            let balance: Int = try await client
-                .rpc("get_my_chore_point_balance", params: HomeIdParameters(homeId: homeId))
+            let transactions: [ChorePointTransaction] = try await client
+                .from("chore_point_transactions")
+                .select()
+                .eq("home_id", value: homeId.uuidString)
+                .eq("user_id", value: userId.uuidString)
                 .execute()
                 .value
-            return balance
+            return transactions.reduce(0) { $0 + $1.pointsDelta }
         } catch {
-            logChoreError(error, operation: "get_my_chore_point_balance", homeId: homeId)
+            logChoreError(error, operation: "chore_point_transactions.balance_select", homeId: homeId)
             throw ChoreRepositoryError.map(error)
         }
     }
 
     func fetchMyPointTransactions(homeId: UUID, limit: Int, offset: Int) async throws -> [ChorePointTransaction] {
         let userId = try await authenticatedUserId()
+        return try await fetchPointTransactions(homeId: homeId, userId: userId, limit: limit, offset: offset, currentRole: .member)
+    }
+
+    func fetchPointTransactions(
+        homeId: UUID,
+        userId: UUID,
+        limit: Int,
+        offset: Int,
+        currentRole: HomeMemberRole?
+    ) async throws -> [ChorePointTransaction] {
+        let authenticatedUserId = try await authenticatedUserId()
+        guard authenticatedUserId == userId || currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
         do {
             try await requireAuthenticatedSession()
             let transactions: [ChorePointTransaction] = try await client
@@ -734,7 +762,105 @@ final class ChoresRepository {
                 .value
             return transactions
         } catch {
-            logChoreError(error, operation: "chore_point_transactions.select_mine", homeId: homeId)
+            logChoreError(error, operation: "chore_point_transactions.select_for_user", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func fetchPointTransactionDisplayTitles(for transactions: [ChorePointTransaction]) async -> [UUID: String] {
+        var titlesByTransactionId: [UUID: String] = [:]
+        var occurrenceTitlesById: [UUID: String] = [:]
+        var rewardTitlesById: [UUID: String] = [:]
+
+        for transaction in transactions {
+            if let occurrenceId = transaction.occurrenceId {
+                if let cachedTitle = occurrenceTitlesById[occurrenceId] {
+                    titlesByTransactionId[transaction.id] = cachedTitle
+                    continue
+                }
+
+                if let occurrence = try? await fetchOccurrence(id: occurrenceId) {
+                    occurrenceTitlesById[occurrenceId] = occurrence.titleSnapshot
+                    titlesByTransactionId[transaction.id] = occurrence.titleSnapshot
+                    continue
+                }
+            }
+
+            if let rewardId = transaction.rewardId {
+                if let cachedTitle = rewardTitlesById[rewardId] {
+                    titlesByTransactionId[transaction.id] = cachedTitle
+                    continue
+                }
+
+                if let rewardTitle = try? await fetchRewardTitle(rewardId: rewardId) {
+                    rewardTitlesById[rewardId] = rewardTitle
+                    titlesByTransactionId[transaction.id] = rewardTitle
+                }
+            }
+        }
+
+        return titlesByTransactionId
+    }
+
+    func adjustChorePoints(
+        homeId: UUID,
+        userId: UUID,
+        points: Int,
+        description: String,
+        transactionAt: Date,
+        currentRole: HomeMemberRole?
+    ) async throws -> ChorePointTransaction {
+        guard currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
+        let trimmedDescription = normalizedRequiredString(description)
+        guard points != 0, !trimmedDescription.isEmpty else {
+            throw ChoreRepositoryError.invalidPointAdjustment
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let parameters = AdjustChorePointsRPCParameters(
+                homeId: homeId,
+                userId: userId,
+                points: points,
+                description: trimmedDescription,
+                transactionAt: transactionAt
+            )
+            let transactions: [ChorePointTransaction] = try await client
+                .rpc("adjust_chore_points", params: parameters)
+                .execute()
+                .value
+            guard let transaction = transactions.first else {
+                throw ChoreRepositoryError.mutationFailed
+            }
+            return transaction
+        } catch {
+            logChoreError(error, operation: "adjust_chore_points", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func clearHomeChores(homeId: UUID, currentRole: HomeMemberRole?) async throws -> ClearHomeChoresResult {
+        guard currentRole == .owner else {
+            throw ChoreRepositoryError.ownerRequired
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            logClearHomeChoresRequest(homeId: homeId)
+            let results: [ClearHomeChoresResult] = try await client
+                .rpc("clear_home_chores", params: HomeIdParameters(homeId: homeId))
+                .execute()
+                .value
+            guard let result = results.first else {
+                throw ChoreRepositoryError.mutationFailed
+            }
+            logClearHomeChoresResult(result)
+            return result
+        } catch {
+            logChoreError(error, operation: "clear_home_chores", homeId: homeId)
             throw ChoreRepositoryError.map(error)
         }
     }
@@ -810,6 +936,31 @@ final class ChoresRepository {
         }
     }
 
+    private func fetchRewardTitle(rewardId: UUID) async throws -> String? {
+        if let title = try? await fetchRewardTitle(rewardId: rewardId, tableName: "rewards", columnName: "title") {
+            return title
+        }
+        if let name = try? await fetchRewardTitle(rewardId: rewardId, tableName: "rewards", columnName: "name") {
+            return name
+        }
+        if let title = try? await fetchRewardTitle(rewardId: rewardId, tableName: "chore_rewards", columnName: "title") {
+            return title
+        }
+        return try await fetchRewardTitle(rewardId: rewardId, tableName: "chore_rewards", columnName: "name")
+    }
+
+    private func fetchRewardTitle(rewardId: UUID, tableName: String, columnName: String) async throws -> String? {
+        let rows: [RewardTitleRow] = try await client
+            .from(tableName)
+            .select("id,\(columnName)")
+            .eq("id", value: rewardId.uuidString)
+            .limit(1)
+            .execute()
+            .value
+
+        return rows.first?.displayTitle
+    }
+
     private func normalizedRequiredString(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -845,6 +996,30 @@ final class ChoresRepository {
             print("updated_status: \(updatedStatus.rawValue)")
         }
         print("=====================================")
+        #endif
+    }
+
+    private func logClearHomeChoresRequest(homeId: UUID) {
+        #if DEBUG
+        print("========== CLEAR CHORES ==========")
+        print("home_id: \(homeId.uuidString)")
+        print("==================================")
+        #endif
+    }
+
+    private func logClearHomeChoresResult(_ result: ClearHomeChoresResult) {
+        #if DEBUG
+        print("========== CLEAR CHORES COMPLETE ==========")
+        print("definitions_deleted: \(result.choreDefinitionsDeleted)")
+        print("recurrence_rules_deleted: \(result.recurrenceRulesDeleted)")
+        print("occurrences_deleted: \(result.occurrencesDeleted)")
+        print("calendar_events_deleted: \(result.calendarEventsDeleted)")
+        print("submissions_deleted: \(result.submissionsDeleted)")
+        print("approvals_deleted: \(result.approvalsDeleted)")
+        print("point_transactions_deleted: \(result.pointTransactionsDeleted)")
+        print("categories_deleted: \(result.categoriesDeleted)")
+        print("rooms_deleted: \(result.roomsDeleted)")
+        print("===========================================")
         #endif
     }
 }
@@ -1095,13 +1270,13 @@ private struct SaveChoreTemplateRPCParameters: Encodable {
         requestedTitle = normalizedDraft.title
         requestedDescription = normalizedDraft.description.isEmpty ? nil : normalizedDraft.description
         requestedInstructions = normalizedDraft.instructions.isEmpty ? nil : normalizedDraft.instructions
-        requestedCategoryId = normalizedDraft.categoryId
-        requestedRoomId = normalizedDraft.roomId
+        requestedCategoryId = nil
+        requestedRoomId = nil
         requestedAssignmentMode = normalizedDraft.assignmentMode.rawValue
-        requestedCompletionMode = normalizedDraft.assignmentMode == .open ? ChoreCompletionMode.single.rawValue : normalizedDraft.completionMode.rawValue
+        requestedCompletionMode = Self.requestedCompletionMode(for: normalizedDraft).rawValue
         requestedPointsValue = normalizedDraft.pointsValue
         requestedRequiresApproval = normalizedDraft.requiresApproval
-        requestedRequiresPhoto = normalizedDraft.requiresPhoto
+        requestedRequiresPhoto = false
         requestedFrequency = normalizedDraft.frequency.rawValue
         requestedIntervalValue = normalizedDraft.frequency == .none ? 1 : normalizedDraft.intervalValue
         requestedStartDate = ChoreDateOnlyFormatter.string(from: normalizedDraft.startDate, timezone: normalizedDraft.timezone)
@@ -1127,6 +1302,14 @@ private struct SaveChoreTemplateRPCParameters: Encodable {
         case .none, .daily, .weekly:
             return nil
         }
+    }
+
+    private static func requestedCompletionMode(for draft: ChoreTemplateDraft) -> ChoreCompletionMode {
+        if draft.assignmentMode == .open || draft.assigneeIds.count <= 1 {
+            return .single
+        }
+
+        return .everyone
     }
 
     private static func requestedOccurrenceCount(for draft: ChoreTemplateDraft) -> Int? {
@@ -1313,5 +1496,44 @@ private struct HomeIdParameters: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case homeId = "requested_home_id"
+    }
+}
+
+private struct AdjustChorePointsRPCParameters: Encodable {
+    let homeId: UUID
+    let userId: UUID
+    let points: Int
+    let description: String
+    let transactionAt: String
+
+    init(homeId: UUID, userId: UUID, points: Int, description: String, transactionAt: Date) {
+        self.homeId = homeId
+        self.userId = userId
+        self.points = points
+        self.description = description
+        self.transactionAt = ChoreTimestampFormatter.string(from: transactionAt)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case homeId = "requested_home_id"
+        case userId = "requested_user_id"
+        case points = "requested_points"
+        case description = "requested_description"
+        case transactionAt = "requested_transaction_at"
+    }
+}
+
+private struct RewardTitleRow: Decodable {
+    let displayTitle: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case title
+        case name
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        displayTitle = try container.decodeIfPresent(String.self, forKey: .title)
+            ?? container.decodeIfPresent(String.self, forKey: .name)
     }
 }

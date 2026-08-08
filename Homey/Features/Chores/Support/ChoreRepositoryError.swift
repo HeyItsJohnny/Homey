@@ -3,6 +3,7 @@ import PostgREST
 
 enum ChoreRepositoryError: LocalizedError, Equatable {
     case authenticationRequired
+    case ownerRequired
     case ownerOrAdminRequired
     case homeMembershipRequired
     case choreAlreadyClaimed
@@ -14,6 +15,7 @@ enum ChoreRepositoryError: LocalizedError, Equatable {
     case duplicateGenerationIgnored
     case choreCategoryUnavailable
     case invalidDateRange
+    case invalidPointAdjustment
     case invalidDraft(ChoreValidationError)
     case loadFailed
     case saveFailed
@@ -24,6 +26,8 @@ enum ChoreRepositoryError: LocalizedError, Equatable {
         switch self {
         case .authenticationRequired:
             return "Your session has expired. Please sign in again."
+        case .ownerRequired:
+            return "Only the Home owner can clear chores."
         case .ownerOrAdminRequired:
             return "Only Home owners and admins can manage this chore area."
         case .homeMembershipRequired:
@@ -46,6 +50,8 @@ enum ChoreRepositoryError: LocalizedError, Equatable {
             return "Homey could not prepare the Chore calendar category for this Home."
         case .invalidDateRange:
             return "Choose a valid date range."
+        case .invalidPointAdjustment:
+            return "Enter a valid points adjustment."
         case .invalidDraft(let validationError):
             return validationError.localizedDescription
         case .loadFailed:

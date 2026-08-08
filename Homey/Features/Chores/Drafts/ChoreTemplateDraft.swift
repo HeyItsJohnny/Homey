@@ -91,6 +91,9 @@ struct ChoreTemplateDraft: Equatable, Sendable {
         draft.instructions = instructions.trimmingCharacters(in: .whitespacesAndNewlines)
         draft.timezone = timezone.trimmingCharacters(in: .whitespacesAndNewlines)
         draft.assigneeIds = Array(Set(assigneeIds)).sorted { $0.uuidString < $1.uuidString }
+        draft.categoryId = nil
+        draft.roomId = nil
+        draft.requiresPhoto = false
 
         if draft.frequency == .none {
             draft.endType = .afterCount
@@ -107,6 +110,10 @@ struct ChoreTemplateDraft: Equatable, Sendable {
         if draft.assignmentMode == .open {
             draft.assigneeIds = []
             draft.completionMode = .single
+        } else if draft.assigneeIds.count <= 1 {
+            draft.completionMode = .single
+        } else {
+            draft.completionMode = .everyone
         }
 
         return draft
