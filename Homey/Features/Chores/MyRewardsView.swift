@@ -107,6 +107,47 @@ struct MyRewardsView: View {
                     .disabled(viewModel.isLoadingMore)
                 }
             }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("My Redemptions")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                if viewModel.isLoading && viewModel.redemptions.isEmpty {
+                    MyRedemptionsLoadingView()
+                } else if viewModel.redemptions.isEmpty {
+                    MyRedemptionsEmptyView(isViewingAnotherMember: viewModel.isViewingAnotherMember)
+                } else {
+                    MyRedemptionsList(redemptions: viewModel.redemptions)
+                }
+
+                if viewModel.hasMoreRedemptions {
+                    Button {
+                        viewModel.loadMoreRedemptions()
+                    } label: {
+                        HStack(spacing: 8) {
+                            if viewModel.isLoadingMoreRedemptions {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .tint(HomeyDashboardTheme.warmBrown)
+                            }
+                            Text(viewModel.isLoadingMoreRedemptions ? "Loading..." : "Load More")
+                        }
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 44)
+                        .frame(maxWidth: .infinity)
+                        .background(HomeyDashboardTheme.selectedSidebarBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.isLoadingMoreRedemptions)
+                }
+            }
         }
     }
 
@@ -785,17 +826,200 @@ private struct MyRewardsLedgerLoadingView: View {
     }
 }
 
+private struct MyRedemptionsList: View {
+    let redemptions: [ChoreRewardRedemption]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(redemptions) { redemption in
+                MyRedemptionRow(redemption: redemption)
+
+                if redemption.id != redemptions.last?.id {
+                    Divider()
+                        .overlay(HomeyDashboardTheme.softBorder)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+    }
+}
+
+private struct MyRedemptionRow: View {
+    let redemption: ChoreRewardRedemption
+
+    private var requestedText: String {
+        "Requested \(redemption.requestedAt.formatted(.dateTime.month(.abbreviated).day().hour().minute()))"
+    }
+
+    private var lifecycleText: String? {
+        switch redemption.status {
+        case .pending:
+            return nil
+        case .redeemed:
+            return redemption.redeemedAt.map { "Redeemed \($0.formatted(.dateTime.month(.abbreviated).day().hour().minute()))" }
+        case .cancelled:
+            return redemption.cancelledAt.map { "Cancelled \($0.formatted(.dateTime.month(.abbreviated).day().hour().minute()))" }
+        }
+    }
+
+    private var refundText: String? {
+        redemption.status == .cancelled ? "\(redemption.pointCostSnapshot.formatted(.number)) Points Refunded" : nil
+    }
+
+    private var statusColor: Color {
+        switch redemption.status {
+        case .pending:
+            return HomeyDashboardTheme.orangeAccent
+        case .redeemed:
+            return HomeyDashboardTheme.sageAccent
+        case .cancelled:
+            return HomeyDashboardTheme.destructiveRed.opacity(0.8)
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Rectangle()
+                .fill(statusColor)
+                .frame(width: 4)
+                .clipShape(Capsule())
+                .padding(.vertical, 3)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(redemption.rewardNameSnapshot)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    .lineLimit(2)
+
+                Text("\(redemption.pointCostSnapshot.formatted(.number)) Points")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+
+                Text(requestedText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+
+                if let lifecycleText {
+                    Text(lifecycleText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                }
+
+                if let refundText {
+                    Text(refundText)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.sageAccent)
+                }
+
+                if let reason = redemption.cancellationReason?.trimmingCharacters(in: .whitespacesAndNewlines), !reason.isEmpty {
+                    Text(reason)
+                        .font(.caption)
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 10)
+
+            Text(redemption.status.displayName)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(statusColor)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(statusColor.opacity(0.12), in: Capsule())
+                .lineLimit(1)
+        }
+        .padding(.vertical, 13)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    private var accessibilityText: String {
+        var parts = [
+            redemption.rewardNameSnapshot,
+            "\(redemption.pointCostSnapshot) points",
+            redemption.status.displayName,
+            requestedText
+        ]
+
+        if let lifecycleText {
+            parts.append(lifecycleText)
+        }
+
+        if let refundText {
+            parts.append(refundText)
+        }
+
+        if let reason = redemption.cancellationReason?.trimmingCharacters(in: .whitespacesAndNewlines), !reason.isEmpty {
+            parts.append(reason)
+        }
+
+        return parts.joined(separator: ". ")
+    }
+}
+
+private struct MyRedemptionsEmptyView: View {
+    let isViewingAnotherMember: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(isViewingAnotherMember ? "No redemptions for this member yet." : "No rewards redeemed yet.")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+            Text("Browse Reward Center to spend your points.")
+                .font(.subheadline)
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+    }
+}
+
+private struct MyRedemptionsLoadingView: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(HomeyDashboardTheme.warmBrown)
+            Text("Loading redemptions...")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+    }
+}
+
 @MainActor
 private final class MyRewardsViewModel: ObservableObject {
     @Published private(set) var pointBalance = 0
     @Published private(set) var transactions: [ChorePointTransaction] = []
     @Published private(set) var displayItems: [MyRewardsLedgerItem] = []
+    @Published private(set) var redemptions: [ChoreRewardRedemption] = []
     @Published private(set) var members: [HomeMemberDisplay] = []
     @Published private(set) var selectedMemberId: UUID?
     @Published private(set) var canSelectMembers = false
     @Published private(set) var isLoading = false
     @Published private(set) var isLoadingMore = false
+    @Published private(set) var isLoadingMoreRedemptions = false
     @Published private(set) var hasMoreTransactions = false
+    @Published private(set) var hasMoreRedemptions = false
     @Published private(set) var errorMessage: String?
 
     let repository: ChoresRepository
@@ -811,6 +1035,14 @@ private final class MyRewardsViewModel: ObservableObject {
 
     var canAdjustRewards: Bool {
         (currentRole == .owner || currentRole == .admin) && !members.isEmpty
+    }
+
+    var isViewingAnotherMember: Bool {
+        guard let currentUserId, let selectedMemberId else {
+            return false
+        }
+
+        return selectedMemberId != currentUserId
     }
 
     func configure(homeId: UUID?, currentUserId: UUID?, currentRole: HomeMemberRole?, members: [HomeMemberDisplay]) async {
@@ -905,6 +1137,43 @@ private final class MyRewardsViewModel: ObservableObject {
         }
     }
 
+    func loadMoreRedemptions() {
+        guard let activeHomeId,
+              let selectedMemberId,
+              !isLoadingMoreRedemptions,
+              !isLoading,
+              hasMoreRedemptions else {
+            return
+        }
+
+        let loadingMemberId = selectedMemberId
+        let loadingRole = currentRole
+        isLoadingMoreRedemptions = true
+        errorMessage = nil
+
+        Task {
+            defer { isLoadingMoreRedemptions = false }
+
+            do {
+                let nextPage = try await repository.fetchRewardRedemptions(
+                    homeId: activeHomeId,
+                    userId: loadingMemberId,
+                    limit: pageSize,
+                    offset: redemptions.count,
+                    currentRole: loadingRole
+                )
+                guard self.selectedMemberId == loadingMemberId else {
+                    return
+                }
+                redemptions.append(contentsOf: nextPage)
+                hasMoreRedemptions = nextPage.count == pageSize
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+
+        }
+    }
+
     func reload() {
         Task {
             await loadSelectedMember(resetLedger: true)
@@ -921,10 +1190,13 @@ private final class MyRewardsViewModel: ObservableObject {
         pointBalance = 0
         transactions = []
         displayItems = []
+        redemptions = []
         errorMessage = nil
         hasMoreTransactions = false
+        hasMoreRedemptions = false
         isLoading = false
         isLoadingMore = false
+        isLoadingMoreRedemptions = false
     }
 
     private func loadSelectedMember(resetLedger: Bool) async {
@@ -937,13 +1209,16 @@ private final class MyRewardsViewModel: ObservableObject {
         activeLoadId = loadId
         isLoading = true
         isLoadingMore = false
+        isLoadingMoreRedemptions = false
         errorMessage = nil
 
         if resetLedger {
             pointBalance = 0
             transactions = []
             displayItems = []
+            redemptions = []
             hasMoreTransactions = false
+            hasMoreRedemptions = false
         }
 
         do {
@@ -955,8 +1230,16 @@ private final class MyRewardsViewModel: ObservableObject {
                 offset: 0,
                 currentRole: currentRole
             )
+            async let loadedRedemptions = repository.fetchRewardRedemptions(
+                homeId: activeHomeId,
+                userId: selectedMemberId,
+                limit: pageSize,
+                offset: 0,
+                currentRole: currentRole
+            )
             let loadedPointBalance = try await loadedBalance
             let firstPage = try await loadedTransactions
+            let firstRedemptionsPage = try await loadedRedemptions
             let firstItems = await makeDisplayItems(for: firstPage)
             guard activeLoadId == loadId, self.selectedMemberId == selectedMemberId else {
                 return
@@ -964,7 +1247,9 @@ private final class MyRewardsViewModel: ObservableObject {
             pointBalance = loadedPointBalance
             transactions = firstPage
             displayItems = firstItems
+            redemptions = firstRedemptionsPage
             hasMoreTransactions = firstPage.count == pageSize
+            hasMoreRedemptions = firstRedemptionsPage.count == pageSize
         } catch {
             guard activeLoadId == loadId, self.selectedMemberId == selectedMemberId else {
                 return
@@ -972,7 +1257,9 @@ private final class MyRewardsViewModel: ObservableObject {
             pointBalance = 0
             transactions = []
             displayItems = []
+            redemptions = []
             hasMoreTransactions = false
+            hasMoreRedemptions = false
             errorMessage = error.localizedDescription
         }
 

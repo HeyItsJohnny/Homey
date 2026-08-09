@@ -150,6 +150,17 @@ enum ChoreAssigneeStatus: String, Codable, CaseIterable, Identifiable, Sendable 
     }
 }
 
+extension ChoreAssigneeStatus {
+    var isActionableForAttention: Bool {
+        switch self {
+        case .assigned, .inProgress, .needsRedo:
+            return true
+        case .awaitingApproval, .completed, .skipped, .cancelled:
+            return false
+        }
+    }
+}
+
 enum ChoreSubmissionStatus: String, Codable, CaseIterable, Identifiable, Sendable {
     case pending
     case approved
@@ -210,6 +221,25 @@ enum ChorePointTransactionType: String, Codable, CaseIterable, Identifiable, Sen
     }
 }
 
+enum ChoreRewardRedemptionStatus: String, Codable, CaseIterable, Identifiable, Sendable {
+    case pending
+    case redeemed
+    case cancelled
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .pending:
+            return "Pending"
+        case .redeemed:
+            return "Redeemed"
+        case .cancelled:
+            return "Cancelled"
+        }
+    }
+}
+
 enum ChoreHistoryActivityType: String, Codable, CaseIterable, Identifiable, Sendable {
     case choreAssigned = "chore_assigned"
     case choreStarted = "chore_started"
@@ -225,6 +255,7 @@ enum ChoreHistoryActivityType: String, Codable, CaseIterable, Identifiable, Send
     case rewardRedeemed = "reward_redeemed"
     case rewardRefunded = "reward_refunded"
     case rewardFulfilled = "reward_fulfilled"
+    case rewardCancelled = "reward_cancelled"
 
     var id: String { rawValue }
 }

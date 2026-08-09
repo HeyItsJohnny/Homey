@@ -374,17 +374,11 @@ private final class MyChoresViewModel: ObservableObject {
     }
 
     private var visibleWeekRange: (start: Date, end: Date)? {
-        let start = startOfWeek(containing: visibleWeekAnchor)
-        guard let end = calendar.date(byAdding: .day, value: 7, to: start) else {
-            return nil
-        }
-        return (start, end)
+        ChoreWeekRange.week(containing: visibleWeekAnchor, calendar: calendar)
     }
 
     private func configureCalendar(weekStartsOn: Int?, timezone: String?) {
-        calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = timezone.flatMap(TimeZone.init(identifier:)) ?? .autoupdatingCurrent
-        calendar.firstWeekday = weekStartsOn == 2 ? 2 : (weekStartsOn == 1 ? 1 : Calendar.autoupdatingCurrent.firstWeekday)
+        calendar = ChoreWeekRange.makeCalendar(weekStartsOn: weekStartsOn, timezone: timezone)
         self.timezone = calendar.timeZone.identifier
         Self.configureFormatters(calendar: calendar)
     }
@@ -395,13 +389,6 @@ private final class MyChoresViewModel: ObservableObject {
             return
         }
         weekDays = (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: range.start) }
-    }
-
-    private func startOfWeek(containing date: Date) -> Date {
-        let startOfDay = calendar.startOfDay(for: date)
-        let weekday = calendar.component(.weekday, from: startOfDay)
-        let daysFromWeekStart = (weekday - calendar.firstWeekday + 7) % 7
-        return calendar.date(byAdding: .day, value: -daysFromWeekStart, to: startOfDay) ?? startOfDay
     }
 
     private static func configureFormatters(calendar: Calendar) {

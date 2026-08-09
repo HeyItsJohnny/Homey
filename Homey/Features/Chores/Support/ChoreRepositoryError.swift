@@ -18,6 +18,11 @@ enum ChoreRepositoryError: LocalizedError, Equatable {
     case invalidPointAdjustment
     case pointRemovalExceedsBalance
     case adjustmentDescriptionRequired
+    case notEnoughPoints
+    case rewardUnavailable
+    case rewardAlreadyPending
+    case redemptionNotPending
+    case redemptionAlreadyRefunded
     case invalidDraft(ChoreValidationError)
     case loadFailed
     case saveFailed
@@ -58,6 +63,16 @@ enum ChoreRepositoryError: LocalizedError, Equatable {
             return "Cannot remove more points than this member currently has available."
         case .adjustmentDescriptionRequired:
             return "Description is required."
+        case .notEnoughPoints:
+            return "Not enough points."
+        case .rewardUnavailable:
+            return "Reward is not available."
+        case .rewardAlreadyPending:
+            return "This reward is already pending."
+        case .redemptionNotPending:
+            return "Redemption is not pending."
+        case .redemptionAlreadyRefunded:
+            return "This reward has already been refunded."
         case .invalidDraft(let validationError):
             return validationError.localizedDescription
         case .loadFailed:
@@ -112,9 +127,6 @@ enum ChoreRepositoryError: LocalizedError, Equatable {
         if combined.contains("already reviewed") || combined.contains("reviewed") && combined.contains("submission") {
             return .submissionAlreadyReviewed
         }
-        if combined.contains("duplicate") || combined.contains("unique") {
-            return .duplicateGenerationIgnored
-        }
         if combined.contains("cannot remove more points") || combined.contains("negative balance") {
             return .pointRemovalExceedsBalance
         }
@@ -123,6 +135,31 @@ enum ChoreRepositoryError: LocalizedError, Equatable {
         }
         if combined.contains("point adjustment") || combined.contains("cannot be zero") {
             return .invalidPointAdjustment
+        }
+        if combined.contains("not enough points") || combined.contains("insufficient points") {
+            return .notEnoughPoints
+        }
+        if combined.contains("reward") && (combined.contains("not available") || combined.contains("inactive") || combined.contains("archived")) {
+            return .rewardUnavailable
+        }
+        if combined.contains("already pending")
+            || combined.contains("pending redemption")
+            || combined.contains("one_pending_per_reward_user")
+            || combined.contains("chore_reward_redemptions_one_pending")
+            || combined.contains("chore_reward_redemptions") && combined.contains("duplicate") {
+            return .rewardAlreadyPending
+        }
+        if combined.contains("duplicate") || combined.contains("unique") {
+            return .duplicateGenerationIgnored
+        }
+        if combined.contains("redemption") && combined.contains("not pending") {
+            return .redemptionNotPending
+        }
+        if combined.contains("already refunded") || combined.contains("refund_transaction_id") {
+            return .redemptionAlreadyRefunded
+        }
+        if combined.contains("redemption") && (combined.contains("not found") || combined.contains("does not exist")) {
+            return .notFound
         }
 
         return .mutationFailed

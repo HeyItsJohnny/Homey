@@ -2,6 +2,7 @@ import Combine
 import SwiftUI
 
 struct HouseChoresView: View {
+    @EnvironmentObject private var attentionStore: ChoresAttentionStore
     @State private var selectedSection: HouseChoresSection = .activeChores
 
     var body: some View {
@@ -16,10 +17,14 @@ struct HouseChoresView: View {
                                 .font(.headline.weight(.semibold))
                                 .frame(width: 28)
 
-                            Text(section.title)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(2)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                            HStack(spacing: 7) {
+                                Text(section.title)
+                                    .font(.subheadline.weight(.semibold))
+                                    .lineLimit(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                AttentionBadge(count: badgeCount(for: section))
+                            }
                         }
                         .foregroundStyle(selectedSection == section ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.primaryText)
                         .padding(14)
@@ -52,6 +57,15 @@ struct HouseChoresView: View {
             HouseChoresCategoriesRoomsView()
         case .settings:
             HouseChoresSettingsView()
+        }
+    }
+
+    private func badgeCount(for section: HouseChoresSection) -> Int? {
+        switch section {
+        case .approvals:
+            return attentionStore.pendingChoreApprovalCount
+        case .activeChores, .categoriesRooms, .settings:
+            return nil
         }
     }
 }
@@ -274,6 +288,7 @@ struct HouseChoresCategoriesRoomsView: View {
             }
         }
     }
+
 }
 
 struct HouseChoresSettingsView: View {

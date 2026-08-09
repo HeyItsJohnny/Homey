@@ -30,33 +30,21 @@ struct ClearHomeChoresResult: Codable, Hashable, Sendable {
 struct ChoreHistoryActivity: Codable, Identifiable, Hashable, Sendable {
     let id: String
     let activityType: ChoreHistoryActivityType
-    let homeId: UUID
-    let userId: UUID
     let title: String
     let subtitle: String?
     let occurredAt: Date
     let pointsDelta: Int?
     let occurrenceId: UUID?
-    let submissionId: UUID?
-    let approvalId: UUID?
-    let rewardId: UUID?
-    let redemptionId: UUID?
     let relatedId: UUID?
 
     enum CodingKeys: String, CodingKey {
         case id = "activity_id"
         case activityType = "activity_type"
-        case homeId = "home_id"
-        case userId = "user_id"
         case title
         case subtitle
         case occurredAt = "occurred_at"
         case pointsDelta = "points_delta"
         case occurrenceId = "occurrence_id"
-        case submissionId = "submission_id"
-        case approvalId = "approval_id"
-        case rewardId = "reward_id"
-        case redemptionId = "redemption_id"
         case relatedId = "related_id"
     }
 }
@@ -137,6 +125,72 @@ struct ChoreRoom: Codable, Identifiable, Hashable, Sendable {
         case sortOrder = "sort_order"
         case archivedAt = "archived_at"
         case createdBy = "created_by"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct ChoreReward: Codable, Identifiable, Hashable, Sendable {
+    let id: UUID
+    let homeId: UUID
+    let name: String
+    let description: String?
+    let pointCost: Int
+    let isActive: Bool
+    let isArchived: Bool
+    let createdBy: UUID?
+    let createdAt: Date
+    let updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case homeId = "home_id"
+        case name
+        case description
+        case pointCost = "point_cost"
+        case isActive = "is_active"
+        case isArchived = "is_archived"
+        case createdBy = "created_by"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct ChoreRewardRedemption: Codable, Identifiable, Hashable, Sendable {
+    let id: UUID
+    let homeId: UUID
+    let rewardId: UUID
+    let userId: UUID
+    let rewardNameSnapshot: String
+    let pointCostSnapshot: Int
+    let status: ChoreRewardRedemptionStatus
+    let pointTransactionId: UUID?
+    let refundTransactionId: UUID?
+    let requestedAt: Date
+    let redeemedAt: Date?
+    let redeemedBy: UUID?
+    let cancelledAt: Date?
+    let cancelledBy: UUID?
+    let cancellationReason: String?
+    let createdAt: Date
+    let updatedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case homeId = "home_id"
+        case rewardId = "reward_id"
+        case userId = "user_id"
+        case rewardNameSnapshot = "reward_name_snapshot"
+        case pointCostSnapshot = "point_cost_snapshot"
+        case status
+        case pointTransactionId = "point_transaction_id"
+        case refundTransactionId = "refund_transaction_id"
+        case requestedAt = "requested_at"
+        case redeemedAt = "redeemed_at"
+        case redeemedBy = "redeemed_by"
+        case cancelledAt = "cancelled_at"
+        case cancelledBy = "cancelled_by"
+        case cancellationReason = "cancellation_reason"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }

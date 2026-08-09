@@ -3,11 +3,13 @@ import SwiftUI
 struct HomeDashboardView: View {
     @EnvironmentObject private var authenticationService: AuthenticationService
     @EnvironmentObject private var homeService: HomeService
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedDestination: DashboardDestination = .home
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var isShowingSettingsMenu = false
     @State private var calendarFocusDate: Date?
+    @StateObject private var choresAttentionStore = ChoresAttentionStore()
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -26,6 +28,7 @@ struct HomeDashboardView: View {
                 selectedContent
                     .environment(\.homePermissions, homeService.homePermissions(currentUser: authenticationService.currentUser))
                     .environment(\.homePermissionResolution, homeService.permissionResolutionState(currentUser: authenticationService.currentUser))
+                    .environmentObject(choresAttentionStore)
 
                 SettingsGearButton(
                     selectedDestination: $selectedDestination,
@@ -41,6 +44,31 @@ struct HomeDashboardView: View {
         }
         .task(id: authenticationService.currentUser?.id) {
             await loadInvitationsForAuthenticatedUser()
+        }
+        .task(id: ChoresAttentionDashboardLoadKey(
+            homeId: homeService.selectedHomeID,
+            currentUserId: authenticationService.currentUser?.id,
+            role: homeService.selectedHomeRole(currentUserID: authenticationService.currentUser?.id),
+            weekStartsOn: homeService.selectedHome()?.weekStartsOn,
+            timezone: homeService.selectedHome()?.timezone ?? TimeZone.autoupdatingCurrent.identifier
+        )) {
+            choresAttentionStore.configure(
+                homeId: homeService.selectedHomeID,
+                currentUserId: authenticationService.currentUser?.id,
+                role: homeService.selectedHomeRole(currentUserID: authenticationService.currentUser?.id),
+                weekStartsOn: homeService.selectedHome()?.weekStartsOn,
+                timezone: homeService.selectedHome()?.timezone ?? TimeZone.autoupdatingCurrent.identifier
+            )
+        }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
+                choresAttentionStore.refresh()
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                choresAttentionStore.refresh()
+            }
         }
     }
 
@@ -140,6 +168,14 @@ struct HomeDashboardView: View {
 
         await homeService.loadMyPendingInvitations(for: userID)
     }
+}
+
+private struct ChoresAttentionDashboardLoadKey: Equatable {
+    let homeId: UUID?
+    let currentUserId: UUID?
+    let role: HomeMemberRole?
+    let weekStartsOn: Int?
+    let timezone: String
 }
 
 private struct DashboardContentView: View {
@@ -734,11 +770,27 @@ private struct UpcomingEventsEmptyState: View {
 }
 
 struct DashboardChoresCard: View {
+    @EnvironmentObject private var attentionStore: ChoresAttentionStore
     var onOpenChores: () -> Void = {}
 
     var body: some View {
         DashboardSectionCard(title: "Chores", actionTitle: "View All", action: onOpenChores) {
             VStack(spacing: 0) {
+                if attentionStore.dashboardAttentionCount > 0 {
+                    HStack(spacing: 10) {
+                        AttentionBadge(count: attentionStore.dashboardAttentionCount)
+
+                        Text("\(attentionStore.dashboardAttentionCount.formatted(.number)) \(attentionStore.dashboardAttentionCount == 1 ? "chore is" : "chores are") not started this week")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(HomeyDashboardTheme.secondaryText)
+
+                        Spacer()
+                    }
+                    .padding(.bottom, 8)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Chores, \(attentionStore.dashboardAttentionCount) not started this week")
+                }
+
                 ForEach(DashboardPlaceholderData.chores) { chore in
                     ChoreDashboardRow(chore: chore)
 
@@ -1053,12 +1105,10 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
         .calendar,
         .meals,
         .chores,
-        .lists,
         .projects,
         .trips,
         .groceries,
-        .messages,
-        .settings
+        .messages
     ]
 
     var title: String {
@@ -1296,6 +1346,7 @@ private struct HomeSidebarPreview: View {
 
 #Preview("Chores Card") {
     DashboardChoresCard()
+        .environmentObject(ChoresAttentionStore())
         .frame(width: 360)
         .padding()
         .background(HomeyDashboardTheme.appBackground)

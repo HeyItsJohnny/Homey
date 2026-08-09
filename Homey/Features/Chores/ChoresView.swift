@@ -3,6 +3,8 @@ import SwiftUI
 struct ChoresView: View {
     @EnvironmentObject private var authenticationService: AuthenticationService
     @EnvironmentObject private var homeService: HomeService
+    @EnvironmentObject private var attentionStore: ChoresAttentionStore
+    @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedTab: ChoresTab = .myChores
     @State private var isPresentingAddChore = false
@@ -42,6 +44,10 @@ struct ChoresView: View {
         homeService.selectedHomeID
     }
 
+    private var selectedHomeWeekStartsOn: Int? {
+        homeService.selectedHome()?.weekStartsOn
+    }
+
     private var selectedHomeTimezone: String {
         homeService.selectedHome()?.timezone ?? TimeZone.autoupdatingCurrent.identifier
     }
@@ -54,7 +60,9 @@ struct ChoresView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
                     header
-                    ChoresTabSelector(tabs: visibleTabs, selectedTab: $selectedTab)
+                    ChoresTabSelector(tabs: visibleTabs, selectedTab: $selectedTab) { tab in
+                        badgeCount(for: tab)
+                    }
                     selectedTabContent
                         .frame(maxWidth: .infinity, minHeight: 520, alignment: .topLeading)
                 }
@@ -69,6 +77,31 @@ struct ChoresView: View {
         .onAppear(perform: keepSelectedTabAvailable)
         .onChange(of: visibleTabs) { _, _ in
             keepSelectedTabAvailable()
+        }
+        .task(id: ChoresAttentionLoadKey(
+            homeId: selectedHomeID,
+            currentUserId: authenticationService.currentUser?.id,
+            role: currentRole,
+            weekStartsOn: selectedHomeWeekStartsOn,
+            timezone: selectedHomeTimezone
+        )) {
+            attentionStore.configure(
+                homeId: selectedHomeID,
+                currentUserId: authenticationService.currentUser?.id,
+                role: currentRole,
+                weekStartsOn: selectedHomeWeekStartsOn,
+                timezone: selectedHomeTimezone
+            )
+        }
+        .task {
+            for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
+                attentionStore.refresh()
+            }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            if newPhase == .active {
+                attentionStore.refresh()
+            }
         }
         .sheet(isPresented: $isPresentingAddChore) {
             ChoreEditorView(homeId: selectedHomeID, timezone: selectedHomeTimezone)
@@ -166,6 +199,31 @@ struct ChoresView: View {
 
         selectedTab = .myChores
     }
+
+    private func badgeCount(for tab: ChoresTab) -> Int? {
+        switch tab {
+        case .myChores:
+            return nil
+        case .myRewards:
+            return attentionStore.myPendingRewardCount
+        case .houseChores:
+            guard canManageChores else { return nil }
+            return attentionStore.pendingChoreApprovalCount
+        case .rewardCenter:
+            guard canManageChores else { return nil }
+            return attentionStore.pendingRewardRedemptionCount
+        case .choreHistory:
+            return nil
+        }
+    }
 }
 
 // Future chore records will link to Homey calendar events. The chore record will remain the source of truth for assignment, completion, approval, and points, while the calendar event represents scheduling.
+
+private struct ChoresAttentionLoadKey: Equatable {
+    let homeId: UUID?
+    let currentUserId: UUID?
+    let role: HomeMemberRole?
+    let weekStartsOn: Int?
+    let timezone: String
+}

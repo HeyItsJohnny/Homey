@@ -2,6 +2,11 @@ import Foundation
 import PostgREST
 import Supabase
 
+struct ChoresBadgeCountResult: Sendable {
+    let count: Int
+    let occurrenceIds: [UUID]
+}
+
 @MainActor
 final class ChoresRepository {
     static let defaultGenerationWindowDays = 90
@@ -158,6 +163,347 @@ final class ChoresRepository {
                 .execute()
         } catch {
             logChoreError(error, operation: "chore_rooms.archive", categoryId: roomId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    // MARK: - Rewards
+
+    func fetchRewards(homeId: UUID, currentRole: HomeMemberRole?) async throws -> [ChoreReward] {
+        do {
+            try await requireAuthenticatedSession()
+
+            if currentRole == .owner || currentRole == .admin {
+                let rewards: [ChoreReward] = try await client
+                    .from("chore_rewards")
+                    .select()
+                    .eq("home_id", value: homeId.uuidString)
+                    .eq("is_archived", value: false)
+                    .order("name", ascending: true)
+                    .execute()
+                    .value
+                return rewards
+            }
+
+            let rewards: [ChoreReward] = try await client
+                .from("chore_rewards")
+                .select()
+                .eq("home_id", value: homeId.uuidString)
+                .eq("is_archived", value: false)
+                .eq("is_active", value: true)
+                .order("name", ascending: true)
+                .execute()
+                .value
+            return rewards
+        } catch {
+            logChoreError(error, operation: "chore_rewards.select", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func createReward(
+        homeId: UUID,
+        name: String,
+        description: String?,
+        pointCost: Int,
+        isActive: Bool,
+        currentRole: HomeMemberRole?
+    ) async throws -> UUID {
+        guard currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
+        let userId = try await authenticatedUserId()
+        let payload = ChoreRewardMutationPayload(
+            homeId: homeId,
+            name: normalizedRequiredString(name),
+            description: normalizedOptionalString(description),
+            pointCost: pointCost,
+            isActive: isActive,
+            isArchived: false,
+            createdBy: userId
+        )
+        guard !payload.name.isEmpty, payload.pointCost > 0 else {
+            throw ChoreRepositoryError.saveFailed
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let created: ChoreMutationIdResponse = try await client
+                .from("chore_rewards")
+                .insert(payload)
+                .select("id")
+                .single()
+                .execute()
+                .value
+            return created.id
+        } catch {
+            logChoreError(error, operation: "chore_rewards.insert", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func updateReward(
+        rewardId: UUID,
+        name: String,
+        description: String?,
+        pointCost: Int,
+        isActive: Bool,
+        currentRole: HomeMemberRole?
+    ) async throws {
+        guard currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
+        let payload = ChoreRewardUpdatePayload(
+            name: normalizedRequiredString(name),
+            description: normalizedOptionalString(description),
+            pointCost: pointCost,
+            isActive: isActive
+        )
+        guard !payload.name.isEmpty, payload.pointCost > 0 else {
+            throw ChoreRepositoryError.saveFailed
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            try await client
+                .from("chore_rewards")
+                .update(payload)
+                .eq("id", value: rewardId.uuidString)
+                .execute()
+        } catch {
+            logChoreError(error, operation: "chore_rewards.update", categoryId: rewardId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func archiveReward(rewardId: UUID, currentRole: HomeMemberRole?) async throws {
+        guard currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            try await client
+                .from("chore_rewards")
+                .update(ArchiveRewardPayload())
+                .eq("id", value: rewardId.uuidString)
+                .execute()
+        } catch {
+            logChoreError(error, operation: "chore_rewards.archive", categoryId: rewardId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func redeemReward(homeId: UUID, rewardId: UUID) async throws -> UUID {
+        do {
+            try await requireAuthenticatedSession()
+            let redemptionId: UUID = try await client
+                .rpc(
+                    "redeem_chore_reward",
+                    params: RedeemChoreRewardRPCParameters(homeId: homeId, rewardId: rewardId)
+                )
+                .execute()
+                .value
+            return redemptionId
+        } catch {
+            logChoreError(error, operation: "redeem_chore_reward", homeId: homeId, categoryId: rewardId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func fetchPendingRewardRedemptions(homeId: UUID, currentRole: HomeMemberRole?) async throws -> [ChoreRewardRedemption] {
+        guard currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let redemptions: [ChoreRewardRedemption] = try await client
+                .from("chore_reward_redemptions")
+                .select()
+                .eq("home_id", value: homeId.uuidString)
+                .eq("status", value: ChoreRewardRedemptionStatus.pending.rawValue)
+                .order("requested_at", ascending: true)
+                .execute()
+                .value
+            return redemptions
+        } catch {
+            logChoreError(error, operation: "chore_reward_redemptions.select_pending", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func fetchMyPendingRewardRedemptions(homeId: UUID) async throws -> [ChoreRewardRedemption] {
+        let userId = try await authenticatedUserId()
+
+        do {
+            try await requireAuthenticatedSession()
+            let redemptions: [ChoreRewardRedemption] = try await client
+                .from("chore_reward_redemptions")
+                .select()
+                .eq("home_id", value: homeId.uuidString)
+                .eq("user_id", value: userId.uuidString)
+                .eq("status", value: ChoreRewardRedemptionStatus.pending.rawValue)
+                .order("requested_at", ascending: false)
+                .execute()
+                .value
+            return redemptions
+        } catch {
+            logChoreError(error, operation: "chore_reward_redemptions.select_my_pending", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func fetchMyPendingRewardCount(homeId: UUID) async throws -> Int {
+        try await fetchMyPendingRewardRedemptions(homeId: homeId).count
+    }
+
+    func fetchPendingRewardRedemptionCount(homeId: UUID) async throws -> Int {
+        try await fetchPendingRewardRedemptions(homeId: homeId, currentRole: .admin).count
+    }
+
+    func fetchMyRewardRedemptions(homeId: UUID, limit: Int, offset: Int) async throws -> [ChoreRewardRedemption] {
+        let userId = try await authenticatedUserId()
+        return try await fetchRewardRedemptions(homeId: homeId, userId: userId, limit: limit, offset: offset, currentRole: .member)
+    }
+
+    func fetchRewardRedemptions(
+        homeId: UUID,
+        userId: UUID,
+        limit: Int,
+        offset: Int,
+        currentRole: HomeMemberRole?
+    ) async throws -> [ChoreRewardRedemption] {
+        let authenticatedUserId = try await authenticatedUserId()
+        guard authenticatedUserId == userId || currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let redemptions: [ChoreRewardRedemption] = try await client
+                .from("chore_reward_redemptions")
+                .select()
+                .eq("home_id", value: homeId.uuidString)
+                .eq("user_id", value: userId.uuidString)
+                .order("requested_at", ascending: false)
+                .order("id", ascending: false)
+                .range(from: offset, to: offset + max(limit, 1) - 1)
+                .execute()
+                .value
+            return redemptions
+        } catch {
+            logChoreError(error, operation: "chore_reward_redemptions.select_for_user", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func fetchRewardRedemptionHistory(
+        homeId: UUID,
+        userId: UUID?,
+        status: ChoreRewardRedemptionStatus?,
+        limit: Int,
+        offset: Int,
+        currentRole: HomeMemberRole?
+    ) async throws -> [ChoreRewardRedemption] {
+        guard currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
+        let statuses: [ChoreRewardRedemptionStatus]
+        if let status {
+            statuses = [status]
+        } else {
+            statuses = [.redeemed, .cancelled]
+        }
+
+        let fetchLimit = max(limit + offset, limit, 1)
+
+        do {
+            try await requireAuthenticatedSession()
+
+            var combined: [ChoreRewardRedemption] = []
+            for status in statuses {
+                var query = client
+                    .from("chore_reward_redemptions")
+                    .select()
+                    .eq("home_id", value: homeId.uuidString)
+                    .eq("status", value: status.rawValue)
+
+                if let userId {
+                    query = query.eq("user_id", value: userId.uuidString)
+                }
+
+                let rows: [ChoreRewardRedemption] = try await query
+                    .order("updated_at", ascending: false)
+                    .order("id", ascending: false)
+                    .range(from: 0, to: fetchLimit - 1)
+                    .execute()
+                    .value
+                combined.append(contentsOf: rows)
+            }
+
+            return combined
+                .sorted { lhs, rhs in
+                    let lhsDate = rewardRedemptionHistoryDate(lhs)
+                    let rhsDate = rewardRedemptionHistoryDate(rhs)
+                    if lhsDate != rhsDate {
+                        return lhsDate > rhsDate
+                    }
+                    return lhs.id.uuidString > rhs.id.uuidString
+                }
+                .dropFirst(offset)
+                .prefix(limit)
+                .map { $0 }
+        } catch {
+            logChoreError(error, operation: "chore_reward_redemptions.history_select", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func markRewardRedeemed(redemptionId: UUID, currentRole: HomeMemberRole?) async throws -> UUID {
+        guard currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let updatedRedemptionId: UUID = try await client
+                .rpc(
+                    "mark_chore_reward_redeemed",
+                    params: RequestedRedemptionRPCParameters(redemptionId: redemptionId)
+                )
+                .execute()
+                .value
+            return updatedRedemptionId
+        } catch {
+            logChoreError(error, operation: "mark_chore_reward_redeemed", categoryId: redemptionId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func cancelRewardRedemption(redemptionId: UUID, cancellationReason: String?, currentRole: HomeMemberRole?) async throws -> UUID {
+        guard currentRole == .owner || currentRole == .admin else {
+            throw ChoreRepositoryError.ownerOrAdminRequired
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let cancelledRedemptionId: UUID = try await client
+                .rpc(
+                    "cancel_chore_reward_redemption",
+                    params: CancelRewardRedemptionRPCParameters(
+                        redemptionId: redemptionId,
+                        cancellationReason: normalizedOptionalString(cancellationReason)
+                    )
+                )
+                .execute()
+                .value
+            return cancelledRedemptionId
+        } catch {
+            logChoreError(error, operation: "cancel_chore_reward_redemption", categoryId: redemptionId)
             throw ChoreRepositoryError.map(error)
         }
     }
@@ -510,6 +856,41 @@ final class ChoresRepository {
             }
         }
         return occurrences.sorted { $0.dueAt < $1.dueAt }
+    }
+
+    private func fetchOccurrences(homeId: UUID, status: ChoreOccurrenceStatus) async throws -> [ChoreOccurrence] {
+        do {
+            try await requireAuthenticatedSession()
+            let occurrences: [ChoreOccurrence] = try await client
+                .from("chore_occurrences")
+                .select()
+                .eq("home_id", value: homeId.uuidString)
+                .eq("status", value: status.rawValue)
+                .order("due_at", ascending: true)
+                .execute()
+                .value
+            return occurrences
+        } catch {
+            logChoreError(error, operation: "chore_occurrences.select_status", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    private func fetchPendingSubmissionsForAttention() async throws -> [ChoreSubmission] {
+        do {
+            try await requireAuthenticatedSession()
+            let submissions: [ChoreSubmission] = try await client
+                .from("chore_submissions")
+                .select()
+                .eq("status", value: ChoreSubmissionStatus.pending.rawValue)
+                .order("submitted_at", ascending: true)
+                .execute()
+                .value
+            return submissions
+        } catch {
+            logChoreError(error, operation: "chore_submissions.select_pending_attention")
+            throw ChoreRepositoryError.map(error)
+        }
     }
 
     func fetchOccurrence(calendarEventId: UUID) async throws -> ChoreOccurrence? {
@@ -902,6 +1283,28 @@ final class ChoresRepository {
             .filter { [.notStarted, .inProgress, .needsRedo].contains($0.status) }
     }
 
+    func fetchCurrentWeekNotStartedChoreBadgeCount(
+        homeId: UUID,
+        weekStart: Date,
+        nextWeekStart: Date
+    ) async throws -> ChoresBadgeCountResult {
+        let occurrences = try await fetchMyOccurrences(homeId: homeId, from: weekStart, through: nextWeekStart)
+        var occurrenceIds: Set<UUID> = []
+
+        for occurrence in occurrences {
+            guard occurrence.status == .notStarted,
+                  occurrence.dueAt >= weekStart,
+                  occurrence.dueAt < nextWeekStart else {
+                continue
+            }
+
+            occurrenceIds.insert(occurrence.id)
+        }
+
+        let sortedIds = occurrenceIds.sorted { $0.uuidString < $1.uuidString }
+        return ChoresBadgeCountResult(count: sortedIds.count, occurrenceIds: sortedIds)
+    }
+
     func fetchMyCompletedHistory(homeId: UUID, from startDate: Date, through endDate: Date) async throws -> [ChoreOccurrence] {
         try await fetchMyOccurrences(homeId: homeId, from: startDate, through: endDate)
             .filter { [.completed, .skipped, .cancelled].contains($0.status) }
@@ -914,6 +1317,50 @@ final class ChoresRepository {
     func fetchOccurrencesAwaitingApproval(homeId: UUID, from startDate: Date, through endDate: Date) async throws -> [ChoreOccurrence] {
         try await fetchOccurrences(homeId: homeId, from: startDate, through: endDate)
             .filter { $0.status == .awaitingApproval }
+    }
+
+    func fetchMyActionChoreCount(homeId: UUID) async throws -> Int {
+        let userId = try await authenticatedUserId()
+        let actionableStatuses: [ChoreOccurrenceStatus] = [.notStarted, .inProgress, .needsRedo]
+        var actionableOccurrenceIds: Set<UUID> = []
+
+        for status in actionableStatuses {
+            let occurrences = try await fetchOccurrences(homeId: homeId, status: status)
+            for occurrence in occurrences {
+                if occurrence.assignmentMode == .open, occurrence.claimedBy == userId {
+                    actionableOccurrenceIds.insert(occurrence.id)
+                    continue
+                }
+
+                let assignees = try await fetchOccurrenceAssignees(occurrenceId: occurrence.id)
+                if assignees.contains(where: { assignee in
+                    assignee.userId == userId && assignee.status.isActionableForAttention
+                }) {
+                    actionableOccurrenceIds.insert(occurrence.id)
+                }
+            }
+        }
+
+        return actionableOccurrenceIds.count
+    }
+
+    func fetchPendingChoreApprovalCount(homeId: UUID) async throws -> Int {
+        var count = 0
+        let submissions = try await fetchPendingSubmissionsForAttention()
+
+        for submission in submissions {
+            guard let occurrence = try await fetchOccurrence(id: submission.occurrenceId),
+                  occurrence.homeId == homeId,
+                  occurrence.status == .awaitingApproval else {
+                continue
+            }
+
+            if submission.status == .pending {
+                count += 1
+            }
+        }
+
+        return count
     }
 
     func fetchPausedTemplates(homeId: UUID) async throws -> [ChoreTemplate] {
@@ -1052,6 +1499,17 @@ final class ChoresRepository {
         print("===========================================")
         #endif
     }
+
+    private func rewardRedemptionHistoryDate(_ redemption: ChoreRewardRedemption) -> Date {
+        switch redemption.status {
+        case .redeemed:
+            return redemption.redeemedAt ?? redemption.updatedAt
+        case .cancelled:
+            return redemption.cancelledAt ?? redemption.updatedAt
+        case .pending:
+            return redemption.updatedAt
+        }
+    }
 }
 
 private extension HomeMemberRole {
@@ -1122,6 +1580,82 @@ private struct ChoreRoomUpdatePayload: Encodable {
     enum CodingKeys: String, CodingKey {
         case name
         case sortOrder = "sort_order"
+    }
+}
+
+private struct ChoreRewardMutationPayload: Encodable {
+    let homeId: UUID
+    let name: String
+    let description: String?
+    let pointCost: Int
+    let isActive: Bool
+    let isArchived: Bool
+    let createdBy: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case homeId = "home_id"
+        case name
+        case description
+        case pointCost = "point_cost"
+        case isActive = "is_active"
+        case isArchived = "is_archived"
+        case createdBy = "created_by"
+    }
+}
+
+private struct ChoreRewardUpdatePayload: Encodable {
+    let name: String
+    let description: String?
+    let pointCost: Int
+    let isActive: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case description
+        case pointCost = "point_cost"
+        case isActive = "is_active"
+    }
+}
+
+private struct ArchiveRewardPayload: Encodable {
+    let isArchived = true
+
+    enum CodingKeys: String, CodingKey {
+        case isArchived = "is_archived"
+    }
+}
+
+private struct RedeemChoreRewardRPCParameters: Encodable {
+    let homeId: UUID
+    let rewardId: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case homeId = "requested_home_id"
+        case rewardId = "requested_reward_id"
+    }
+}
+
+private struct RequestedRedemptionRPCParameters: Encodable {
+    let redemptionId: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case redemptionId = "requested_redemption_id"
+    }
+}
+
+private struct CancelRewardRedemptionRPCParameters: Encodable {
+    let redemptionId: UUID
+    let cancellationReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case redemptionId = "requested_redemption_id"
+        case cancellationReason = "requested_cancellation_reason"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(redemptionId, forKey: .redemptionId)
+        try encodeOptional(cancellationReason, forKey: .cancellationReason, into: &container)
     }
 }
 

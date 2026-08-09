@@ -346,6 +346,7 @@ private final class ChoreHistoryViewModel: ObservableObject {
     private var currentUserId: UUID?
     private var currentRole: HomeMemberRole?
     private var activeLoadId: UUID?
+    private var nextOffset = 0
 
     init(repository: ChoresRepository? = nil) {
         self.repository = repository ?? ChoresRepository()
@@ -414,11 +415,12 @@ private final class ChoreHistoryViewModel: ObservableObject {
                     homeId: activeHomeId,
                     userId: loadingMemberId,
                     limit: pageSize,
-                    offset: activities.count,
+                    offset: nextOffset,
                     currentRole: loadingRole
                 )
                 guard self.selectedMemberId == loadingMemberId else { return }
                 activities.append(contentsOf: nextPage)
+                nextOffset += pageSize
                 hasMoreActivities = nextPage.count == pageSize
             } catch {
                 errorMessage = error.localizedDescription
@@ -455,6 +457,7 @@ private final class ChoreHistoryViewModel: ObservableObject {
         hasMoreActivities = false
         isLoading = false
         isLoadingMore = false
+        nextOffset = 0
     }
 
     private func loadSelectedMember(resetActivities: Bool) async {
@@ -472,6 +475,7 @@ private final class ChoreHistoryViewModel: ObservableObject {
         if resetActivities {
             activities = []
             hasMoreActivities = false
+            nextOffset = 0
         }
 
         do {
@@ -484,11 +488,13 @@ private final class ChoreHistoryViewModel: ObservableObject {
             )
             guard activeLoadId == loadId, self.selectedMemberId == selectedMemberId else { return }
             activities = firstPage
+            nextOffset = pageSize
             hasMoreActivities = firstPage.count == pageSize
         } catch {
             guard activeLoadId == loadId, self.selectedMemberId == selectedMemberId else { return }
             activities = []
             hasMoreActivities = false
+            nextOffset = 0
             errorMessage = error.localizedDescription
         }
 
@@ -537,6 +543,8 @@ private extension ChoreHistoryActivityType {
             return "arrow.uturn.backward.circle.fill"
         case .rewardFulfilled:
             return "shippingbox.fill"
+        case .rewardCancelled:
+            return "xmark.circle.fill"
         }
     }
 
@@ -550,7 +558,7 @@ private extension ChoreHistoryActivityType {
             return HomeyDashboardTheme.orangeAccent
         case .rewardRedeemed:
             return HomeyDashboardTheme.warmBrown
-        case .choreAssigned, .choreStarted, .choreClaimed, .choreSkipped, .pointsAdjustment, .rewardFulfilled:
+        case .choreAssigned, .choreStarted, .choreClaimed, .choreSkipped, .pointsAdjustment, .rewardFulfilled, .rewardCancelled:
             return HomeyDashboardTheme.secondaryText
         }
     }

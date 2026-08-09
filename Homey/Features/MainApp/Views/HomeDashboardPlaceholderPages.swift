@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ListsView: View {
     var body: some View {
-        PlaceholderModuleView(title: "Lists", subtitle: "Coming soon")
+        EmptyView()
     }
 }
 
@@ -32,7 +32,7 @@ struct MessagesView: View {
 
 struct SettingsView: View {
     var body: some View {
-        PlaceholderModuleView(title: "Settings", subtitle: "Coming soon")
+        EmptyView()
     }
 }
 
