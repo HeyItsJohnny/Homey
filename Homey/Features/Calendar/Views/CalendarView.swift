@@ -12,6 +12,7 @@ struct CalendarView: View {
     @State private var successMessage: String?
     @State private var choreRouteErrorMessage: String?
     @State private var resolvingChoreCalendarEventId: UUID?
+    @State private var pendingWeekScrollBehavior: CalendarWeekScrollBehavior = .selectedDate
 
     private var selectedHome: HomeSummary? {
         homeService.selectedHome()
@@ -258,14 +259,17 @@ struct CalendarView: View {
                 .accessibilityLabel("Calendar view")
 
                 iconButton(systemImage: "chevron.left", label: previousPeriodAccessibilityLabel) {
+                    pendingWeekScrollBehavior = .startOfWeek
                     Task { await viewModel.moveToPreviousPeriod() }
                 }
 
                 iconButton(systemImage: "chevron.right", label: nextPeriodAccessibilityLabel) {
+                    pendingWeekScrollBehavior = .startOfWeek
                     Task { await viewModel.moveToNextPeriod() }
                 }
 
                 Button {
+                    pendingWeekScrollBehavior = .selectedDate
                     Task { await viewModel.moveToToday() }
                 } label: {
                     Text("Today")
@@ -299,18 +303,22 @@ struct CalendarView: View {
     }
 
     private var calendarContent: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 22) {
-                primaryCalendarCard
-                    .frame(minWidth: viewModel.displayMode == .week ? 760 : 620)
+        VStack(alignment: .leading, spacing: 18) {
+            calendarFilterButtons
 
-                agendaCard
-                    .frame(width: 360)
-            }
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 22) {
+                    primaryCalendarCard
+                        .frame(minWidth: viewModel.displayMode == .week ? 760 : 620)
 
-            VStack(alignment: .leading, spacing: 22) {
-                primaryCalendarCard
-                agendaCard
+                    agendaCard
+                        .frame(width: 360)
+                }
+
+                VStack(alignment: .leading, spacing: 22) {
+                    primaryCalendarCard
+                    agendaCard
+                }
             }
         }
         .overlay(alignment: .top) {
@@ -321,6 +329,49 @@ struct CalendarView: View {
                     .background(HomeyDashboardTheme.cardBackground, in: Capsule())
                     .shadow(color: HomeyDashboardTheme.primaryText.opacity(0.10), radius: 10, x: 0, y: 6)
                     .accessibilityLabel(resolvingChoreCalendarEventId == nil ? "Loading calendar events" : "Opening chore")
+            }
+        }
+    }
+
+    private var calendarFilterButtons: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack {
+                Spacer(minLength: 0)
+                calendarFilterButtonGroup
+                Spacer(minLength: 0)
+            }
+
+            ScrollView(.horizontal) {
+                calendarFilterButtonGroup
+            }
+            .scrollIndicators(.hidden)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var calendarFilterButtonGroup: some View {
+        HStack(spacing: 8) {
+            ForEach(CalendarEventFilter.allCases) { filter in
+                Button {
+                    viewModel.setEventFilter(filter)
+                } label: {
+                    Text(filter.title)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(viewModel.eventFilter == filter ? Color.white : HomeyDashboardTheme.primaryText)
+                        .padding(.horizontal, 16)
+                        .frame(minHeight: 38)
+                        .background(
+                            viewModel.eventFilter == filter ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.cardBackground,
+                            in: Capsule()
+                        )
+                        .overlay {
+                            Capsule()
+                                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show \(filter.title) events")
+                .accessibilityAddTraits(viewModel.eventFilter == filter ? .isSelected : [])
             }
         }
     }
@@ -344,8 +395,8 @@ struct CalendarView: View {
 
                 Spacer()
 
-                if !viewModel.events.isEmpty {
-                    eventCountBadge(count: viewModel.events.count, accessibilitySuffix: "this month")
+                if viewModel.filteredEventCount > 0 {
+                    eventCountBadge(count: viewModel.filteredEventCount, accessibilitySuffix: "this month")
                 }
             }
 
@@ -391,23 +442,43 @@ struct CalendarView: View {
                 }
             }
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 7), spacing: 10) {
-                ForEach(viewModel.weekDays(), id: \.self) { day in
-                    WeekDayColumn(
-                        date: day,
-                        events: viewModel.events(on: day),
-                        categories: viewModel.categories,
-                        isSelected: viewModel.isSelected(day),
-                        isToday: viewModel.isToday(day),
-                        assignedMembers: assignedMembers(for:),
-                        onSelect: {
-                            viewModel.selectDate(day)
-                        },
-                        onSelectEvent: { event in
-                            presentEditEditor(for: event)
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal) {
+                    HStack(alignment: .top, spacing: 10) {
+                        ForEach(viewModel.weekDays(), id: \.self) { day in
+                            WeekDayColumn(
+                                date: day,
+                                events: viewModel.events(on: day),
+                                categories: viewModel.categories,
+                                isSelected: viewModel.isSelected(day),
+                                isToday: viewModel.isToday(day),
+                                assignedMembers: assignedMembers(for:),
+                                onSelect: {
+                                    viewModel.selectDate(day)
+                                },
+                                onSelectEvent: { event in
+                                    presentEditEditor(for: event)
+                                }
+                            )
+                            .frame(width: 210, alignment: .top)
+                            .id(day)
                         }
-                    )
+                    }
                 }
+                .scrollIndicators(.hidden)
+                .onAppear {
+                    scrollWeek(proxy: proxy, animated: false)
+                }
+                .onChange(of: viewModel.visibleWeekAnchor) { _, _ in
+                    scrollWeek(proxy: proxy, animated: true)
+                }
+                .onChange(of: viewModel.displayMode) { _, mode in
+                    if mode == .week {
+                        pendingWeekScrollBehavior = .selectedDate
+                        scrollWeek(proxy: proxy, animated: false)
+                    }
+                }
+                .accessibilityLabel("Weekly calendar")
             }
         }
         .padding(24)
@@ -699,6 +770,35 @@ struct CalendarView: View {
                 }
             }
         )
+    }
+
+    private func scrollWeek(proxy: ScrollViewProxy, animated: Bool) {
+        guard viewModel.displayMode == .week else {
+            return
+        }
+
+        let weekDays = viewModel.weekDays()
+        guard let fallbackDay = weekDays.first else {
+            return
+        }
+
+        let requestedDay: Date
+        switch pendingWeekScrollBehavior {
+        case .startOfWeek:
+            requestedDay = fallbackDay
+        case .selectedDate:
+            requestedDay = weekDays.first { viewModel.isSelected($0) } ?? weekDays.first { viewModel.isToday($0) } ?? fallbackDay
+        }
+
+        let action = {
+            proxy.scrollTo(requestedDay, anchor: .leading)
+        }
+
+        if animated {
+            withAnimation(.easeInOut(duration: 0.22), action)
+        } else {
+            action()
+        }
     }
 
     private var selectedDateTitle: String {
@@ -1094,6 +1194,11 @@ private struct AgendaEventRow: View {
 
         return "\(CalendarViewFormatters.eventTime.string(from: event.occurrenceStartsAt)) - \(CalendarViewFormatters.eventTime.string(from: event.occurrenceEndsAt))"
     }
+}
+
+private enum CalendarWeekScrollBehavior {
+    case startOfWeek
+    case selectedDate
 }
 
 private struct CalendarStatusBanner: View {

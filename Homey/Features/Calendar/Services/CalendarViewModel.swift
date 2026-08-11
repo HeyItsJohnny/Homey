@@ -17,9 +17,32 @@ enum CalendarDisplayMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum CalendarEventFilter: String, CaseIterable, Identifiable {
+    case all
+    case meals
+    case chores
+    case calendar
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return "All"
+        case .meals:
+            return "Meals"
+        case .chores:
+            return "Chores"
+        case .calendar:
+            return "Calendar"
+        }
+    }
+}
+
 @MainActor
 final class CalendarViewModel: ObservableObject {
-    @Published private(set) var displayMode: CalendarDisplayMode = .month
+    @Published private(set) var displayMode: CalendarDisplayMode = .week
+    @Published private(set) var eventFilter: CalendarEventFilter = .all
     @Published private(set) var visibleMonth: Date
     @Published private(set) var visibleWeekAnchor: Date
     @Published private(set) var selectedDate: Date
@@ -156,6 +179,15 @@ final class CalendarViewModel: ObservableObject {
             visibleWeekAnchor = selectedDate
         }
         await reload()
+    }
+
+    func setEventFilter(_ filter: CalendarEventFilter) {
+        guard eventFilter != filter else {
+            return
+        }
+
+        eventFilter = filter
+        updateSelectedDayEvents()
     }
 
     func selectDate(_ date: Date) {
@@ -483,7 +515,7 @@ final class CalendarViewModel: ObservableObject {
             return []
         }
 
-        return events
+        return filteredEvents
             .filter { $0.overlapsRange(start: range.start, end: range.end) }
             .sortedForCalendarDisplay()
     }
@@ -503,11 +535,15 @@ final class CalendarViewModel: ObservableObject {
     }
 
     func events(on day: Date) -> [CalendarEvent] {
-        events
+        filteredEvents
             .filter { event in
                 event.overlapsDay(day, calendar: calendar)
             }
             .sortedForAgenda()
+    }
+
+    var filteredEventCount: Int {
+        filteredEvents.count
     }
 
     func isDateInVisibleMonth(_ date: Date) -> Bool {
@@ -575,6 +611,21 @@ final class CalendarViewModel: ObservableObject {
 
     private func updateSelectedDayEvents() {
         selectedDayEvents = events(on: selectedDate)
+    }
+
+    private var filteredEvents: [CalendarEvent] {
+        events.filter { event in
+            switch eventFilter {
+            case .all:
+                return true
+            case .meals:
+                return event.matchesCalendarCategoryName("Meals")
+            case .chores:
+                return event.matchesCalendarCategoryName("Chores")
+            case .calendar:
+                return !event.matchesCalendarCategoryName("Meals") && !event.matchesCalendarCategoryName("Chores")
+            }
+        }
     }
 
     private func currentVisibleRange() -> (start: Date, end: Date)? {
@@ -681,6 +732,28 @@ extension CalendarEvent {
 
     func overlapsRange(start: Date, end: Date) -> Bool {
         occurrenceStartsAt < end && occurrenceEndsAt > start
+    }
+}
+
+private extension CalendarEvent {
+    func matchesCalendarCategoryName(_ expectedName: String) -> Bool {
+        guard let categoryName else {
+            return false
+        }
+
+        return normalizedCalendarCategoryName(categoryName) == normalizedCalendarCategoryName(expectedName)
+    }
+
+    private func normalizedCalendarCategoryName(_ name: String) -> String {
+        let normalized = name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        if normalized.hasSuffix("s") {
+            return String(normalized.dropLast())
+        }
+
+        return normalized
     }
 }
 
