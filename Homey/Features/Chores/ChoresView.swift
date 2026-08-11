@@ -182,7 +182,7 @@ struct ChoresView: View {
         case .myChores:
             MyChoresView()
         case .myRewards:
-            MyRewardsView()
+            RewardCenterView(initialSection: .myRewards)
         case .houseChores:
             HouseChoresView()
         case .rewardCenter:

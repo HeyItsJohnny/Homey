@@ -18,7 +18,7 @@ enum ChoresTab: String, CaseIterable, Identifiable {
         case .houseChores:
             return "House Chores"
         case .rewardCenter:
-            return "Reward Center"
+            return "Rewards Center"
         case .choreHistory:
             return "Chore History"
         }
@@ -26,13 +26,12 @@ enum ChoresTab: String, CaseIterable, Identifiable {
 
     static let memberVisibleTabs: [ChoresTab] = [
         .myChores,
-        .myRewards,
+        .rewardCenter,
         .choreHistory
     ]
 
     static let ownerAdminVisibleTabs: [ChoresTab] = [
         .myChores,
-        .myRewards,
         .houseChores,
         .rewardCenter,
         .choreHistory

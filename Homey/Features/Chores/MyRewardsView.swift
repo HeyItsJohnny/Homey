@@ -7,20 +7,20 @@ struct MyRewardsView: View {
     @EnvironmentObject private var homeService: HomeService
     @StateObject private var viewModel = MyRewardsViewModel()
     @State private var isAdjustRewardsPresented = false
+    let showsShellCard: Bool
+
+    init(showsShellCard: Bool = true) {
+        self.showsShellCard = showsShellCard
+    }
 
     var body: some View {
-        ChoreShellCard(title: "My Rewards", systemImage: "star.fill") {
-            if let errorMessage = viewModel.errorMessage, viewModel.transactions.isEmpty, !viewModel.isLoading {
-                ChoreMessageState(
-                    title: "Unable to Load Rewards",
-                    message: errorMessage,
-                    systemImage: "exclamationmark.triangle.fill",
-                    buttonTitle: "Try Again"
-                ) {
-                    viewModel.reload()
+        Group {
+            if showsShellCard {
+                ChoreShellCard(title: "My Rewards", systemImage: "star.fill") {
+                    myRewardsContent
                 }
             } else {
-                rewardsContent
+                myRewardsContent
             }
         }
         .task(id: homeService.selectedHomeID) {
@@ -53,6 +53,22 @@ struct MyRewardsView: View {
                     viewModel.selectAdjustedMember(adjustedUserId)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var myRewardsContent: some View {
+        if let errorMessage = viewModel.errorMessage, viewModel.transactions.isEmpty, !viewModel.isLoading {
+            ChoreMessageState(
+                title: "Unable to Load Rewards",
+                message: errorMessage,
+                systemImage: "exclamationmark.triangle.fill",
+                buttonTitle: "Try Again"
+            ) {
+                viewModel.reload()
+            }
+        } else {
+            rewardsContent
         }
     }
 

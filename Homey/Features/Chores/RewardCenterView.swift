@@ -12,11 +12,17 @@ struct RewardCenterView: View {
     @State private var fulfillingRedemption: ChoreRewardRedemption?
     @State private var cancellingRedemption: ChoreRewardRedemption?
 
+    init(initialSection: RewardCenterSection = .rewards) {
+        _selectedSection = State(initialValue: initialSection)
+    }
+
     var body: some View {
-        ChoreShellCard(title: "Reward Center", systemImage: "gift.fill") {
+        ChoreShellCard(title: "Rewards Center", systemImage: "gift.fill") {
             VStack(alignment: .leading, spacing: 18) {
-                header
-                if canManageRewards {
+                if selectedSection == .rewards {
+                    header
+                }
+                if allowedSections.count > 1 {
                     sectionPicker
                 }
                 statusMessages
@@ -42,10 +48,9 @@ struct RewardCenterView: View {
                 )
             }
         }
+        .onAppear(perform: enforceAllowedSection)
         .onChange(of: canManageRewards) { _, canManage in
-            if !canManage {
-                selectedSection = .rewards
-            }
+            enforceAllowedSection()
         }
         .task {
             for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
@@ -163,6 +168,8 @@ struct RewardCenterView: View {
         switch selectedSection {
         case .rewards:
             rewardCatalog
+        case .myRewards:
+            MyRewardsView(showsShellCard: false)
         case .pendingRedemptions:
             if canManageRewards {
                 pendingRedemptions
@@ -180,7 +187,7 @@ struct RewardCenterView: View {
 
     private var sectionPicker: some View {
         HStack(spacing: 8) {
-            ForEach(RewardCenterSection.allCases) { section in
+            ForEach(allowedSections) { section in
                 Button {
                     selectedSection = section
                 } label: {
@@ -400,6 +407,18 @@ struct RewardCenterView: View {
 
     private var canManageRewards: Bool {
         currentRole == .owner || currentRole == .admin
+    }
+
+    private var allowedSections: [RewardCenterSection] {
+        RewardCenterSection.visibleSections(canManageRewards: canManageRewards)
+    }
+
+    private func enforceAllowedSection() {
+        guard !allowedSections.contains(selectedSection) else {
+            return
+        }
+
+        selectedSection = .rewards
     }
 
     private func sectionAccessibilityLabel(_ section: RewardCenterSection) -> String {
@@ -801,21 +820,31 @@ private struct RewardCenterLoadKey: Equatable {
     let currentUserId: UUID?
 }
 
-private enum RewardCenterSection: String, CaseIterable, Identifiable {
+enum RewardCenterSection: String, CaseIterable, Identifiable {
     case rewards
+    case myRewards
     case pendingRedemptions
     case redemptionHistory
 
     var id: String { rawValue }
 
+    static func visibleSections(canManageRewards: Bool) -> [RewardCenterSection] {
+        if canManageRewards {
+            return [.rewards, .myRewards, .pendingRedemptions, .redemptionHistory]
+        }
+        return [.rewards, .myRewards]
+    }
+
     var title: String {
         switch self {
         case .rewards:
             return "Rewards"
+        case .myRewards:
+            return "My Rewards"
         case .pendingRedemptions:
             return "Pending Redemptions"
         case .redemptionHistory:
-            return "Redemption History"
+            return "Rewards History"
         }
     }
 }
