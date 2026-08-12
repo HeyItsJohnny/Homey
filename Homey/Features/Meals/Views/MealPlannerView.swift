@@ -1629,10 +1629,10 @@ private struct MealPlannerMiniCard: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
-            .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .background(HomeyDashboardTheme.sageAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .stroke(accentColor.opacity(0.32), lineWidth: 1)
+                    .stroke(HomeyDashboardTheme.sageAccent.opacity(0.62), lineWidth: 1.5)
             }
         }
         .buttonStyle(.plain)

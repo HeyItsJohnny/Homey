@@ -1105,8 +1105,8 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
         .calendar,
         .meals,
         .chores,
-        .projects,
         .trips,
+        .projects,
         .groceries,
         .messages
     ]

@@ -258,33 +258,32 @@ struct CalendarView: View {
                 .frame(width: 176)
                 .accessibilityLabel("Calendar view")
 
-                iconButton(systemImage: "chevron.left", label: previousPeriodAccessibilityLabel) {
-                    pendingWeekScrollBehavior = .startOfWeek
-                    Task { await viewModel.moveToPreviousPeriod() }
-                }
+                if viewModel.displayMode == .month {
+                    iconButton(systemImage: "chevron.left", label: previousPeriodAccessibilityLabel) {
+                        Task { await viewModel.moveToPreviousPeriod() }
+                    }
 
-                iconButton(systemImage: "chevron.right", label: nextPeriodAccessibilityLabel) {
-                    pendingWeekScrollBehavior = .startOfWeek
-                    Task { await viewModel.moveToNextPeriod() }
-                }
+                    iconButton(systemImage: "chevron.right", label: nextPeriodAccessibilityLabel) {
+                        Task { await viewModel.moveToNextPeriod() }
+                    }
 
-                Button {
-                    pendingWeekScrollBehavior = .selectedDate
-                    Task { await viewModel.moveToToday() }
-                } label: {
-                    Text("Today")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
-                        .frame(minHeight: 44)
-                        .padding(.horizontal, 16)
-                        .background(HomeyDashboardTheme.cardBackground, in: Capsule())
-                        .overlay {
-                            Capsule()
-                                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
-                        }
+                    Button {
+                        Task { await viewModel.moveToToday() }
+                    } label: {
+                        Text("Today")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                            .frame(minHeight: 44)
+                            .padding(.horizontal, 16)
+                            .background(HomeyDashboardTheme.cardBackground, in: Capsule())
+                            .overlay {
+                                Capsule()
+                                    .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Go to today")
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Go to today")
 
                 Button {
                     presentCreateEditor()
@@ -428,19 +427,8 @@ struct CalendarView: View {
     }
 
     private var weekGridCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack {
-                Text("Week View")
-                    .font(.title3.weight(.bold))
-                    .foregroundStyle(HomeyDashboardTheme.primaryText)
-
-                Spacer()
-
-                let count = viewModel.visibleWeekEvents().count
-                if count > 0 {
-                    eventCountBadge(count: count, accessibilitySuffix: "this week")
-                }
-            }
+        VStack(alignment: .leading, spacing: 14) {
+            calendarWeekHeader
 
             ScrollViewReader { proxy in
                 ScrollView(.horizontal) {
@@ -483,6 +471,67 @@ struct CalendarView: View {
         }
         .padding(24)
         .dashboardCard(cornerRadius: 30)
+    }
+
+    private var calendarWeekHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Button {
+                pendingWeekScrollBehavior = .startOfWeek
+                Task { await viewModel.moveToPreviousWeek() }
+            } label: {
+                Image(systemName: "chevron.left")
+                    .frame(width: 38, height: 38)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            .background(HomeyDashboardTheme.cardBackground, in: Circle())
+            .overlay { Circle().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+            .accessibilityLabel("Previous week")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("This Week")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                Text(weekCardTitle)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            }
+            .accessibilityElement(children: .combine)
+
+            Button {
+                pendingWeekScrollBehavior = .startOfWeek
+                Task { await viewModel.moveToNextWeek() }
+            } label: {
+                Image(systemName: "chevron.right")
+                    .frame(width: 38, height: 38)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            .background(HomeyDashboardTheme.cardBackground, in: Circle())
+            .overlay { Circle().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+            .accessibilityLabel("Next week")
+
+            Spacer()
+
+            let count = viewModel.visibleWeekEvents().count
+            Text("\(count) \(count == 1 ? "Event" : "Events")")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .lineLimit(1)
+
+            Button("Today") {
+                pendingWeekScrollBehavior = .selectedDate
+                Task { await viewModel.moveToToday() }
+            }
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            .padding(.horizontal, 16)
+            .frame(minHeight: 38)
+            .background(HomeyDashboardTheme.cardBackground, in: Capsule())
+            .overlay { Capsule().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Go to today")
+        }
     }
 
     private var agendaCard: some View {
@@ -753,6 +802,15 @@ struct CalendarView: View {
         }
     }
 
+    private var weekCardTitle: String {
+        guard let range = viewModel.visibleWeekRange(),
+              let finalDay = Calendar.autoupdatingCurrent.date(byAdding: .day, value: -1, to: range.end) else {
+            return "This Week"
+        }
+
+        return CalendarViewFormatters.compactWeekRangeTitle(start: range.start, end: finalDay)
+    }
+
     private var previousPeriodAccessibilityLabel: String {
         viewModel.displayMode == .week ? "Previous week" : "Previous month"
     }
@@ -954,33 +1012,51 @@ private struct WeekDayColumn: View {
     let onSelectEvent: (CalendarEvent) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             Button(action: onSelect) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(CalendarViewFormatters.weekdayName.string(from: date))
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
-                        .lineLimit(1)
+                VStack(spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text(CalendarViewFormatters.weekdayName.string(from: date))
+                            .font(.caption.weight(.bold))
+                            .lineLimit(1)
+
+                        if isToday {
+                            Text("Today")
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(HomeyDashboardTheme.cardBackground, in: Capsule())
+                                .overlay { Capsule().stroke(HomeyDashboardTheme.warmBrown.opacity(0.35), lineWidth: 1) }
+                        }
+                    }
 
                     Text(dayNumber)
-                        .font(.title3.weight(isSelected || isToday ? .bold : .semibold))
-                        .foregroundStyle(dayForeground)
-                        .frame(width: 36, height: 36)
-                        .background(dayNumberBackground, in: Circle())
+                        .font(.headline.weight(.bold))
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .foregroundStyle(isSelected || isToday ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.primaryText)
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .background(
+                    isSelected || isToday ? HomeyDashboardTheme.selectedSidebarBackground : HomeyDashboardTheme.appBackground.opacity(0.48),
+                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(isSelected || isToday ? HomeyDashboardTheme.warmBrown.opacity(0.42) : Color.clear, lineWidth: 1)
+                }
             }
             .buttonStyle(.plain)
             .accessibilityLabel(dayAccessibilityLabel)
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 7) {
                 if events.isEmpty {
                     Text("No Events")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(HomeyDashboardTheme.secondaryText.opacity(0.65))
-                        .frame(maxWidth: .infinity, minHeight: 82, alignment: .topLeading)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText.opacity(0.72))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                        .accessibilityLabel("No Events")
                 } else {
-                    ForEach(events.prefix(4)) { event in
+                    ForEach(events) { event in
                         Button {
                             onSelectEvent(event)
                         } label: {
@@ -989,25 +1065,18 @@ private struct WeekDayColumn: View {
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens event details")
                     }
-
-                    if events.count > 4 {
-                        Text("+\(events.count - 4) more")
-                            .font(.caption2.weight(.bold))
-                            .foregroundStyle(HomeyDashboardTheme.secondaryText)
-                            .padding(.top, 2)
-                    }
                 }
-
-                Spacer(minLength: 0)
             }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, minHeight: 190, alignment: .topLeading)
+            .background(HomeyDashboardTheme.appBackground.opacity(0.42), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 350, alignment: .topLeading)
-        .background(columnBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(columnBorder, lineWidth: isSelected ? 1.5 : 1)
-        }
+        .padding(10)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(HomeyDashboardTheme.softBorder.opacity(0.82), lineWidth: 1) }
+        .shadow(color: HomeyDashboardTheme.shadow.opacity(0.08), radius: 7, x: 0, y: 4)
         .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .onTapGesture(perform: onSelect)
     }
@@ -1254,7 +1323,7 @@ private enum CalendarViewFormatters {
     static let weekdayName: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = .autoupdatingCurrent
-        formatter.dateFormat = "EEEE"
+        formatter.dateFormat = "EEE"
         return formatter
     }()
 
@@ -1272,10 +1341,30 @@ private enum CalendarViewFormatters {
         return "\(monthDayAndYear.string(from: start)) - \(monthDayAndYear.string(from: end))"
     }
 
+    static func compactWeekRangeTitle(start: Date, end: Date) -> String {
+        let calendar = Calendar.autoupdatingCurrent
+        if calendar.isDate(start, equalTo: end, toGranularity: .month) {
+            return "\(shortMonthName.string(from: start)) \(dayNumber.string(from: start))-\(dayNumber.string(from: end))"
+        }
+
+        if calendar.component(.year, from: start) == calendar.component(.year, from: end) {
+            return "\(monthAndDay.string(from: start)) - \(monthAndDay.string(from: end))"
+        }
+
+        return "\(monthDayAndYear.string(from: start)) - \(monthDayAndYear.string(from: end))"
+    }
+
     private static let monthName: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = .autoupdatingCurrent
         formatter.dateFormat = "LLLL"
+        return formatter
+    }()
+
+    private static let shortMonthName: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = .autoupdatingCurrent
+        formatter.dateFormat = "MMM"
         return formatter
     }()
 
