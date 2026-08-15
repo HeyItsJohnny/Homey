@@ -12,6 +12,7 @@ struct MealEditorView: View {
     @StateObject private var viewModel: MealEditorViewModel
     @State private var selectedPhotoItem: PhotosPickerItem?
     @State private var isShowingDiscardConfirmation = false
+    @State private var isShowingDeleteConfirmation = false
     @State private var editingIngredient: MealEditorIngredient?
     @State private var editingStep: MealEditorStep?
     @State private var tagText = ""
@@ -19,15 +20,18 @@ struct MealEditorView: View {
 
     var onSaved: (UUID, Meal?) -> Void
     var onCancel: () -> Void
+    var onDelete: (UUID) -> Void
 
     init(
         mode: MealEditorMode,
         onSaved: @escaping (UUID, Meal?) -> Void = { _, _ in },
-        onCancel: @escaping () -> Void = { }
+        onCancel: @escaping () -> Void = { },
+        onDelete: @escaping (UUID) -> Void = { _ in }
     ) {
         _viewModel = StateObject(wrappedValue: MealEditorViewModel(mode: mode))
         self.onSaved = onSaved
         self.onCancel = onCancel
+        self.onDelete = onDelete
     }
 
     var body: some View {
@@ -99,6 +103,14 @@ struct MealEditorView: View {
             Button("OK", role: .cancel) { viewModel.successMessage = nil }
         } message: {
             Text(viewModel.successMessage ?? "Meal saved.")
+        }
+        .confirmationDialog("Delete Recipe?", isPresented: $isShowingDeleteConfirmation, titleVisibility: .visible) {
+            Button("Delete Recipe", role: .destructive) {
+                deleteMeal()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Delete this recipe from this Home? Future planned meal events for this recipe will be removed from the calendar. Past meal history will be preserved when needed.")
         }
         .safeAreaInset(edge: .bottom) {
             if horizontalSizeClass == .compact {
@@ -253,6 +265,8 @@ struct MealEditorView: View {
                 notesCard.id(MealEditorSection.notes)
                     .frame(maxWidth: .infinity, alignment: .top)
             }
+
+            deleteMealSection
         }
     }
 
@@ -264,6 +278,31 @@ struct MealEditorView: View {
             directionsCard.id(MealEditorSection.steps)
             sourceCard
             notesCard.id(MealEditorSection.notes)
+            deleteMealSection
+        }
+    }
+
+    @ViewBuilder
+    private var deleteMealSection: some View {
+        if canDeleteMeal {
+            Button(role: .destructive) {
+                isShowingDeleteConfirmation = true
+            } label: {
+                Label("Delete Recipe", systemImage: "trash")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.coralAccent)
+                    .padding(.horizontal, 18)
+                    .frame(minHeight: 48)
+                    .background(HomeyDashboardTheme.cardBackground, in: Capsule())
+                    .overlay {
+                        Capsule()
+                            .stroke(HomeyDashboardTheme.coralAccent.opacity(0.35), lineWidth: 1)
+                    }
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.isSaving)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .accessibilityLabel("Delete Recipe")
         }
     }
 
@@ -731,6 +770,16 @@ struct MealEditorView: View {
         return viewModel.isCreatingNewMeal ? resolvedPermissions.meals.canCreate : resolvedPermissions.meals.canEdit
     }
 
+    private var canDeleteMeal: Bool {
+        guard !viewModel.isCreatingNewMeal,
+              viewModel.mode.mealID != nil,
+              let resolvedPermissions else {
+            return false
+        }
+
+        return resolvedPermissions.meals.canDelete
+    }
+
     private var permissionDeniedMessage: String {
         viewModel.isCreatingNewMeal
             ? "You do not have permission to create meals in this Home."
@@ -769,6 +818,12 @@ struct MealEditorView: View {
             onSaved(mealID, meal)
             dismiss()
         }
+    }
+
+    private func deleteMeal() {
+        guard let mealID = viewModel.mode.mealID else { return }
+        onDelete(mealID)
+        dismiss()
     }
 
     private func permissionsForSave() -> HomePermissions? {

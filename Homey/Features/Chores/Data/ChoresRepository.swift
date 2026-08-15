@@ -7,6 +7,11 @@ struct ChoresBadgeCountResult: Sendable {
     let occurrenceIds: [UUID]
 }
 
+struct ChorePendingApprovalQueueItem: Sendable {
+    let occurrence: ChoreOccurrence
+    let submission: ChoreSubmission
+}
+
 @MainActor
 final class ChoresRepository {
     static let defaultGenerationWindowDays = 90
@@ -893,6 +898,41 @@ final class ChoresRepository {
         }
     }
 
+    func fetchPendingChoreApprovals(homeId: UUID) async throws -> [ChorePendingApprovalQueueItem] {
+        let submissions = try await fetchPendingSubmissionsForAttention()
+        var queueItems: [ChorePendingApprovalQueueItem] = []
+
+        for submission in submissions {
+            guard submission.status == .pending else {
+                logApprovalQueueDecision(homeId: homeId, submission: submission, occurrence: nil, included: false, exclusionReason: "submission_status_not_pending")
+                continue
+            }
+
+            guard let occurrence = try await fetchOccurrence(id: submission.occurrenceId) else {
+                logApprovalQueueDecision(homeId: homeId, submission: submission, occurrence: nil, included: false, exclusionReason: "occurrence_not_found")
+                continue
+            }
+
+            guard occurrence.homeId == homeId else {
+                logApprovalQueueDecision(homeId: homeId, submission: submission, occurrence: occurrence, included: false, exclusionReason: "different_home")
+                continue
+            }
+
+            guard occurrence.status == .awaitingApproval else {
+                logApprovalQueueDecision(homeId: homeId, submission: submission, occurrence: occurrence, included: false, exclusionReason: "occurrence_not_awaiting_approval")
+                continue
+            }
+
+            logApprovalQueueDecision(homeId: homeId, submission: submission, occurrence: occurrence, included: true, exclusionReason: nil)
+            queueItems.append(ChorePendingApprovalQueueItem(occurrence: occurrence, submission: submission))
+        }
+
+        logApprovalQueueSummary(homeId: homeId, pendingSubmissionCount: queueItems.count)
+        return queueItems.sorted { first, second in
+            first.submission.submittedAt < second.submission.submittedAt
+        }
+    }
+
     func fetchOccurrence(calendarEventId: UUID) async throws -> ChoreOccurrence? {
         do {
             try await requireAuthenticatedSession()
@@ -1345,22 +1385,7 @@ final class ChoresRepository {
     }
 
     func fetchPendingChoreApprovalCount(homeId: UUID) async throws -> Int {
-        var count = 0
-        let submissions = try await fetchPendingSubmissionsForAttention()
-
-        for submission in submissions {
-            guard let occurrence = try await fetchOccurrence(id: submission.occurrenceId),
-                  occurrence.homeId == homeId,
-                  occurrence.status == .awaitingApproval else {
-                continue
-            }
-
-            if submission.status == .pending {
-                count += 1
-            }
-        }
-
-        return count
+        try await fetchPendingChoreApprovals(homeId: homeId).count
     }
 
     func fetchPausedTemplates(homeId: UUID) async throws -> [ChoreTemplate] {
@@ -1461,6 +1486,45 @@ final class ChoresRepository {
             print("PostGREST hint: \(postgrestError.hint ?? "")")
         }
         print("============================================")
+        #endif
+    }
+
+    private func logApprovalQueueSummary(homeId: UUID, pendingSubmissionCount: Int) {
+        #if DEBUG
+        print("========== CHORE APPROVAL QUEUE ==========")
+        print("home_id: \(homeId.uuidString)")
+        print("pending_submission_count: \(pendingSubmissionCount)")
+        print("==========================================")
+        #endif
+    }
+
+    private func logApprovalQueueDecision(
+        homeId: UUID,
+        submission: ChoreSubmission,
+        occurrence: ChoreOccurrence?,
+        included: Bool,
+        exclusionReason: String?
+    ) {
+        #if DEBUG
+        print("========== CHORE APPROVAL QUEUE ==========")
+        print("home_id: \(homeId.uuidString)")
+        print("submission:")
+        print("- submission_id: \(submission.id.uuidString)")
+        print("  occurrence_id: \(submission.occurrenceId.uuidString)")
+        if let occurrence {
+            print("  occurrence_due_at: \(ChoreTimestampFormatter.string(from: occurrence.dueAt))")
+            print("  occurrence_due_local_date: \(ChoreTimestampFormatter.string(from: occurrence.dueLocalDate))")
+            print("  occurrence_status: \(occurrence.status.rawValue)")
+        } else {
+            print("  occurrence_due_at: nil")
+            print("  occurrence_due_local_date: nil")
+            print("  occurrence_status: nil")
+        }
+        print("  submission_status: \(submission.status.rawValue)")
+        print("  submitted_at: \(ChoreTimestampFormatter.string(from: submission.submittedAt))")
+        print("  included_in_queue: \(included)")
+        print("  exclusion_reason: \(exclusionReason ?? "none")")
+        print("==========================================")
         #endif
     }
 

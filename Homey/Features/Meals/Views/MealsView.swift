@@ -42,11 +42,17 @@ struct MealsView: View {
                 switch route {
                 case .library:
                     RecipeLibraryView(
-                        meals: viewModel.meals,
+                        meals: viewModel.unfilteredMeals,
+                        canCreate: mealPermissions.canCreate,
+                        canDelete: mealPermissions.canDelete,
                         canFavorite: mealPermissions.canFavorite,
+                        searchText: $viewModel.searchText,
+                        selectedMealType: $viewModel.selectedMealType,
                         isFavorite: viewModel.isFavorite,
                         onToggleFavorite: toggleFavorite,
-                        onSelectMeal: openMealEditor
+                        onDeleteMeal: deleteMeal,
+                        onSelectMeal: openMealEditor,
+                        onAddRecipe: { isAddRecipeOptionsPresented = true }
                     )
                 case .addMeal:
                     switch effectivePermissionResolution {
@@ -126,6 +132,8 @@ struct MealsView: View {
                         if resolvedPermissions.meals.canEdit {
                             MealEditorView(mode: .edit(mealID: mealID)) { savedMealID, meal in
                                 handleSavedMeal(mealID: savedMealID, meal: meal)
+                            } onDelete: { deletedMealID in
+                                deleteMeal(id: deletedMealID)
                             }
                         } else {
                             MealMessageCard(
@@ -341,8 +349,6 @@ struct MealsView: View {
                 recipesTab
             case .mealPlan:
                 mealPlanTab
-            case .favorites:
-                favoritesTab
             }
         }
     }
@@ -379,19 +385,6 @@ struct MealsView: View {
             onSelectMeal: openMealEditor,
             onOpenCalendar: onOpenCalendar,
             onComingSoon: { message in comingSoonMessage = message }
-        )
-    }
-
-    private var favoritesTab: some View {
-        FeaturedMealsSection(
-            title: "Favorite Meals",
-            meals: filteredFavoriteMeals,
-            emptyMessage: "Tap the heart on a meal to save it here.",
-            canFavorite: mealPermissions.canFavorite,
-            isFavorite: viewModel.isFavorite,
-            onToggleFavorite: toggleFavorite,
-            onSelectMeal: openMealEditor,
-            onSeeAll: nil
         )
     }
 
@@ -454,17 +447,6 @@ struct MealsView: View {
         }
     }
 
-    private var filteredFavoriteMeals: [Meal] {
-        let normalizedSearch = viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return viewModel.favoriteMeals.filter { meal in
-            if let selectedMealType = viewModel.selectedMealType, !meal.mealTypes.contains(selectedMealType) {
-                return false
-            }
-            guard !normalizedSearch.isEmpty else { return true }
-            return meal.matchesMealsSearch(normalizedSearch)
-        }
-    }
-
     private var errorBinding: Binding<Bool> {
         Binding(
             get: { viewModel.errorMessage != nil },
@@ -483,6 +465,15 @@ struct MealsView: View {
 
     private func toggleFavorite(_ meal: Meal) {
         Task { await viewModel.toggleFavorite(meal, permissions: permissions) }
+    }
+
+    private func deleteMeal(_ meal: Meal) {
+        Task { await viewModel.deleteMeal(meal, permissions: permissions) }
+    }
+
+    private func deleteMeal(id mealID: UUID) {
+        guard let meal = viewModel.unfilteredMeals.first(where: { $0.id == mealID }) else { return }
+        deleteMeal(meal)
     }
 
     private func openMealEditor(_ meal: Meal) {
@@ -507,7 +498,6 @@ struct MealsView: View {
 private enum MealsLandingTab: String, CaseIterable, Identifiable {
     case recipes
     case mealPlan
-    case favorites
 
     var id: String { rawValue }
 
@@ -517,8 +507,6 @@ private enum MealsLandingTab: String, CaseIterable, Identifiable {
             return "Recipes"
         case .mealPlan:
             return "Meal Plan"
-        case .favorites:
-            return "Favorites"
         }
     }
 }
@@ -645,72 +633,6 @@ private struct MealCard: View {
 
     private var accessibilityLabel: String {
         "\(meal.name), \(totalTimeText), \(meal.mealTypes.map(\.displayName).joined(separator: ", "))"
-    }
-}
-
-private struct MealPhotoThumbnail: View {
-    let path: String?
-    @State private var signedURL: URL?
-    @State private var didFail = false
-    private let mealService = MealService()
-
-    var body: some View {
-        ZStack {
-            if let signedURL, !didFail {
-                AsyncImage(url: signedURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    case .failure:
-                        fallback
-                            .onAppear { didFail = true }
-                    case .empty:
-                        ProgressView()
-                            .tint(HomeyDashboardTheme.warmBrown)
-                    @unknown default:
-                        fallback
-                    }
-                }
-            } else {
-                fallback
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipped()
-        .task(id: path) {
-            await loadSignedURL()
-        }
-    }
-
-    private var fallback: some View {
-        ZStack {
-            LinearGradient(
-                colors: [HomeyDashboardTheme.warmBeige.opacity(0.82), HomeyDashboardTheme.selectedSidebarBackground],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            Image(systemName: "fork.knife")
-                .font(.system(size: 32, weight: .semibold))
-                .foregroundStyle(HomeyDashboardTheme.warmBrown)
-        }
-        .accessibilityHidden(true)
-    }
-
-    private func loadSignedURL() async {
-        guard let path = path?.trimmingCharacters(in: .whitespacesAndNewlines), !path.isEmpty else {
-            signedURL = nil
-            return
-        }
-
-        do {
-            signedURL = try await mealService.createSignedMealPhotoURL(path: path)
-            didFail = false
-        } catch {
-            signedURL = nil
-            didFail = true
-        }
     }
 }
 

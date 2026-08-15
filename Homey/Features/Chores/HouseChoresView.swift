@@ -724,17 +724,11 @@ private final class HouseChoresApprovalsViewModel: ObservableObject {
         actionErrorMessage = nil
 
         do {
-            let range = ChoreDateRange.upcoming()
-            let occurrences = try await repository.fetchOccurrencesAwaitingApproval(homeId: homeId, from: range.start, through: range.end)
-            var loadedItems: [ChoreApprovalItem] = []
-
-            for occurrence in occurrences {
-                if let submission = try await repository.fetchPendingSubmission(occurrenceId: occurrence.id) {
-                    loadedItems.append(ChoreApprovalItem(occurrence: occurrence, submission: submission))
-                }
-            }
+            let queueItems = try await repository.fetchPendingChoreApprovals(homeId: homeId)
+            let loadedItems = queueItems.map { ChoreApprovalItem(occurrence: $0.occurrence, submission: $0.submission) }
 
             approvalItems = loadedItems
+            logApprovalQueueMismatchIfNeeded(homeId: homeId, listCount: loadedItems.count)
         } catch {
             approvalItems = []
             errorMessage = error.localizedDescription
@@ -780,6 +774,20 @@ private final class HouseChoresApprovalsViewModel: ObservableObject {
         errorMessage = nil
         actionErrorMessage = nil
         isLoading = false
+    }
+
+    private func logApprovalQueueMismatchIfNeeded(homeId: UUID, listCount: Int) {
+        #if DEBUG
+        Task {
+            guard let badgeCount = try? await repository.fetchPendingChoreApprovalCount(homeId: homeId) else { return }
+            if badgeCount != listCount {
+                print("WARNING: approval badge/list mismatch")
+                print("home_id: \(homeId.uuidString)")
+                print("pendingApprovalBadgeCount: \(badgeCount)")
+                print("pendingApprovalListCount: \(listCount)")
+            }
+        }
+        #endif
     }
 }
 

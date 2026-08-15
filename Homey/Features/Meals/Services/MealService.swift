@@ -39,6 +39,7 @@ protocol MealServicing: AnyObject {
 @MainActor
 final class MealService: ObservableObject, MealServicing {
     private let client = SupabaseManager.shared.client
+    private let calendarService = CalendarService()
     private let imageBucket = "meal-images"
 
     func fetchMeals(homeId: UUID) async throws -> [Meal] {
@@ -131,13 +132,54 @@ final class MealService: ObservableObject, MealServicing {
     func deleteMeal(id: UUID) async throws {
         do {
             try await requireAuthenticatedSession()
+            let meal = try await fetchMeal(id: id)
+            let eventReferences = try await fetchMealEventReferences(mealId: id, homeId: meal.homeId)
+            let futureReferences = eventReferences.future
+            let pastReferences = eventReferences.past
+            let staleDetails = eventReferences.staleDetails
+            let photoPaths = try await fetchMealPhotoPaths(mealId: id)
+
+            logMealDeletionPlan(
+                mealId: id,
+                futureReferences: futureReferences,
+                pastReferences: pastReferences,
+                staleDetails: staleDetails,
+                photoPaths: photoPaths
+            )
+
+            for reference in futureReferences {
+                try await calendarService.deleteEvent(eventId: reference.detail.calendarEventId)
+                try await deleteMealEventDetail(calendarEventId: reference.detail.calendarEventId)
+            }
+
+            for detail in staleDetails {
+                try await deleteMealEventDetail(calendarEventId: detail.calendarEventId)
+            }
+
+            guard pastReferences.isEmpty else {
+                try await archiveMeal(id: id)
+                return
+            }
+
+            try await deleteRecipe(mealId: id)
+            try await deleteMealFavorites(mealId: id)
+            try await deleteMealCollectionItems(mealId: id)
+            try await deleteMealPhotoRows(mealId: id)
+
             try await client
                 .from("meals")
                 .delete()
                 .eq("id", value: id.uuidString)
                 .execute()
+            await removeMealPhotoStorage(paths: photoPaths, mealId: id)
         } catch {
             logMealError(error, operation: "deleteMeal", mealId: id)
+            if isMealStillReferencedError(error) {
+                throw MealServiceError.mealStillReferencedByPlanner
+            }
+            if let mealServiceError = error as? MealServiceError {
+                throw mealServiceError
+            }
             throw MealServiceError.deleteMealFailed
         }
     }
@@ -926,6 +968,124 @@ final class MealService: ObservableObject, MealServicing {
         }
     }
 
+    private func fetchMealEventReferences(mealId: UUID, homeId: UUID) async throws -> MealDeleteEventReferences {
+        let details: [MealEventDetail] = try await client
+            .from("meal_event_details")
+            .select()
+            .eq("meal_id", value: mealId.uuidString)
+            .order("created_at", ascending: true)
+            .execute()
+            .value
+
+        guard !details.isEmpty else {
+            return MealDeleteEventReferences(future: [], past: [], staleDetails: [])
+        }
+
+        let startOfToday = try await startOfTodayForHome(homeId: homeId)
+        var future: [MealDeleteEventReference] = []
+        var past: [MealDeleteEventReference] = []
+        var staleDetails: [MealEventDetail] = []
+
+        for detail in details {
+            guard let event = try await fetchCalendarEventReference(id: detail.calendarEventId) else {
+                staleDetails.append(detail)
+                continue
+            }
+
+            let reference = MealDeleteEventReference(detail: detail, event: event)
+            if event.endsAt >= startOfToday {
+                future.append(reference)
+            } else {
+                past.append(reference)
+            }
+        }
+
+        return MealDeleteEventReferences(future: future, past: past, staleDetails: staleDetails)
+    }
+
+    private func fetchCalendarEventReference(id: UUID) async throws -> MealDeleteCalendarEvent? {
+        let events: [MealDeleteCalendarEvent] = try await client
+            .from("calendar_events")
+            .select("id, starts_at, ends_at, timezone")
+            .eq("id", value: id.uuidString)
+            .limit(1)
+            .execute()
+            .value
+        return events.first
+    }
+
+    private func startOfTodayForHome(homeId: UUID) async throws -> Date {
+        let homes: [MealDeleteHomeReference] = try await client
+            .from("homes")
+            .select("id, timezone")
+            .eq("id", value: homeId.uuidString)
+            .limit(1)
+            .execute()
+            .value
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = homes.first?.timezone.flatMap(TimeZone.init(identifier:)) ?? .autoupdatingCurrent
+        return calendar.startOfDay(for: Date())
+    }
+
+    private func fetchMealPhotoPaths(mealId: UUID) async throws -> [String] {
+        let photos: [MealPhoto] = try await client
+            .from("meal_photos")
+            .select()
+            .eq("meal_id", value: mealId.uuidString)
+            .execute()
+            .value
+        return photos.map(\.path).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    }
+
+    private func deleteMealEventDetail(calendarEventId: UUID) async throws {
+        try await client
+            .from("meal_event_details")
+            .delete()
+            .eq("calendar_event_id", value: calendarEventId.uuidString)
+            .execute()
+    }
+
+    private func deleteMealFavorites(mealId: UUID) async throws {
+        try await client
+            .from("meal_favorites")
+            .delete()
+            .eq("meal_id", value: mealId.uuidString)
+            .execute()
+    }
+
+    private func deleteMealCollectionItems(mealId: UUID) async throws {
+        try await client
+            .from("meal_collection_items")
+            .delete()
+            .eq("meal_id", value: mealId.uuidString)
+            .execute()
+    }
+
+    private func deleteMealPhotoRows(mealId: UUID) async throws {
+        try await client
+            .from("meal_photos")
+            .delete()
+            .eq("meal_id", value: mealId.uuidString)
+            .execute()
+    }
+
+    private func removeMealPhotoStorage(paths: [String], mealId: UUID) async {
+        guard !paths.isEmpty else { return }
+
+        do {
+            _ = try await client.storage
+                .from(imageBucket)
+                .remove(paths: paths)
+        } catch {
+            #if DEBUG
+            print("Meal photo storage cleanup failed after meal deletion")
+            print("meal_id: \(mealId.uuidString)")
+            print("orphaned_storage_paths: \(paths.joined(separator: ", "))")
+            print(String(reflecting: error))
+            #endif
+        }
+    }
+
     private func normalizedCreateMealPayload(_ payload: CreateMealPayload, homeId: UUID, userId: UUID) throws -> CreateMealPayload {
         let normalizedName = try normalizedRequiredName(payload.name, error: .emptyMealName)
         return CreateMealPayload(
@@ -1158,6 +1318,44 @@ final class MealService: ObservableObject, MealServicing {
         }
     }
 
+    private func isMealStillReferencedError(_ error: Error) -> Bool {
+        guard let postgrestError = error as? PostgrestError else {
+            return false
+        }
+
+        let combined = [
+            postgrestError.code,
+            postgrestError.message,
+            postgrestError.detail,
+            postgrestError.hint
+        ]
+        .compactMap { $0?.lowercased() }
+        .joined(separator: " ")
+
+        return combined.contains("23503") || combined.contains("meal_event_details_meal_id_fkey")
+    }
+
+    private func logMealDeletionPlan(
+        mealId: UUID,
+        futureReferences: [MealDeleteEventReference],
+        pastReferences: [MealDeleteEventReference],
+        staleDetails: [MealEventDetail],
+        photoPaths: [String]
+    ) {
+        #if DEBUG
+        print("========== MEAL DELETE PLAN ==========")
+        print("meal_id: \(mealId.uuidString)")
+        print("future_reference_count: \(futureReferences.count)")
+        print("past_reference_count: \(pastReferences.count)")
+        print("stale_detail_count: \(staleDetails.count)")
+        print("photo_storage_object_count: \(photoPaths.count)")
+        print("future_calendar_event_ids: \(futureReferences.map { $0.detail.calendarEventId.uuidString }.joined(separator: ", "))")
+        print("past_calendar_event_ids: \(pastReferences.map { $0.detail.calendarEventId.uuidString }.joined(separator: ", "))")
+        print("stale_calendar_event_ids: \(staleDetails.map { $0.calendarEventId.uuidString }.joined(separator: ", "))")
+        print("======================================")
+        #endif
+    }
+
     private func logMealError(
         _ error: Error,
         operation: String,
@@ -1252,6 +1450,36 @@ final class MealService: ObservableObject, MealServicing {
     }
 }
 
+private struct MealDeleteEventReferences {
+    let future: [MealDeleteEventReference]
+    let past: [MealDeleteEventReference]
+    let staleDetails: [MealEventDetail]
+}
+
+private struct MealDeleteEventReference {
+    let detail: MealEventDetail
+    let event: MealDeleteCalendarEvent
+}
+
+private struct MealDeleteCalendarEvent: Decodable {
+    let id: UUID
+    let startsAt: Date
+    let endsAt: Date
+    let timezone: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case startsAt = "starts_at"
+        case endsAt = "ends_at"
+        case timezone
+    }
+}
+
+private struct MealDeleteHomeReference: Decodable {
+    let id: UUID
+    let timezone: String?
+}
+
 enum MealServiceError: LocalizedError, Equatable {
     case unauthenticated
     case emptyMealName
@@ -1284,6 +1512,7 @@ enum MealServiceError: LocalizedError, Equatable {
     case realtimeSubscriptionFailed
     case permissionDenied
     case duplicateImportedRecipe
+    case mealStillReferencedByPlanner
 
     var errorDescription: String? {
         switch self {
@@ -1349,6 +1578,8 @@ enum MealServiceError: LocalizedError, Equatable {
             return "You do not have permission to perform this action."
         case .duplicateImportedRecipe:
             return "This recipe is already in your Home."
+        case .mealStillReferencedByPlanner:
+            return "This meal is still referenced by planned calendar events. Homey could not safely delete it."
         }
     }
 }

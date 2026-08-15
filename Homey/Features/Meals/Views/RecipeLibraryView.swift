@@ -3,34 +3,41 @@ import SwiftUI
 struct RecipeLibraryView: View {
     let meals: [Meal]
     let canCreate: Bool
+    let canDelete: Bool
     let canFavorite: Bool
     @Binding var searchText: String
     @Binding var selectedMealType: MealType?
     let isFavorite: (Meal) -> Bool
     let onToggleFavorite: (Meal) -> Void
+    let onDeleteMeal: (Meal) -> Void
     let onSelectMeal: (Meal) -> Void
     let onAddRecipe: () -> Void
 
     @State private var selectedCategory: RecipeLibraryCategory
+    @State private var mealPendingDeletion: Meal?
 
     init(
         meals: [Meal],
         canCreate: Bool,
+        canDelete: Bool,
         canFavorite: Bool,
         searchText: Binding<String>,
         selectedMealType: Binding<MealType?>,
         isFavorite: @escaping (Meal) -> Bool,
         onToggleFavorite: @escaping (Meal) -> Void,
+        onDeleteMeal: @escaping (Meal) -> Void,
         onSelectMeal: @escaping (Meal) -> Void,
         onAddRecipe: @escaping () -> Void
     ) {
         self.meals = meals
         self.canCreate = canCreate
+        self.canDelete = canDelete
         self.canFavorite = canFavorite
         _searchText = searchText
         _selectedMealType = selectedMealType
         self.isFavorite = isFavorite
         self.onToggleFavorite = onToggleFavorite
+        self.onDeleteMeal = onDeleteMeal
         self.onSelectMeal = onSelectMeal
         self.onAddRecipe = onAddRecipe
         _selectedCategory = State(initialValue: selectedMealType.wrappedValue.map(RecipeLibraryCategory.mealType) ?? .all)
@@ -58,6 +65,22 @@ struct RecipeLibraryView: View {
         }
         .navigationTitle("Recipe Library")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "Delete Recipe?",
+            isPresented: deleteConfirmationBinding,
+            titleVisibility: .visible,
+            presenting: mealPendingDeletion
+        ) { meal in
+            Button("Delete Recipe", role: .destructive) {
+                onDeleteMeal(meal)
+                mealPendingDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                mealPendingDeletion = nil
+            }
+        } message: { meal in
+            Text("Delete \(meal.name) from this Home? Future planned meal events for this recipe will be removed from the calendar. Past meal history will be preserved when needed.")
+        }
         .onChange(of: selectedMealType) { _, newValue in
             guard selectedCategory.isMealTypeFilter || selectedCategory == .all else { return }
             selectedCategory = newValue.map(RecipeLibraryCategory.mealType) ?? .all
@@ -189,12 +212,21 @@ struct RecipeLibraryView: View {
                         meal: meal,
                         isFavorite: isFavorite(meal),
                         canFavorite: canFavorite,
+                        canDelete: canDelete,
                         onToggleFavorite: { onToggleFavorite(meal) },
+                        onDelete: { mealPendingDeletion = meal },
                         onSelect: { onSelectMeal(meal) }
                     )
                 }
             }
         }
+    }
+
+    private var deleteConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { mealPendingDeletion != nil },
+            set: { if !$0 { mealPendingDeletion = nil } }
+        )
     }
 
     private var filteredMeals: [Meal] {
@@ -231,7 +263,9 @@ private struct RecipeLibraryRow: View {
     let meal: Meal
     let isFavorite: Bool
     let canFavorite: Bool
+    let canDelete: Bool
     let onToggleFavorite: () -> Void
+    let onDelete: () -> Void
     let onSelect: () -> Void
 
     var body: some View {
@@ -289,6 +323,9 @@ private struct RecipeLibraryRow: View {
                     if canFavorite {
                         Button(isFavorite ? "Remove from Favorites" : "Add to Favorites", action: onToggleFavorite)
                     }
+                    if canDelete {
+                        Button("Delete Recipe", role: .destructive, action: onDelete)
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(.headline.weight(.bold))
@@ -306,7 +343,7 @@ private struct RecipeLibraryRow: View {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
         }
-        .shadow(color: HomeyDashboardTheme.cardShadow, radius: 18, x: 0, y: 10)
+        .shadow(color: HomeyDashboardTheme.shadow, radius: 18, x: 0, y: 10)
         .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .onTapGesture(perform: onSelect)
         .accessibilityElement(children: .combine)
