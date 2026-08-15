@@ -52,10 +52,53 @@ struct UpdateMealPayload: Encodable, Hashable, Sendable {
     var primaryPhotoPath: String?
     var sourceName: String?
     var sourceURL: String?
+    var sourceType: String?
+    var globalRecipeId: UUID?
+    var importedAt: Date?
     var notes: String?
     var tags: [String]?
     var isArchived: Bool?
     var updatedBy: UUID?
+
+    init(
+        name: String? = nil,
+        description: String? = nil,
+        mealTypes: [MealType]? = nil,
+        cuisine: String? = nil,
+        difficulty: MealDifficulty? = nil,
+        prepTimeMinutes: Int? = nil,
+        cookTimeMinutes: Int? = nil,
+        servings: Decimal? = nil,
+        primaryPhotoPath: String? = nil,
+        sourceName: String? = nil,
+        sourceURL: String? = nil,
+        sourceType: String? = nil,
+        globalRecipeId: UUID? = nil,
+        importedAt: Date? = nil,
+        notes: String? = nil,
+        tags: [String]? = nil,
+        isArchived: Bool? = nil,
+        updatedBy: UUID? = nil
+    ) {
+        self.name = name
+        self.description = description
+        self.mealTypes = mealTypes
+        self.cuisine = cuisine
+        self.difficulty = difficulty
+        self.prepTimeMinutes = prepTimeMinutes
+        self.cookTimeMinutes = cookTimeMinutes
+        self.servings = servings
+        self.primaryPhotoPath = primaryPhotoPath
+        self.sourceName = sourceName
+        self.sourceURL = sourceURL
+        self.sourceType = sourceType
+        self.globalRecipeId = globalRecipeId
+        self.importedAt = importedAt
+        self.notes = notes
+        self.tags = tags
+        self.isArchived = isArchived
+        self.updatedBy = updatedBy
+    }
 
     enum CodingKeys: String, CodingKey {
         case name
@@ -69,6 +112,9 @@ struct UpdateMealPayload: Encodable, Hashable, Sendable {
         case primaryPhotoPath = "primary_photo_path"
         case sourceName = "source_name"
         case sourceURL = "source_url"
+        case sourceType = "source_type"
+        case globalRecipeId = "global_recipe_id"
+        case importedAt = "imported_at"
         case notes
         case tags
         case isArchived = "is_archived"

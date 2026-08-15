@@ -9,6 +9,7 @@ struct MealsView: View {
     @StateObject private var mealPlannerViewModel = MealPlannerViewModel()
     @State private var selectedTab: MealsLandingTab = .recipes
     @State private var isSearchVisible = false
+    @State private var isAddRecipeOptionsPresented = false
     @State private var comingSoonMessage: String?
     @State private var path = NavigationPath()
     var onOpenCalendar: (Date?) -> Void = { _ in }
@@ -74,6 +75,39 @@ struct MealsView: View {
                             )
                         }
                     }
+                case .importRecipeURL:
+                    switch effectivePermissionResolution {
+                    case .loading:
+                        MealMessageCard(
+                            title: "Loading Permissions",
+                            message: "Loading your Home permissions…",
+                            systemImage: "hourglass"
+                        )
+                    case .unavailable:
+                        MealMessageCard(
+                            title: "Meals Unavailable",
+                            message: "We cannot find your membership for this Home.",
+                            systemImage: "lock.fill"
+                        )
+                    case .resolved(let resolvedPermissions):
+                        if resolvedPermissions.meals.canCreate {
+                            ImportRecipeURLView(homeId: homeService.selectedHomeID) { response in
+                                path.append(MealsRoute.importedRecipePreview(response))
+                            }
+                        } else {
+                            MealMessageCard(
+                                title: "Meals Unavailable",
+                                message: "You do not have permission to create meals in this Home.",
+                                systemImage: "lock.fill"
+                            )
+                        }
+                    }
+                case .importedRecipePreview(let response):
+                    ImportedRecipePreviewView(response: response, homeId: homeService.selectedHomeID) { mealID in
+                        selectedTab = .recipes
+                        handleSavedMeal(mealID: mealID, meal: nil)
+                        path = NavigationPath()
+                    }
                 case .editMeal(let mealID):
                     switch effectivePermissionResolution {
                     case .loading:
@@ -117,6 +151,15 @@ struct MealsView: View {
             Button("OK", role: .cancel) { comingSoonMessage = nil }
         } message: {
             Text(comingSoonMessage ?? "")
+        }
+        .confirmationDialog("Add Recipe", isPresented: $isAddRecipeOptionsPresented, titleVisibility: .visible) {
+            Button("Create Manually") {
+                path.append(MealsRoute.addMeal)
+            }
+            Button("Import from URL") {
+                path.append(MealsRoute.importRecipeURL)
+            }
+            Button("Cancel", role: .cancel) { }
         }
     }
 
@@ -186,17 +229,17 @@ struct MealsView: View {
 
                 if mealPermissions.canCreate {
                     Button {
-                        path.append(MealsRoute.addMeal)
+                        isAddRecipeOptionsPresented = true
                     } label: {
                         HStack(spacing: 9) {
                             Image(systemName: "plus")
-                            Text("Add Meal")
+                            Text("Add Recipe")
                         }
                     }
                     .buttonStyle(DashboardPrimaryButtonStyle())
-                    .frame(width: 140)
+                    .frame(width: 150)
                     .disabled(homeService.selectedHomeID == nil)
-                    .accessibilityLabel("Add Meal")
+                    .accessibilityLabel("Add Recipe")
                 }
             }
             .padding(.trailing, 70)
@@ -375,8 +418,8 @@ struct MealsView: View {
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 240), spacing: 16)], spacing: 16) {
                 if mealPermissions.canCreate {
-                    MealQuickActionCard(title: "Create Meal", subtitle: "Save a recipe", systemImage: "plus.circle.fill", accentColor: HomeyDashboardTheme.warmBrown) {
-                        path.append(MealsRoute.addMeal)
+                    MealQuickActionCard(title: "Add Recipe", subtitle: "Create manually or import", systemImage: "plus.circle.fill", accentColor: HomeyDashboardTheme.warmBrown) {
+                        isAddRecipeOptionsPresented = true
                     }
                 }
                 MealQuickActionCard(title: "Plan a Meal", subtitle: "Open planner", systemImage: "calendar", accentColor: HomeyDashboardTheme.lavenderAccent) {
@@ -399,8 +442,8 @@ struct MealsView: View {
                 title: "Build your family recipe library",
                 message: "Save favorite meals, recipes, cooking notes, and family traditions in one shared place.",
                 systemImage: "fork.knife.circle.fill",
-                buttonTitle: mealPermissions.canCreate ? "Create Your First Meal" : nil,
-                action: mealPermissions.canCreate ? { path.append(MealsRoute.addMeal) } : nil
+                buttonTitle: mealPermissions.canCreate ? "Add Your First Recipe" : nil,
+                action: mealPermissions.canCreate ? { isAddRecipeOptionsPresented = true } : nil
             )
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 14)], spacing: 14) {
@@ -483,6 +526,8 @@ private enum MealsLandingTab: String, CaseIterable, Identifiable {
 private enum MealsRoute: Hashable {
     case library
     case addMeal
+    case importRecipeURL
+    case importedRecipePreview(RecipeImportResponse)
     case editMeal(UUID)
 }
 

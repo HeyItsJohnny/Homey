@@ -26,6 +26,9 @@ protocol MealServicing: AnyObject {
     func fetchRecipe(mealId: UUID) async throws -> MealRecipeDetails
     func saveRecipe(mealId: UUID, recipe: MealRecipeDraft, ingredients: [RecipeIngredientDraft], steps: [RecipeStepDraft]) async throws -> MealRecipeDetails
     func saveMealRecipe(homeId: UUID, mealId: UUID?, draft: MealEditorDraft, isDraft: Bool) async throws -> UUID
+    func fetchImportedMeal(homeId: UUID, globalRecipeId: UUID) async throws -> Meal?
+    func saveImportedRecipe(homeId: UUID, draft: ImportedRecipeDraft) async throws -> ImportedRecipeSaveResult
+    func applyImportedRecipeMetadata(homeId: UUID, mealId: UUID, metadata: ImportedMealMetadata) async throws
     func deleteRecipe(mealId: UUID) async throws
     func uploadMealPhoto(homeId: UUID, mealId: UUID, imageData: Data, fileExtension: String) async throws -> MealPhoto
     func deleteMealPhoto(photo: MealPhoto) async throws
@@ -583,6 +586,100 @@ final class MealService: ObservableObject, MealServicing {
         }
     }
 
+    func fetchImportedMeal(homeId: UUID, globalRecipeId: UUID) async throws -> Meal? {
+        do {
+            try await requireAuthenticatedSession()
+            let meals: [Meal] = try await client
+                .from("meals")
+                .select()
+                .eq("home_id", value: homeId.uuidString)
+                .eq("global_recipe_id", value: globalRecipeId.uuidString)
+                .eq("is_archived", value: false)
+                .limit(1)
+                .execute()
+                .value
+            return meals.first
+        } catch {
+            logMealError(error, operation: "fetchImportedMeal", homeId: homeId)
+            throw MealServiceError.loadMealFailed
+        }
+    }
+
+    func saveImportedRecipe(homeId: UUID, draft: ImportedRecipeDraft) async throws -> ImportedRecipeSaveResult {
+        do {
+            if let existingMeal = try await fetchImportedMeal(homeId: homeId, globalRecipeId: draft.globalRecipeId) {
+                return .alreadyExists(existingMeal)
+            }
+
+            let mealDraft = try draft.makeMealEditorDraft()
+            let mealId = try await saveMealRecipe(homeId: homeId, mealId: nil, draft: mealDraft, isDraft: false)
+            let userId = try await authenticatedUserId()
+            let metadataPayload = UpdateMealPayload(
+                sourceName: draft.sourceDisplayName,
+                sourceURL: draft.originalUrl,
+                sourceType: "url",
+                globalRecipeId: draft.globalRecipeId,
+                importedAt: Date(),
+                updatedBy: userId
+            )
+
+            do {
+                try await client
+                    .from("meals")
+                    .update(metadataPayload)
+                    .eq("id", value: mealId.uuidString)
+                    .execute()
+            } catch {
+                if let existingMeal = try? await fetchImportedMeal(homeId: homeId, globalRecipeId: draft.globalRecipeId) {
+                    return .alreadyExists(existingMeal)
+                }
+                throw error
+            }
+
+            try await markRecipeImportSaved(importId: draft.importId, globalRecipeId: draft.globalRecipeId)
+            return .saved(mealId)
+        } catch let error as MealServiceError {
+            logMealError(error, operation: "saveImportedRecipe", homeId: homeId)
+            throw error
+        } catch {
+            logMealError(error, operation: "saveImportedRecipe", homeId: homeId)
+            throw MealServiceError.saveMealFailed
+        }
+    }
+
+    func applyImportedRecipeMetadata(homeId: UUID, mealId: UUID, metadata: ImportedMealMetadata) async throws {
+        do {
+            if let existingMeal = try await fetchImportedMeal(homeId: homeId, globalRecipeId: metadata.globalRecipeId),
+               existingMeal.id != mealId {
+                throw MealServiceError.duplicateImportedRecipe
+            }
+
+            let userId = try await authenticatedUserId()
+            let metadataPayload = UpdateMealPayload(
+                sourceName: metadata.sourceDisplayName,
+                sourceURL: metadata.originalURL,
+                sourceType: "url",
+                globalRecipeId: metadata.globalRecipeId,
+                importedAt: Date(),
+                updatedBy: userId
+            )
+
+            try await client
+                .from("meals")
+                .update(metadataPayload)
+                .eq("id", value: mealId.uuidString)
+                .execute()
+
+            try await markRecipeImportSaved(importId: metadata.importId, globalRecipeId: metadata.globalRecipeId)
+        } catch let error as MealServiceError {
+            logMealError(error, operation: "applyImportedRecipeMetadata", homeId: homeId, mealId: mealId)
+            throw error
+        } catch {
+            logMealError(error, operation: "applyImportedRecipeMetadata", homeId: homeId, mealId: mealId)
+            throw MealServiceError.saveMealFailed
+        }
+    }
+
     func deleteRecipe(mealId: UUID) async throws {
         do {
             try await requireAuthenticatedSession()
@@ -809,6 +906,14 @@ final class MealService: ObservableObject, MealServicing {
         }
     }
 
+    private func markRecipeImportSaved(importId: UUID, globalRecipeId: UUID) async throws {
+        try await client
+            .from("recipe_imports")
+            .update(UpdateRecipeImportTrackingPayload.saved(globalRecipeId: globalRecipeId))
+            .eq("id", value: importId.uuidString)
+            .execute()
+    }
+
     private func requireAuthenticatedSession() async throws {
         _ = try await client.auth.session
     }
@@ -860,6 +965,9 @@ final class MealService: ObservableObject, MealServicing {
             primaryPhotoPath: normalizedOptionalString(payload.primaryPhotoPath),
             sourceName: normalizedOptionalString(payload.sourceName),
             sourceURL: normalizedOptionalString(payload.sourceURL),
+            sourceType: normalizedOptionalString(payload.sourceType),
+            globalRecipeId: payload.globalRecipeId,
+            importedAt: payload.importedAt,
             notes: normalizedOptionalString(payload.notes),
             tags: payload.tags.map(normalizedTags),
             isArchived: payload.isArchived,
@@ -1175,6 +1283,7 @@ enum MealServiceError: LocalizedError, Equatable {
     case loadPhotoFailed
     case realtimeSubscriptionFailed
     case permissionDenied
+    case duplicateImportedRecipe
 
     var errorDescription: String? {
         switch self {
@@ -1238,6 +1347,8 @@ enum MealServiceError: LocalizedError, Equatable {
             return "Meal updates are temporarily unavailable."
         case .permissionDenied:
             return "You do not have permission to perform this action."
+        case .duplicateImportedRecipe:
+            return "This recipe is already in your Home."
         }
     }
 }

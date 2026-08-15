@@ -14,6 +14,9 @@ struct Meal: Identifiable, Codable, Hashable, Sendable {
     let primaryPhotoPath: String?
     let sourceName: String?
     let sourceURL: String?
+    let sourceType: String?
+    let globalRecipeId: UUID?
+    let importedAt: Date?
     let notes: String?
     let tags: [String]
     let isArchived: Bool
@@ -36,6 +39,9 @@ struct Meal: Identifiable, Codable, Hashable, Sendable {
         case primaryPhotoPath = "primary_photo_path"
         case sourceName = "source_name"
         case sourceURL = "source_url"
+        case sourceType = "source_type"
+        case globalRecipeId = "global_recipe_id"
+        case importedAt = "imported_at"
         case notes
         case tags
         case isArchived = "is_archived"
@@ -60,6 +66,9 @@ struct Meal: Identifiable, Codable, Hashable, Sendable {
         primaryPhotoPath = try container.decodeIfPresent(String.self, forKey: .primaryPhotoPath)
         sourceName = try container.decodeIfPresent(String.self, forKey: .sourceName)
         sourceURL = try container.decodeIfPresent(String.self, forKey: .sourceURL)
+        sourceType = try container.decodeIfPresent(String.self, forKey: .sourceType)
+        globalRecipeId = try container.decodeIfPresent(UUID.self, forKey: .globalRecipeId)
+        importedAt = try container.decodeIfPresent(Date.self, forKey: .importedAt)
         notes = try container.decodeIfPresent(String.self, forKey: .notes)
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
         isArchived = try container.decode(Bool.self, forKey: .isArchived)

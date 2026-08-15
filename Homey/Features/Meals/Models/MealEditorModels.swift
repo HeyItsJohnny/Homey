@@ -2,14 +2,24 @@ import Foundation
 
 enum MealEditorMode: Hashable, Sendable {
     case create
+    case imported(response: RecipeImportResponse)
     case edit(mealID: UUID)
 
     var mealID: UUID? {
         switch self {
-        case .create:
+        case .create, .imported:
             return nil
         case .edit(let mealID):
             return mealID
+        }
+    }
+
+    var importedResponse: RecipeImportResponse? {
+        switch self {
+        case .imported(let response):
+            return response
+        case .create, .edit:
+            return nil
         }
     }
 }
@@ -30,6 +40,22 @@ struct MealEditorDraft: Equatable, Sendable {
     var tags: [String] = []
     var ingredients: [MealEditorIngredient] = []
     var steps: [MealEditorStep] = []
+    var importedMetadata: ImportedMealMetadata?
+    var importedImageURL: URL?
+}
+
+struct ImportedMealMetadata: Equatable, Hashable, Sendable {
+    let importId: UUID
+    let globalRecipeId: UUID
+    let originalURL: String
+    let normalizedURL: String
+    let sourceDomain: String
+    let sourceName: String?
+
+    var sourceDisplayName: String {
+        let trimmedName = sourceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedName.isEmpty ? sourceDomain : trimmedName
+    }
 }
 
 struct MealEditorIngredient: Identifiable, Equatable, Hashable, Sendable {

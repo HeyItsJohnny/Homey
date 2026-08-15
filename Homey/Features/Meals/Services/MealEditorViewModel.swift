@@ -37,13 +37,18 @@ final class MealEditorViewModel: ObservableObject {
     private var initialDraft = MealEditorDraft()
     private var loadedMealID: UUID?
     private var persistedMealID: UUID?
+    private var selectedPhotoSource: MealEditorSelectedPhotoSource?
 
     init(mode: MealEditorMode, mealService: MealServicing? = nil) {
         self.mode = mode
         self.mealService = mealService ?? MealService()
         persistedMealID = mode.mealID
-        ingredients = [MealEditorIngredient(sortOrder: 1)]
-        steps = [MealEditorStep(stepNumber: 1)]
+        if let importedResponse = mode.importedResponse {
+            applyImportedResponse(importedResponse)
+        } else {
+            ingredients = [MealEditorIngredient(sortOrder: 1)]
+            steps = [MealEditorStep(stepNumber: 1)]
+        }
         captureInitialDraft()
     }
 
@@ -53,7 +58,7 @@ final class MealEditorViewModel: ObservableObject {
         }
 
         switch mode {
-        case .create:
+        case .create, .imported:
             return "Create Meal"
         case .edit:
             return "Edit Meal"
@@ -66,7 +71,7 @@ final class MealEditorViewModel: ObservableObject {
         }
 
         switch mode {
-        case .create:
+        case .create, .imported:
             return "Add a meal and recipe to your family's shared library."
         case .edit:
             return "Make changes to your recipe."
@@ -78,7 +83,7 @@ final class MealEditorViewModel: ObservableObject {
     }
 
     var hasPhoto: Bool {
-        selectedPhotoImage != nil || existingPhotoPath != nil
+        selectedPhotoImage != nil || existingPhotoPath != nil || existingPhotoURL != nil
     }
 
     var isCreatingNewMeal: Bool {
@@ -243,6 +248,7 @@ final class MealEditorViewModel: ObservableObject {
         apply(draft: initialDraft)
         selectedPhotoData = nil
         selectedPhotoImage = nil
+        selectedPhotoSource = nil
         validationErrors = []
         errorMessage = nil
     }
@@ -255,6 +261,7 @@ final class MealEditorViewModel: ObservableObject {
             let processedPhoto = try processedJPEGPhoto(from: data)
             selectedPhotoData = processedPhoto.data
             selectedPhotoImage = processedPhoto.image
+            selectedPhotoSource = .userSelected
             validationErrors.removeAll { $0.field == .photo }
             logPhotoDiagnostic(
                 operation: "meal_photo_processed",
@@ -268,6 +275,7 @@ final class MealEditorViewModel: ObservableObject {
         } catch {
             selectedPhotoData = nil
             selectedPhotoImage = nil
+            selectedPhotoSource = nil
             validationErrors.append(MealEditorValidationError(field: .photo, message: "We could not prepare that photo. Please choose another image."))
             logSaveDiagnostic(
                 error: error,
@@ -284,6 +292,7 @@ final class MealEditorViewModel: ObservableObject {
         existingPhotoURL = nil
         selectedPhotoData = nil
         selectedPhotoImage = nil
+        selectedPhotoSource = nil
         isProcessingPhoto = false
     }
 
@@ -372,9 +381,9 @@ final class MealEditorViewModel: ObservableObject {
         errorMessage = nil
         defer { isSaving = false }
 
-        var draft = buildDraft()
-
         do {
+            var draft = buildDraft()
+
             let savedMealID: UUID
             if let existingMealID = persistedMealID {
                 savedMealID = try await updatePersistedMeal(
@@ -391,19 +400,33 @@ final class MealEditorViewModel: ObservableObject {
                 )
             }
 
+            if let importedMetadata = draft.importedMetadata {
+                try await mealService.applyImportedRecipeMetadata(
+                    homeId: homeId,
+                    mealId: savedMealID,
+                    metadata: importedMetadata
+                )
+            }
+
             apply(draft: draft)
             existingPhotoPath = draft.primaryPhotoPath
             selectedPhotoData = nil
+            selectedPhotoSource = nil
             isDraft = saveAsDraft
             persistedMealID = savedMealID
             loadedMealID = savedMealID
             captureInitialDraft()
             let savedMeal = await fetchSavedMealAfterSave(mealID: savedMealID)
-            successMessage = saveAsDraft ? "Draft saved." : "Meal saved."
-            UIAccessibility.post(notification: .announcement, argument: successMessage)
+            if saveAsDraft {
+                successMessage = "Draft saved."
+                UIAccessibility.post(notification: .announcement, argument: successMessage)
+            } else {
+                successMessage = nil
+            }
             NotificationCenter.default.post(name: .homeyMealsDidChange, object: nil)
             return .saved(mealID: savedMealID, meal: savedMeal)
         } catch {
+            let draft = buildDraft()
             logSaveDiagnostic(
                 error: error,
                 operation: saveAsDraft ? "saveDraft" : "saveMeal",
@@ -420,6 +443,14 @@ final class MealEditorViewModel: ObservableObject {
     }
 
     private func createMeal(homeId: UUID, draft: inout MealEditorDraft, saveAsDraft: Bool) async throws -> UUID {
+        if let importedMetadata = draft.importedMetadata,
+           try await mealService.fetchImportedMeal(homeId: homeId, globalRecipeId: importedMetadata.globalRecipeId) != nil {
+            throw MealServiceError.duplicateImportedRecipe
+        }
+
+        await prepareImportedSourcePhotoIfNeeded()
+        draft = buildDraft()
+
         let selectedPhotoData = selectedPhotoData
         if selectedPhotoData != nil {
             draft.primaryPhotoPath = nil
@@ -461,9 +492,27 @@ final class MealEditorViewModel: ObservableObject {
                     path: uploadedPhoto.path,
                     byteCount: selectedPhotoData?.count
                 )
+                if selectedPhotoSource == .importedSource {
+                    #if DEBUG
+                    print("Imported image uploaded successfully")
+                    #endif
+                }
             }
             return createdMealID
         } catch {
+            if selectedPhotoSource == .importedSource {
+                let byteCount = selectedPhotoData?.count
+                clearImportedSourcePhotoSelection()
+                errorMessage = nil
+                logPhotoDiagnostic(
+                    operation: "imported_image_persistence_failed_saving_without_image",
+                    homeId: homeId,
+                    mealId: createdMealID,
+                    byteCount: byteCount
+                )
+                return createdMealID
+            }
+
             errorMessage = "Meal saved, but we could not upload the photo. Please try changing the photo and saving again."
             logSaveDiagnostic(
                 error: error,
@@ -475,6 +524,91 @@ final class MealEditorViewModel: ObservableObject {
             )
             throw MealServiceError.uploadPhotoFailed
         }
+    }
+
+    private func prepareImportedSourcePhotoIfNeeded() async {
+        guard mode.importedResponse != nil,
+              selectedPhotoData == nil,
+              existingPhotoPath == nil,
+              let sourceImageURL = existingPhotoURL else {
+            return
+        }
+
+        do {
+            #if DEBUG
+            print("Imported recipe has source image URL")
+            print("Downloading imported recipe image")
+            #endif
+
+            let imageData = try await downloadImportedSourceImage(from: sourceImageURL)
+            let processedPhoto = try processedJPEGPhoto(from: imageData)
+            selectedPhotoData = processedPhoto.data
+            selectedPhotoImage = processedPhoto.image
+            selectedPhotoSource = .importedSource
+
+            logPhotoDiagnostic(
+                operation: "imported_image_download_processed",
+                homeId: nil,
+                mealId: persistedMealID,
+                originalPixelSize: processedPhoto.originalPixelSize,
+                resizedPixelSize: processedPhoto.resizedPixelSize,
+                originalByteCount: processedPhoto.originalByteCount,
+                byteCount: processedPhoto.data.count
+            )
+
+            #if DEBUG
+            print("Imported image download succeeded: \(imageData.count) bytes")
+            print("Imported image passed to existing meal upload pipeline")
+            #endif
+        } catch {
+            clearImportedSourcePhotoSelection()
+            logSaveDiagnostic(
+                error: error,
+                operation: "imported_image_download_or_processing",
+                homeId: nil,
+                mealId: persistedMealID,
+                isDraft: nil
+            )
+            #if DEBUG
+            print("Imported image persistence failed; saving recipe without image")
+            #endif
+        }
+    }
+
+    private func downloadImportedSourceImage(from url: URL) async throws -> Data {
+        guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else {
+            throw MealServiceError.invalidPhotoData
+        }
+
+        var request = URLRequest(url: url, timeoutInterval: 15)
+        request.httpMethod = "GET"
+        request.setValue("image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1", forHTTPHeaderField: "User-Agent")
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode) else {
+            throw MealServiceError.loadPhotoFailed
+        }
+
+        let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
+        guard contentType.isEmpty || contentType.hasPrefix("image/") else {
+            throw MealServiceError.invalidPhotoData
+        }
+
+        let maxImageBytes = 12 * 1024 * 1024
+        guard !data.isEmpty, data.count <= maxImageBytes else {
+            throw MealServiceError.invalidPhotoData
+        }
+
+        return data
+    }
+
+    private func clearImportedSourcePhotoSelection() {
+        guard selectedPhotoSource == .importedSource else { return }
+        selectedPhotoData = nil
+        selectedPhotoImage = nil
+        selectedPhotoSource = nil
     }
 
     private func updatePersistedMeal(homeId: UUID, mealId: UUID, draft: inout MealEditorDraft, saveAsDraft: Bool) async throws -> UUID {
@@ -753,7 +887,9 @@ final class MealEditorViewModel: ObservableObject {
             notes: notes.trimmed,
             tags: tags,
             ingredients: ingredients,
-            steps: steps
+            steps: steps,
+            importedMetadata: initialDraft.importedMetadata,
+            importedImageURL: selectedPhotoData == nil ? existingPhotoURL : nil
         )
     }
 
@@ -795,6 +931,65 @@ final class MealEditorViewModel: ObservableObject {
         if steps.isEmpty { addStep() }
     }
 
+    private func applyImportedResponse(_ response: RecipeImportResponse) {
+        let metadata = ImportedMealMetadata(
+            importId: response.importId,
+            globalRecipeId: response.globalRecipeId,
+            originalURL: response.recipe.source.originalUrl,
+            normalizedURL: response.recipe.source.normalizedUrl,
+            sourceDomain: response.recipe.source.domain,
+            sourceName: response.recipe.source.name
+        )
+
+        name = response.recipe.title
+        description = response.recipe.description ?? ""
+        selectedMealTypes = response.recipe.mealTypes
+        cuisine = response.recipe.cuisine ?? ""
+        difficulty = nil
+        prepTimeText = response.recipe.prepTimeMinutes.map(String.init) ?? ""
+        cookTimeText = response.recipe.cookTimeMinutes.map(String.init) ?? ""
+        servingsText = normalizedServingsText(response.recipe.servings)
+        existingPhotoPath = nil
+        existingPhotoURL = response.recipe.imageUrl.flatMap(URL.init(string:))
+        sourceName = metadata.sourceDisplayName
+        sourceURLText = metadata.originalURL
+        notes = ""
+        tags = response.recipe.keywords
+        ingredients = response.recipe.ingredients
+            .sorted { $0.sortOrder < $1.sortOrder }
+            .enumerated()
+            .map { index, ingredient in
+                let quantity = ingredient.quantity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let ingredientName = ingredient.ingredientName.trimmingCharacters(in: .whitespacesAndNewlines)
+                let quantityIsDecimal = quantity.isEmpty || (try? MealService.decimalFromQuantityText(quantity)) != nil
+                let name = quantityIsDecimal || quantity.isEmpty ? ingredientName : "\(quantity) \(ingredientName)".trimmingCharacters(in: .whitespacesAndNewlines)
+
+                return MealEditorIngredient(
+                    sectionName: ingredient.sectionName?.nilIfTrimmedEmpty ?? "Ingredients",
+                    name: name,
+                    quantityText: quantityIsDecimal ? quantity : "",
+                    unit: "",
+                    preparation: "",
+                    notes: "",
+                    isOptional: ingredient.isOptional,
+                    sortOrder: index + 1
+                )
+            }
+        if ingredients.isEmpty { addIngredient() }
+        steps = response.recipe.steps
+            .sorted { $0.sortOrder < $1.sortOrder }
+            .enumerated()
+            .map { index, step in
+                let section = step.sectionName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let text = step.stepText.trimmingCharacters(in: .whitespacesAndNewlines)
+                let instruction = section.isEmpty ? text : "\(section): \(text)"
+                return MealEditorStep(instruction: instruction, timerMinutesText: "", stepNumber: index + 1)
+            }
+        if steps.isEmpty { addStep() }
+        initialDraft.importedMetadata = metadata
+        initialDraft.importedImageURL = existingPhotoURL
+    }
+
     private func apply(draft: MealEditorDraft) {
         name = draft.name
         description = draft.description
@@ -811,6 +1006,7 @@ final class MealEditorViewModel: ObservableObject {
         tags = draft.tags
         ingredients = draft.ingredients.isEmpty ? [MealEditorIngredient(sortOrder: 1)] : draft.ingredients
         steps = draft.steps.isEmpty ? [MealEditorStep(stepNumber: 1)] : draft.steps
+        existingPhotoURL = draft.importedImageURL
     }
 
     private func captureInitialDraft() {
@@ -836,6 +1032,22 @@ final class MealEditorViewModel: ObservableObject {
             throw MealServiceError.invalidMealTime
         }
         return intValue
+    }
+
+    private func normalizedServingsText(_ value: String?) -> String {
+        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmedValue.isEmpty else { return "" }
+        if Decimal(string: trimmedValue, locale: Locale(identifier: "en_US_POSIX")) != nil {
+            return trimmedValue
+        }
+
+        let pattern = #"^\s*(\d+(?:\.\d+)?)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: trimmedValue, range: NSRange(trimmedValue.startIndex..., in: trimmedValue)),
+              let range = Range(match.range(at: 1), in: trimmedValue) else {
+            return ""
+        }
+        return String(trimmedValue[range])
     }
 
     private func processedJPEGPhoto(from data: Data) throws -> ProcessedMealPhoto {
@@ -870,6 +1082,11 @@ private struct ProcessedMealPhoto {
     let originalPixelSize: CGSize
     let resizedPixelSize: CGSize
     let originalByteCount: Int
+}
+
+private enum MealEditorSelectedPhotoSource {
+    case userSelected
+    case importedSource
 }
 
 private extension String {
