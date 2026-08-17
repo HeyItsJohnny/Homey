@@ -339,9 +339,11 @@ struct MealsView: View {
                 message: "You do not have permission to view meals in this Home.",
                 systemImage: "lock.fill"
             )
+        } else if selectedTab == .explore {
+            exploreTab
         } else if viewModel.isLoading && viewModel.meals.isEmpty && viewModel.favoriteMeals.isEmpty {
             MealsLoadingGrid()
-        } else if viewModel.meals.isEmpty && viewModel.favoriteMeals.isEmpty && selectedTab != .mealPlan {
+        } else if viewModel.meals.isEmpty && viewModel.favoriteMeals.isEmpty && selectedTab == .recipes {
             emptyMealsState
         } else {
             switch selectedTab {
@@ -349,6 +351,8 @@ struct MealsView: View {
                 recipesTab
             case .mealPlan:
                 mealPlanTab
+            case .explore:
+                exploreTab
             }
         }
     }
@@ -385,6 +389,14 @@ struct MealsView: View {
             onSelectMeal: openMealEditor,
             onOpenCalendar: onOpenCalendar,
             onComingSoon: { message in comingSoonMessage = message }
+        )
+    }
+
+    private var exploreTab: some View {
+        MealMessageCard(
+            title: "Coming Soon",
+            message: "Explore is coming in a future Meals phase.",
+            systemImage: "sparkles"
         )
     }
 
@@ -498,6 +510,7 @@ struct MealsView: View {
 private enum MealsLandingTab: String, CaseIterable, Identifiable {
     case recipes
     case mealPlan
+    case explore
 
     var id: String { rawValue }
 
@@ -507,6 +520,8 @@ private enum MealsLandingTab: String, CaseIterable, Identifiable {
             return "Recipes"
         case .mealPlan:
             return "Meal Plan"
+        case .explore:
+            return "Explore"
         }
     }
 }

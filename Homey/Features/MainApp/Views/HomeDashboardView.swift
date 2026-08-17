@@ -1105,10 +1105,7 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
         .calendar,
         .meals,
         .chores,
-        .trips,
-        .projects,
-        .groceries,
-        .messages
+        .trips
     ]
 
     var title: String {
