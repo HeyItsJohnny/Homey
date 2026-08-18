@@ -5,7 +5,6 @@ struct RewardCenterView: View {
     @EnvironmentObject private var authenticationService: AuthenticationService
     @EnvironmentObject private var homeService: HomeService
     @StateObject private var viewModel = RewardCenterViewModel()
-    @State private var isPresentingAddReward = false
     @State private var editingReward: ChoreReward?
     @State private var selectedSection: RewardCenterSection = .rewards
     @State private var redeemingReward: ChoreReward?
@@ -55,17 +54,6 @@ struct RewardCenterView: View {
         .task {
             for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
                 viewModel.reload()
-            }
-        }
-        .sheet(isPresented: $isPresentingAddReward) {
-            if let homeId = homeService.selectedHomeID {
-                RewardEditorView(
-                    mode: .add(homeId: homeId),
-                    currentRole: currentRole,
-                    repository: viewModel.repository
-                ) {
-                    viewModel.reload()
-                }
             }
         }
         .sheet(item: $editingReward) { reward in
@@ -130,37 +118,10 @@ struct RewardCenterView: View {
     }
 
     private var header: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Rewards")
-                    .font(.headline.weight(.bold))
-                    .foregroundStyle(HomeyDashboardTheme.primaryText)
-
-                Text("Create rewards household members can work toward.")
-                    .font(.subheadline)
-                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
-            }
-
-            Spacer()
-
-            if canManageRewards, selectedSection == .rewards {
-                Button {
-                    isPresentingAddReward = true
-                } label: {
-                    Label("Add Reward", systemImage: "plus")
-                }
-                .buttonStyle(DashboardPrimaryButtonStyle())
-                .frame(width: 160)
-                .accessibilityLabel("Add Reward")
-            }
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(HomeyDashboardTheme.appBackground, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
-        }
+        ChoreSectionDescriptionHeader(
+            title: "Rewards",
+            description: "Create rewards household members can work toward and redeem with their earned points."
+        )
     }
 
     @ViewBuilder
@@ -1163,7 +1124,7 @@ private struct RedemptionHistoryRow: View {
     }
 }
 
-private enum RewardEditorMode: Identifiable {
+enum RewardEditorMode: Identifiable {
     case add(homeId: UUID)
     case edit(ChoreReward)
 
@@ -1186,7 +1147,7 @@ private enum RewardEditorMode: Identifiable {
     }
 }
 
-private struct RewardEditorView: View {
+struct RewardEditorView: View {
     @Environment(\.dismiss) private var dismiss
     let mode: RewardEditorMode
     let currentRole: HomeMemberRole?

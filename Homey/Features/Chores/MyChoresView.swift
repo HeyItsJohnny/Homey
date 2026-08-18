@@ -8,23 +8,30 @@ struct MyChoresView: View {
 
     var body: some View {
         ChoreShellCard(title: "My Chores", systemImage: "checklist") {
-            VStack(alignment: .leading, spacing: 14) {
-                weeklyHeader
+            VStack(alignment: .leading, spacing: 18) {
+                ChoreSectionDescriptionHeader(
+                    title: "My Chores",
+                    description: "View your assigned chores, track your progress, and stay on top of what needs to be completed."
+                )
 
-                if viewModel.isLoading && viewModel.occurrences.isEmpty {
-                    ChoreLoadingState(message: "Loading your chores...")
-                } else if let errorMessage = viewModel.errorMessage {
-                    ChoreMessageState(
-                        title: "Unable to Load Chores",
-                        message: errorMessage,
-                        systemImage: "exclamationmark.triangle.fill",
-                        buttonTitle: "Try Again"
-                    ) {
-                        viewModel.reload()
+                VStack(alignment: .leading, spacing: 14) {
+                    weeklyHeader
+
+                    if viewModel.isLoading && viewModel.occurrences.isEmpty {
+                        ChoreLoadingState(message: "Loading your chores...")
+                    } else if let errorMessage = viewModel.errorMessage {
+                        ChoreMessageState(
+                            title: "Unable to Load Chores",
+                            message: errorMessage,
+                            systemImage: "exclamationmark.triangle.fill",
+                            buttonTitle: "Try Again"
+                        ) {
+                            viewModel.reload()
+                        }
+                    } else {
+                        weeklyPlanner
+                        MyChoresWeekSummaryCard(summary: viewModel.summary)
                     }
-                } else {
-                    weeklyPlanner
-                    MyChoresWeekSummaryCard(summary: viewModel.summary)
                 }
             }
         }

@@ -7,7 +7,7 @@ struct ChoresView: View {
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedTab: ChoresTab = .myChores
-    @State private var isPresentingAddChore = false
+    @State private var activeCreationSheet: ChoreCreationSheet?
     @State private var isPresentingSearch = false
 
     private var permissionResolution: PermissionResolutionState {
@@ -38,6 +38,19 @@ struct ChoresView: View {
         case .member, nil:
             return false
         }
+    }
+
+    private var canManageRewards: Bool {
+        switch currentRole {
+        case .owner, .admin:
+            return true
+        case .member, nil:
+            return false
+        }
+    }
+
+    private var canShowAddMenu: Bool {
+        canManageChores || canManageRewards
     }
 
     private var selectedHomeID: UUID? {
@@ -103,8 +116,21 @@ struct ChoresView: View {
                 attentionStore.refresh()
             }
         }
-        .sheet(isPresented: $isPresentingAddChore) {
-            ChoreEditorView(homeId: selectedHomeID, timezone: selectedHomeTimezone)
+        .sheet(item: $activeCreationSheet) { sheet in
+            switch sheet {
+            case .chore:
+                ChoreEditorView(homeId: selectedHomeID, timezone: selectedHomeTimezone)
+            case .reward:
+                if let selectedHomeID {
+                    RewardEditorView(
+                        mode: .add(homeId: selectedHomeID),
+                        currentRole: currentRole,
+                        repository: ChoresRepository()
+                    ) {
+                        attentionStore.refresh()
+                    }
+                }
+            }
         }
         .sheet(isPresented: $isPresentingSearch) {
             ChoreSearchView()
@@ -159,19 +185,35 @@ struct ChoresView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Search chores")
 
-            if canManageChores {
-                Button {
-                    isPresentingAddChore = true
+            if canShowAddMenu {
+                Menu {
+                    if canManageChores {
+                        Button {
+                            activeCreationSheet = .chore
+                        } label: {
+                            Label("Add Chore", systemImage: "checklist")
+                        }
+                    }
+
+                    if canManageRewards {
+                        Button {
+                            activeCreationSheet = .reward
+                        } label: {
+                            Label("Add Reward", systemImage: "gift")
+                        }
+                    }
                 } label: {
-                    HStack(spacing: 9) {
+                    HStack(spacing: 8) {
                         Image(systemName: "plus")
-                        Text("Add Chore")
+                        Text("Add")
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.bold))
                     }
                 }
                 .buttonStyle(DashboardPrimaryButtonStyle())
-                .frame(width: 150)
-                .accessibilityLabel("Add Chore")
-                .accessibilityHint("Owner and admin action")
+                .frame(width: 124)
+                .accessibilityLabel("Add")
+                .accessibilityHint("Shows creation options")
             }
         }
     }

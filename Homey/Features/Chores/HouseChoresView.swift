@@ -7,6 +7,11 @@ struct HouseChoresView: View {
 
     var body: some View {
         ChoreShellCard(title: "House Chores", systemImage: "house.and.flag.fill") {
+            ChoreSectionDescriptionHeader(
+                title: "House Chores",
+                description: "Manage your home's chores, assignments, schedules, and recurring tasks."
+            )
+
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12)], spacing: 12) {
                 ForEach(HouseChoresSection.allCases) { section in
                     Button {

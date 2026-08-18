@@ -9,17 +9,24 @@ struct ChoreHistoryView: View {
 
     var body: some View {
         ChoreShellCard(title: "Chore History", systemImage: "clock.arrow.circlepath") {
-            if let errorMessage = viewModel.errorMessage, viewModel.activities.isEmpty, !viewModel.isLoading {
-                ChoreMessageState(
-                    title: "Unable to Load History",
-                    message: errorMessage,
-                    systemImage: "exclamationmark.triangle.fill",
-                    buttonTitle: "Try Again"
-                ) {
-                    viewModel.reload()
+            VStack(alignment: .leading, spacing: 18) {
+                ChoreSectionDescriptionHeader(
+                    title: "Chore History",
+                    description: "Review completed chores, approvals, point activity, and household task history."
+                )
+
+                if let errorMessage = viewModel.errorMessage, viewModel.activities.isEmpty, !viewModel.isLoading {
+                    ChoreMessageState(
+                        title: "Unable to Load History",
+                        message: errorMessage,
+                        systemImage: "exclamationmark.triangle.fill",
+                        buttonTitle: "Try Again"
+                    ) {
+                        viewModel.reload()
+                    }
+                } else {
+                    historyContent
                 }
-            } else {
-                historyContent
             }
         }
         .task(id: homeService.selectedHomeID) {
