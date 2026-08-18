@@ -950,6 +950,28 @@ final class ChoresRepository {
         }
     }
 
+    func fetchOccurrences(calendarEventIds: [UUID]) async throws -> [ChoreOccurrence] {
+        let uniqueCalendarEventIds = Array(Set(calendarEventIds))
+        guard !uniqueCalendarEventIds.isEmpty else {
+            return []
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let occurrences: [ChoreOccurrence] = try await client
+                .from("chore_occurrences")
+                .select()
+                .in("calendar_event_id", values: uniqueCalendarEventIds.map(\.uuidString))
+                .order("due_at", ascending: true)
+                .execute()
+                .value
+            return occurrences
+        } catch {
+            logChoreError(error, operation: "chore_occurrences.select_calendar_events")
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
     func fetchOccurrenceAssignees(occurrenceId: UUID) async throws -> [ChoreOccurrenceAssignee] {
         do {
             try await requireAuthenticatedSession()

@@ -8,6 +8,7 @@ struct CalendarView: View {
     @StateObject private var viewModel = CalendarViewModel()
     @State private var editorPresentation: CalendarEditorPresentation?
     @State private var chorePresentation: ChoreCalendarPresentation?
+    @State private var mealPresentation: MealCalendarPresentation?
     @State private var eventPendingEditScope: CalendarEvent?
     @State private var successMessage: String?
     @State private var choreRouteErrorMessage: String?
@@ -172,10 +173,33 @@ struct CalendarView: View {
                 }
             )
         }
-        .sheet(item: $chorePresentation) { presentation in
+        .sheet(item: $chorePresentation, onDismiss: {
+            Task {
+                await viewModel.reload()
+            }
+        }) { presentation in
             ChoreOccurrenceDetailView(
                 initialOccurrence: presentation.occurrence,
                 homeTimezone: selectedHome?.timezone ?? TimeZone.autoupdatingCurrent.identifier
+            )
+        }
+        .sheet(item: $mealPresentation, onDismiss: {
+            Task {
+                await viewModel.reload()
+            }
+        }) { presentation in
+            MealEditorView(
+                mode: .edit(mealID: presentation.plannedMeal.meal.id),
+                onSaved: { _, _ in
+                    Task {
+                        await viewModel.reload()
+                    }
+                },
+                onDelete: { _ in
+                    Task {
+                        await viewModel.reload()
+                    }
+                }
             )
         }
         .alert(
@@ -413,6 +437,7 @@ struct CalendarView: View {
                         date: day,
                         events: viewModel.events(on: day),
                         categories: viewModel.categories,
+                        linkedPresentation: viewModel.linkedPresentation(for:),
                         isCurrentMonth: viewModel.isDateInVisibleMonth(day),
                         isSelected: viewModel.isSelected(day),
                         isToday: viewModel.isToday(day)
@@ -441,6 +466,7 @@ struct CalendarView: View {
                                 isSelected: viewModel.isSelected(day),
                                 isToday: viewModel.isToday(day),
                                 assignedMembers: assignedMembers(for:),
+                                linkedPresentation: viewModel.linkedPresentation(for:),
                                 onSelect: {
                                     viewModel.selectDate(day)
                                 },
@@ -554,7 +580,11 @@ struct CalendarView: View {
                         Button {
                             presentEditEditor(for: event)
                         } label: {
-                            AgendaEventRow(event: event, categories: viewModel.categories, assignedMembers: assignedMembers(for: event))
+                            if let presentation = viewModel.linkedPresentation(for: event) {
+                                CalendarLinkedAgendaEventRow(presentation: presentation, categories: viewModel.categories)
+                            } else {
+                                AgendaEventRow(event: event, categories: viewModel.categories, assignedMembers: assignedMembers(for: event))
+                            }
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens event details")
@@ -689,6 +719,16 @@ struct CalendarView: View {
     }
 
     private func presentEditEditorAfterChoreLinkCheck(for event: CalendarEvent) async {
+        if let presentation = viewModel.linkedPresentation(for: event) {
+            switch presentation.content {
+            case .meal(let plannedMeal):
+                mealPresentation = MealCalendarPresentation(plannedMeal: plannedMeal)
+            case .chore(let chore):
+                chorePresentation = ChoreCalendarPresentation(occurrence: chore.occurrence)
+            }
+            return
+        }
+
         resolvingChoreCalendarEventId = event.eventId
 
         do {
@@ -887,6 +927,14 @@ private struct ChoreCalendarPresentation: Identifiable {
     }
 }
 
+private struct MealCalendarPresentation: Identifiable {
+    let plannedMeal: PlannedMeal
+
+    var id: UUID {
+        plannedMeal.calendarEventId
+    }
+}
+
 private extension EventEditorCompletion {
     var successMessage: String {
         switch self {
@@ -904,6 +952,7 @@ private struct CalendarDayCell: View {
     let date: Date
     let events: [CalendarEvent]
     let categories: [CalendarCategory]
+    let linkedPresentation: (CalendarEvent) -> CalendarLinkedEventPresentation?
     let isCurrentMonth: Bool
     let isSelected: Bool
     let isToday: Bool
@@ -927,7 +976,7 @@ private struct CalendarDayCell: View {
                 HStack(spacing: 4) {
                     ForEach(Array(events.prefix(3).enumerated()), id: \.offset) { _, event in
                         Circle()
-                            .fill(CalendarEventColorResolver.color(for: event, categories: categories))
+                            .fill(CalendarLinkedEventColorResolver.color(for: event, presentation: linkedPresentation(event), categories: categories))
                             .frame(width: 7, height: 7)
                     }
 
@@ -1008,6 +1057,7 @@ private struct WeekDayColumn: View {
     let isSelected: Bool
     let isToday: Bool
     let assignedMembers: (CalendarEvent) -> [HomeMemberDisplay]
+    let linkedPresentation: (CalendarEvent) -> CalendarLinkedEventPresentation?
     let onSelect: () -> Void
     let onSelectEvent: (CalendarEvent) -> Void
 
@@ -1060,7 +1110,12 @@ private struct WeekDayColumn: View {
                         Button {
                             onSelectEvent(event)
                         } label: {
-                            WeekEventChip(event: event, categories: categories, assignedMembers: assignedMembers(event))
+                            WeekEventChip(
+                                event: event,
+                                categories: categories,
+                                assignedMembers: assignedMembers(event),
+                                linkedPresentation: linkedPresentation(event)
+                            )
                         }
                         .buttonStyle(.plain)
                         .accessibilityHint("Opens event details")
@@ -1129,8 +1184,12 @@ private struct WeekEventChip: View {
     let event: CalendarEvent
     let categories: [CalendarCategory]
     let assignedMembers: [HomeMemberDisplay]
+    let linkedPresentation: CalendarLinkedEventPresentation?
 
     var body: some View {
+        if let linkedPresentation {
+            CalendarLinkedEventChip(presentation: linkedPresentation, categories: categories)
+        } else {
         VStack(alignment: .leading, spacing: 6) {
             HStack(alignment: .top, spacing: 7) {
                 RoundedRectangle(cornerRadius: 3, style: .continuous)
@@ -1180,6 +1239,7 @@ private struct WeekEventChip: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(event.title), \(timeText)")
+        }
     }
 
     private var timeText: String {

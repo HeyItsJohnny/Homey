@@ -55,6 +55,18 @@ final class MealPlannerService: ObservableObject {
         do {
             try await requireAuthenticatedSession()
             let events = try await calendarService.fetchEvents(homeId: homeId, rangeStart: startDate, rangeEnd: endDate)
+            return try await fetchPlannedMeals(homeId: homeId, events: events)
+        } catch let error as MealPlannerServiceError {
+            throw error
+        } catch {
+            logPlannerError(error, operation: "fetchPlannedMeals", homeId: homeId)
+            throw MealPlannerServiceError.loadFailed
+        }
+    }
+
+    func fetchPlannedMeals(homeId: UUID, events: [CalendarEvent]) async throws -> [PlannedMeal] {
+        do {
+            try await requireAuthenticatedSession()
             let eventIds = Set(events.map(\.eventId))
             guard !eventIds.isEmpty else { return [] }
 
@@ -68,7 +80,10 @@ final class MealPlannerService: ObservableObject {
 
             let meals = try await mealService.fetchMeals(homeId: homeId)
             let mealById = Dictionary(uniqueKeysWithValues: meals.map { ($0.id, $0) })
-            let eventById = Dictionary(uniqueKeysWithValues: events.map { ($0.eventId, $0) })
+            var eventById: [UUID: CalendarEvent] = [:]
+            for event in events {
+                eventById[event.eventId] = event
+            }
 
             var plannedMeals: [PlannedMeal] = []
             for detail in matchingDetails {

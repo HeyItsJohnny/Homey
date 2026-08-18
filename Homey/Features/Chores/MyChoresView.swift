@@ -300,11 +300,12 @@ private final class MyChoresViewModel: ObservableObject {
             async let loadedCategories = repository.fetchCategories(homeId: homeId)
             async let loadedRooms = repository.fetchRooms(homeId: homeId)
             let (loadedMyOccurrences, categories, rooms) = try await (loadedOccurrences, loadedCategories, loadedRooms)
-            self.occurrences = loadedMyOccurrences.filter { occurrence in
+            let visibleOccurrences = loadedMyOccurrences.filter { occurrence in
                 occurrence.dueAt >= range.start &&
                 occurrence.dueAt < range.end &&
                 occurrence.status != .cancelled
             }
+            self.occurrences = visibleOccurrences
             categoriesById = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
             roomsById = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0) })
             #if DEBUG
@@ -609,16 +610,16 @@ private struct MyChoresOccurrenceCard: View {
 
                 Text(statusText)
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(statusKind.color)
+                    .foregroundStyle(statusStyle.color)
                     .lineLimit(1)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, minHeight: 66, alignment: .leading)
-            .background(statusKind.backgroundColor, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .background(statusStyle.backgroundColor, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                    .stroke(statusKind.color.opacity(0.62), lineWidth: 1.5)
+                    .stroke(statusStyle.color.opacity(0.62), lineWidth: 1.5)
             }
         }
         .buttonStyle(.plain)
@@ -627,22 +628,8 @@ private struct MyChoresOccurrenceCard: View {
         .accessibilityLabel(accessibilityLabel)
     }
 
-    private var statusKind: MyChoresStatusKind {
-        switch occurrence.displayStatus {
-        case .overdue:
-            return .actionNeeded
-        case .stored(let status):
-            switch status {
-            case .notStarted, .inProgress, .needsRedo:
-                return .actionNeeded
-            case .awaitingApproval:
-                return .pendingApproval
-            case .completed:
-                return .approved
-            case .skipped, .cancelled:
-                return .neutral(status.displayName)
-            }
-        }
+    private var statusStyle: ChoreOccurrenceStatusStyle {
+        ChoreOccurrenceStatusStyle(occurrence: occurrence)
     }
 
     private var scheduleText: String {
@@ -657,7 +644,7 @@ private struct MyChoresOccurrenceCard: View {
     }
 
     private var statusText: String {
-        occurrence.displayStatus.displayName
+        statusStyle.title
     }
 
     private var accessibilityLabel: String {
@@ -668,62 +655,6 @@ private struct MyChoresOccurrenceCard: View {
             pointsText,
             statusText
         ].joined(separator: ". ")
-    }
-}
-
-private enum MyChoresStatusKind: Equatable {
-    case actionNeeded
-    case pendingApproval
-    case approved
-    case neutral(String)
-
-    var title: String {
-        switch self {
-        case .actionNeeded:
-            return "Action Needed"
-        case .pendingApproval:
-            return "Pending Approval"
-        case .approved:
-            return "Approved"
-        case .neutral(let title):
-            return title
-        }
-    }
-
-    var color: Color {
-        switch self {
-        case .actionNeeded:
-            return HomeyDashboardTheme.softRed
-        case .pendingApproval:
-            return HomeyDashboardTheme.orangeAccent
-        case .approved:
-            return HomeyDashboardTheme.sageAccent
-        case .neutral:
-            return HomeyDashboardTheme.secondaryText
-        }
-    }
-
-    var backgroundColor: Color {
-        switch self {
-        case .actionNeeded, .pendingApproval, .approved:
-            return color.opacity(0.12)
-        case .neutral:
-            return HomeyDashboardTheme.cardBackground
-        }
-    }
-}
-
-private struct MyChoresStatusChip: View {
-    let kind: MyChoresStatusKind
-
-    var body: some View {
-        Text(kind.title)
-            .font(.caption.weight(.bold))
-            .foregroundStyle(kind.color)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(kind.color.opacity(0.12), in: Capsule())
-            .lineLimit(1)
     }
 }
 
@@ -876,7 +807,7 @@ struct ChoreOccurrenceRow: View {
 
             Spacer()
 
-            Text(occurrence.displayStatus.displayName)
+            Text(statusStyle.title)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(statusColor)
                 .padding(.horizontal, 10)
@@ -893,15 +824,10 @@ struct ChoreOccurrenceRow: View {
     }
 
     private var statusColor: Color {
-        switch occurrence.displayStatus {
-        case .overdue:
-            return HomeyDashboardTheme.softRed
-        case .stored(.completed):
-            return HomeyDashboardTheme.sageAccent
-        case .stored(.awaitingApproval):
-            return HomeyDashboardTheme.orangeAccent
-        case .stored:
-            return HomeyDashboardTheme.lavenderAccent
-        }
+        statusStyle.color
+    }
+
+    private var statusStyle: ChoreOccurrenceStatusStyle {
+        ChoreOccurrenceStatusStyle(occurrence: occurrence)
     }
 }

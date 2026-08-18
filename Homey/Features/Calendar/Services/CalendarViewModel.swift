@@ -49,20 +49,27 @@ final class CalendarViewModel: ObservableObject {
     @Published private(set) var events: [CalendarEvent] = []
     @Published private(set) var categories: [CalendarCategory] = []
     @Published private(set) var selectedDayEvents: [CalendarEvent] = []
+    @Published private(set) var linkedEventPresentations: [String: CalendarLinkedEventPresentation] = [:]
     @Published private(set) var isLoading = false
     @Published private(set) var isSavingEvent = false
     @Published private(set) var isDeletingEvent = false
     @Published private(set) var errorMessage: String?
 
     private let calendarService: CalendarService
+    private let enrichmentService: CalendarLinkedEventEnrichmentService
     private var calendar: Calendar
     private var loadedHomeId: UUID?
     private var activeHomeId: UUID?
     private var realtimeSubscription: CalendarRealtimeSubscription?
     private var realtimeReloadTask: Task<Void, Never>?
 
-    init(calendarService: CalendarService? = nil, calendar: Calendar = .autoupdatingCurrent) {
+    init(
+        calendarService: CalendarService? = nil,
+        enrichmentService: CalendarLinkedEventEnrichmentService? = nil,
+        calendar: Calendar = .autoupdatingCurrent
+    ) {
         self.calendarService = calendarService ?? CalendarService(calendar: calendar)
+        self.enrichmentService = enrichmentService ?? CalendarLinkedEventEnrichmentService()
         self.calendar = calendar
         let today = calendar.startOfDay(for: Date())
         self.visibleMonth = today
@@ -95,6 +102,7 @@ final class CalendarViewModel: ObservableObject {
             events = []
             categories = []
             selectedDayEvents = []
+            linkedEventPresentations = [:]
             let today = calendar.startOfDay(for: Date())
             visibleMonth = today
             visibleWeekAnchor = today
@@ -140,6 +148,10 @@ final class CalendarViewModel: ObservableObject {
 
             let resolvedEvents = try await loadedEvents
             let resolvedCategories = try await loadedCategories
+            let resolvedLinkedPresentations = await enrichmentService.presentations(
+                for: resolvedEvents,
+                homeId: requestHomeId
+            )
 
             guard activeHomeId == requestHomeId,
                   displayMode == requestMode else {
@@ -148,6 +160,7 @@ final class CalendarViewModel: ObservableObject {
 
             events = resolvedEvents
             categories = resolvedCategories
+            linkedEventPresentations = resolvedLinkedPresentations
             loadedHomeId = activeHomeId
             updateSelectedDayEvents()
         } catch {
@@ -601,13 +614,14 @@ final class CalendarViewModel: ObservableObject {
 
     private func clearForMissingHome() {
         activeHomeId = nil
-        loadedHomeId = nil
-        events = []
-        categories = []
-        selectedDayEvents = []
-        errorMessage = "Choose a Home to view its calendar."
-        isLoading = false
-    }
+            loadedHomeId = nil
+            events = []
+            categories = []
+            selectedDayEvents = []
+            linkedEventPresentations = [:]
+            errorMessage = "Choose a Home to view its calendar."
+            isLoading = false
+        }
 
     private func updateSelectedDayEvents() {
         selectedDayEvents = events(on: selectedDate)
@@ -619,13 +633,19 @@ final class CalendarViewModel: ObservableObject {
             case .all:
                 return true
             case .meals:
-                return event.matchesCalendarCategoryName("Meals")
+                return linkedEventPresentations[event.id]?.plannedMeal != nil || event.matchesCalendarCategoryName("Meals")
             case .chores:
-                return event.matchesCalendarCategoryName("Chores")
+                return linkedEventPresentations[event.id]?.chore != nil || event.matchesCalendarCategoryName("Chores")
             case .calendar:
-                return !event.matchesCalendarCategoryName("Meals") && !event.matchesCalendarCategoryName("Chores")
+                return linkedEventPresentations[event.id] == nil
+                    && !event.matchesCalendarCategoryName("Meals")
+                    && !event.matchesCalendarCategoryName("Chores")
             }
         }
+    }
+
+    func linkedPresentation(for event: CalendarEvent) -> CalendarLinkedEventPresentation? {
+        linkedEventPresentations[event.id]
     }
 
     private func currentVisibleRange() -> (start: Date, end: Date)? {
