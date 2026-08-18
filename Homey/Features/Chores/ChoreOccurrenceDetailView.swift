@@ -100,7 +100,9 @@ struct ChoreOccurrenceDetailView: View {
     }
 
     private func header(for occurrence: ChoreOccurrence) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let statusStyle = ChoreOccurrenceStatusStyle(occurrence: occurrence)
+
+        return VStack(alignment: .leading, spacing: 10) {
             Text(occurrence.titleSnapshot)
                 .font(.system(size: 32, weight: .bold, design: .rounded))
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
@@ -108,7 +110,7 @@ struct ChoreOccurrenceDetailView: View {
                 .accessibilityAddTraits(.isHeader)
 
             HStack(spacing: 8) {
-                metadataPill(occurrence.displayStatus.displayName, color: statusColor(for: occurrence))
+                metadataPill(statusStyle.title, color: statusStyle.color)
                 metadataPill("\(occurrence.pointsValue) \(occurrence.pointsValue == 1 ? "point" : "points")", color: HomeyDashboardTheme.warmBrown)
             }
         }
@@ -183,7 +185,7 @@ struct ChoreOccurrenceDetailView: View {
             if occurrence.status == .completed {
                 completedSummary(for: occurrence)
             } else if occurrence.status == .awaitingApproval, canManageChores {
-                reviewPlaceholder
+                reviewActions(for: occurrence)
             } else if occurrence.status == .awaitingApproval {
                 Text("This chore is pending approval.")
                     .font(.subheadline)
@@ -275,15 +277,54 @@ struct ChoreOccurrenceDetailView: View {
         }
     }
 
-    private var reviewPlaceholder: some View {
+    private func reviewActions(for occurrence: ChoreOccurrence) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Review Completion")
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
-            Text("Open House Chores > Approvals to review this completion.")
-                .font(.subheadline)
-                .foregroundStyle(HomeyDashboardTheme.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
+
+            if let pendingSubmission = viewModel.pendingSubmission {
+                detailRow(
+                    "Submitted",
+                    value: ChoreOccurrenceDetailFormatters.fullDateTime.string(from: pendingSubmission.submittedAt),
+                    systemImage: "tray.and.arrow.up"
+                )
+
+                if let note = pendingSubmission.note?.trimmingCharacters(in: .whitespacesAndNewlines), !note.isEmpty {
+                    detailRow("Completion Note", value: note, systemImage: "text.alignleft")
+                }
+
+                if pendingSubmission.photoPath != nil {
+                    detailRow("Photo Proof", value: "Attached", systemImage: "photo")
+                }
+
+                HStack(spacing: 12) {
+                    Button(role: .destructive) {
+                        Task { await viewModel.reviewChore(decision: .needsRedo) }
+                    } label: {
+                        Label("Needs Redo", systemImage: "arrow.counterclockwise")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(viewModel.isPerformingAction)
+                    .accessibilityLabel("Needs Redo")
+
+                    Button {
+                        Task { await viewModel.reviewChore(decision: .approved) }
+                    } label: {
+                        actionLabel("Approve Chore", systemImage: "checkmark.seal.fill")
+                    }
+                    .buttonStyle(DashboardPrimaryButtonStyle())
+                    .disabled(viewModel.isPerformingAction)
+                    .accessibilityLabel("Approve Chore")
+                }
+            } else {
+                Text("No pending submission was found for this chore.")
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -385,19 +426,6 @@ struct ChoreOccurrenceDetailView: View {
         return viewModel.assignees.contains { $0.userId == currentUserId }
     }
 
-    private func statusColor(for occurrence: ChoreOccurrence) -> Color {
-        switch occurrence.displayStatus {
-        case .overdue:
-            return HomeyDashboardTheme.softRed
-        case .stored(.completed):
-            return HomeyDashboardTheme.sageAccent
-        case .stored(.awaitingApproval):
-            return HomeyDashboardTheme.orangeAccent
-        case .stored:
-            return HomeyDashboardTheme.lavenderAccent
-        }
-    }
-
     private func loadMembersIfNeeded() async {
         guard let selectedHome = homeService.selectedHome(),
               let currentUser = authenticationService.currentUser else {
@@ -439,6 +467,7 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
     @Published private(set) var categories: [ChoreCategory] = []
     @Published private(set) var rooms: [ChoreRoom] = []
     @Published private(set) var recurrenceRule: ChoreRecurrenceRule?
+    @Published private(set) var pendingSubmission: ChoreSubmission?
     @Published private(set) var isLoading = false
     @Published private(set) var isPerformingAction = false
     @Published private(set) var errorMessage: String?
@@ -525,6 +554,9 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
             occurrence = refreshedOccurrence
             async let loadedAssignees = repository.fetchOccurrenceAssignees(occurrenceId: refreshedOccurrence.id)
             async let loadedRule = repository.fetchRecurrenceRule(templateId: refreshedOccurrence.templateId)
+            async let loadedPendingSubmission = refreshedOccurrence.status == .awaitingApproval
+                ? repository.fetchPendingSubmission(occurrenceId: refreshedOccurrence.id)
+                : nil
 
             if let activeHomeId {
                 async let loadedCategories = repository.fetchCategories(homeId: activeHomeId)
@@ -535,6 +567,7 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
 
             assignees = try await loadedAssignees
             recurrenceRule = try await loadedRule
+            pendingSubmission = try await loadedPendingSubmission
         } catch {
             errorMessage = "Unable to open this chore."
         }
@@ -572,7 +605,40 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
         }
     }
 
-    private func performAction(failureMessage: String, _ action: () async throws -> Void) async {
+    func reviewChore(decision: ChoreApprovalDecision) async {
+        guard let occurrence else {
+            actionErrorMessage = "Unable to find this chore."
+            return
+        }
+
+        guard occurrence.status == .awaitingApproval else {
+            await reload()
+            return
+        }
+
+        guard let pendingSubmission else {
+            actionErrorMessage = "Unable to find the pending submission."
+            return
+        }
+
+        await performAction(
+            failureMessage: decision == .approved ? "Unable to approve this chore. Please try again." : "Unable to request redo. Please try again.",
+            permissionMessage: "Only Home owners and admins can approve chores."
+        ) {
+            try await repository.reviewSubmission(
+                submissionId: pendingSubmission.id,
+                decision: decision,
+                adminNote: nil,
+                pointsAwarded: decision == .approved ? max(0, occurrence.pointsValue) : 0
+            )
+        }
+    }
+
+    private func performAction(
+        failureMessage: String,
+        permissionMessage: String? = nil,
+        _ action: () async throws -> Void
+    ) async {
         guard !isPerformingAction else {
             return
         }
@@ -586,6 +652,11 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
             NotificationCenter.default.post(name: .homeyChoresDidChange, object: nil)
             NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
             await reload()
+        } catch ChoreRepositoryError.ownerOrAdminRequired {
+            actionErrorMessage = permissionMessage ?? ChoreRepositoryError.ownerOrAdminRequired.localizedDescription
+        } catch ChoreRepositoryError.submissionAlreadyReviewed {
+            await reload()
+            actionErrorMessage = ChoreRepositoryError.submissionAlreadyReviewed.localizedDescription
         } catch {
             actionErrorMessage = failureMessage
         }

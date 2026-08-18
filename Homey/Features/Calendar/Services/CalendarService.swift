@@ -488,20 +488,6 @@ final class CalendarService: ObservableObject {
                       trimmedIconName == normalizedOptionalString(existingCategory.iconName) else {
                     throw CalendarServiceError.systemCategoryEditProtected
                 }
-
-                try await client
-                    .from("calendar_categories")
-                    .update(UpdateSystemCalendarCategoryPayload(colorHex: trimmedColorHex))
-                    .eq("id", value: categoryId.uuidString)
-                    .execute()
-                #if DEBUG
-                print("System calendar category color updated")
-                print("category_id: \(categoryId.uuidString)")
-                print("system_key: \(existingCategory.systemKey ?? "nil")")
-                print("old_color_hex: \(existingCategory.colorHex)")
-                print("new_color_hex: \(trimmedColorHex)")
-                #endif
-                return
             }
 
             try await client
@@ -1027,7 +1013,7 @@ enum CalendarServiceError: LocalizedError, Equatable {
         case .reorderCategoriesFailed:
             return "We could not reorder calendar categories."
         case .categoryPermissionDenied:
-            return "You no longer have permission to manage Calendar Categories."
+            return "Only Home owners and admins can change calendar category colors."
         case .systemCategoryEditProtected:
             return "This is a Homey system category. Its name and icon are fixed, but you can change its color."
         case .systemCategoryProtected:
@@ -1332,14 +1318,6 @@ private struct CreateSystemCalendarCategoryPayload: Encodable {
         case systemKey = "system_key"
         case isSystem = "is_system"
         case createdBy = "created_by"
-    }
-}
-
-private struct UpdateSystemCalendarCategoryPayload: Encodable {
-    let colorHex: String
-
-    enum CodingKeys: String, CodingKey {
-        case colorHex = "color_hex"
     }
 }
 
