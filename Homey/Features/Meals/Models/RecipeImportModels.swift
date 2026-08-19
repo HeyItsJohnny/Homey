@@ -79,6 +79,10 @@ struct RecipeImportAPIError: Codable, Hashable, Sendable, Error {
         case invalidRecipeData = "INVALID_RECIPE_DATA"
         case pageTooLarge = "PAGE_TOO_LARGE"
         case sourceBlocked = "SOURCE_BLOCKED"
+        case sourceAccessDenied = "SOURCE_ACCESS_DENIED"
+        case sourceUnsupported = "SOURCE_UNSUPPORTED"
+        case sourceParseFailed = "SOURCE_PARSE_FAILED"
+        case robotsDisallowed = "ROBOTS_DISALLOWED"
         case timeout = "TIMEOUT"
         case internalError = "INTERNAL_ERROR"
     }

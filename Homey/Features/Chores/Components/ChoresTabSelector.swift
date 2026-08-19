@@ -6,6 +6,61 @@ struct ChoresTabSelector: View {
     var badgeCount: (ChoresTab) -> Int? = { _ in nil }
 
     var body: some View {
+        ModuleTabSelector(
+            tabs: tabs,
+            selectedTab: $selectedTab,
+            accessibilityLabel: "Chores section",
+            title: { $0.title },
+            badgeCount: badgeCount,
+            accessibilityLabelForTab: accessibilityLabel(for:badgeCount:)
+        )
+    }
+
+    private func accessibilityLabel(for tab: ChoresTab, badgeCount: Int?) -> String {
+        guard let badgeCount, badgeCount > 0 else {
+            return tab.title
+        }
+
+        switch tab {
+        case .myChores:
+            return "\(tab.title), \(badgeCount) items need attention"
+        case .myRewards:
+            return "\(tab.title), \(badgeCount) rewards pending"
+        case .houseChores:
+            return "\(tab.title), \(badgeCount) approvals pending"
+        case .rewardCenter:
+            return "\(tab.title), \(badgeCount) redemptions pending"
+        case .choreHistory:
+            return tab.title
+        }
+    }
+}
+
+struct ModuleTabSelector<Tab: Identifiable & Equatable>: View {
+    let tabs: [Tab]
+    @Binding var selectedTab: Tab
+    let accessibilityLabel: String
+    let title: (Tab) -> String
+    var badgeCount: (Tab) -> Int? = { _ in nil }
+    var accessibilityLabelForTab: (Tab, Int?) -> String
+
+    init(
+        tabs: [Tab],
+        selectedTab: Binding<Tab>,
+        accessibilityLabel: String,
+        title: @escaping (Tab) -> String,
+        badgeCount: @escaping (Tab) -> Int? = { _ in nil },
+        accessibilityLabelForTab: ((Tab, Int?) -> String)? = nil
+    ) {
+        self.tabs = tabs
+        _selectedTab = selectedTab
+        self.accessibilityLabel = accessibilityLabel
+        self.title = title
+        self.badgeCount = badgeCount
+        self.accessibilityLabelForTab = accessibilityLabelForTab ?? { tab, _ in title(tab) }
+    }
+
+    var body: some View {
         GeometryReader { proxy in
             ScrollView(.horizontal) {
                 HStack(spacing: 8) {
@@ -14,7 +69,7 @@ struct ChoresTabSelector: View {
                             selectedTab = tab
                         } label: {
                             HStack(spacing: 7) {
-                                Text(tab.title)
+                                Text(title(tab))
                                     .font(.subheadline.weight(.bold))
                                     .lineLimit(1)
 
@@ -34,7 +89,7 @@ struct ChoresTabSelector: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel(accessibilityLabel(for: tab))
+                        .accessibilityLabel(accessibilityLabelForTab(tab, badgeCount(tab)))
                     }
                 }
                 .padding(4)
@@ -44,7 +99,7 @@ struct ChoresTabSelector: View {
             .scrollIndicators(.hidden)
         }
         .frame(height: 48)
-        .accessibilityLabel("Chores section")
+        .accessibilityLabel(accessibilityLabel)
     }
 
     private func pickerWidth(for availableWidth: CGFloat) -> CGFloat {
@@ -56,25 +111,6 @@ struct ChoresTabSelector: View {
         }
 
         return CGFloat(tabs.count) * mealsSegmentWidth
-    }
-
-    private func accessibilityLabel(for tab: ChoresTab) -> String {
-        guard let count = badgeCount(tab), count > 0 else {
-            return tab.title
-        }
-
-        switch tab {
-        case .myChores:
-            return "\(tab.title), \(count) items need attention"
-        case .myRewards:
-            return "\(tab.title), \(count) rewards pending"
-        case .houseChores:
-            return "\(tab.title), \(count) approvals pending"
-        case .rewardCenter:
-            return "\(tab.title), \(count) redemptions pending"
-        case .choreHistory:
-            return tab.title
-        }
     }
 }
 

@@ -104,16 +104,21 @@ function isTrackingRefParam(key: string, value: string | null): boolean {
 function assertPublicHostname(hostname: string): void {
   const normalized = hostname.toLowerCase();
   if (blockedHosts.has(normalized) || normalized.endsWith(".local")) {
+    debugLog("Source policy blocked hostname", { hostname: normalized, reason: "local_hostname" });
     throw new RecipeImportError("SOURCE_BLOCKED", "This recipe source is not allowed.");
   }
 
   if (/^\d+\.\d+\.\d+\.\d+$/.test(normalized) && isPrivateIPv4(normalized)) {
+    debugLog("Source policy blocked hostname", { hostname: normalized, reason: "private_ipv4" });
     throw new RecipeImportError("SOURCE_BLOCKED", "This recipe source is not allowed.");
   }
 
   if (normalized === "::1" || normalized.startsWith("[::1]")) {
+    debugLog("Source policy blocked hostname", { hostname: normalized, reason: "loopback_ipv6" });
     throw new RecipeImportError("SOURCE_BLOCKED", "This recipe source is not allowed.");
   }
+
+  debugLog("Source policy allowed hostname", { hostname: normalized });
 }
 
 function isPrivateIPv4(ipAddress: string): boolean {
@@ -129,4 +134,12 @@ function isPrivateIPv4(ipAddress: string): boolean {
     (first === 192 && second === 168) ||
     (first === 169 && second === 254) ||
     first === 0;
+}
+
+function debugLog(message: string, value: unknown): void {
+  if (Deno.env.get("DEBUG_RECIPE_IMPORT") !== "true") {
+    return;
+  }
+
+  console.log(`[import-recipe-url] ${message}:`, value);
 }

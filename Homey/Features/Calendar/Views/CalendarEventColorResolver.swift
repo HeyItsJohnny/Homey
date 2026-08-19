@@ -18,7 +18,7 @@ enum CalendarEventColorResolver {
         }
 
         #if DEBUG
-        print("Calendar event color resolved from category")
+        // print("Calendar event color resolved from category")
         print("calendar_event_id: \(event.eventId.uuidString)")
         print("category_id: \(category.id.uuidString)")
         print("color_hex: \(category.colorHex)")

@@ -1,7 +1,7 @@
 import { decode } from "https://esm.sh/html-entities@2.5.2";
 
 export function cleanText(value: string): string {
-  return normalizeWhitespace(decodeHtmlEntities(stripHtmlTags(String(value)))).trim();
+  return normalizeWhitespace(stripHtmlTags(decodeHtmlEntities(String(value)))).trim();
 }
 
 export function decodeHtmlEntities(value: string): string {
@@ -17,5 +17,5 @@ export function normalizeWhitespace(value: string): string {
 }
 
 export function stripHtmlTags(value: string): string {
-  return String(value).replace(/<[^>]*>/g, " ");
+  return String(value).replace(/<\/?[a-z][^>]*>/gi, " ");
 }

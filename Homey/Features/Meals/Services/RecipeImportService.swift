@@ -157,7 +157,15 @@ extension RecipeImportAPIError {
         case .pageTooLarge:
             return "This recipe page is too large for Homey to import."
         case .sourceBlocked:
-            return "This website doesn't currently allow Homey to import this recipe."
+            return "Homey can't import recipes directly from this website right now."
+        case .sourceAccessDenied:
+            return "This website blocked Homey's recipe importer. You can still add the recipe manually."
+        case .sourceUnsupported:
+            return "Homey can't read recipes from this website yet."
+        case .sourceParseFailed:
+            return "Homey found recipe information, but it could not read enough of it to import."
+        case .robotsDisallowed:
+            return "Homey can't import recipes from this website because its access policy does not allow it."
         case .timeout:
             return "This recipe page took too long to respond. Please try again."
         case .internalError:

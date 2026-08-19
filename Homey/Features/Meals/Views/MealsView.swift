@@ -7,9 +7,11 @@ struct MealsView: View {
     @Environment(\.homePermissionResolution) private var permissionResolution
     @StateObject private var viewModel = MealsViewModel()
     @StateObject private var mealPlannerViewModel = MealPlannerViewModel()
+    @StateObject private var globalExploreViewModel = GlobalMealsExploreViewModel()
     @State private var selectedTab: MealsLandingTab = .recipes
     @State private var isSearchVisible = false
     @State private var isAddRecipeOptionsPresented = false
+    @State private var isExploreFiltersPresented = false
     @State private var comingSoonMessage: String?
     @State private var path = NavigationPath()
     var onOpenCalendar: (Date?) -> Void = { _ in }
@@ -35,7 +37,11 @@ struct MealsView: View {
                 }
                 .scrollIndicators(.hidden)
                 .refreshable {
-                    viewModel.reload()
+                    if selectedTab == .explore {
+                        globalExploreViewModel.reload()
+                    } else {
+                        viewModel.reload()
+                    }
                 }
             }
             .navigationDestination(for: MealsRoute.self) { route in
@@ -110,6 +116,18 @@ struct MealsView: View {
                     }
                 case .importedRecipePreview(let response):
                     ImportedRecipePreviewView(response: response, homeId: homeService.selectedHomeID) { mealID in
+                        #if DEBUG
+                        print("URL import completed")
+                        print("global_recipe_id: \(response.globalRecipeId.uuidString)")
+                        print("home_meal_id: \(mealID.uuidString)")
+                        print("explore_refresh_requested: true")
+                        #endif
+                        globalExploreViewModel.refreshAfterGlobalRecipeImport(
+                            globalRecipeId: response.globalRecipeId,
+                            homeMealId: mealID,
+                            homeId: homeService.selectedHomeID,
+                            selectedMealType: viewModel.selectedMealType
+                        )
                         selectedTab = .recipes
                         handleSavedMeal(mealID: mealID, meal: nil)
                         path = NavigationPath()
@@ -162,10 +180,10 @@ struct MealsView: View {
         }
         .confirmationDialog("Add Recipe", isPresented: $isAddRecipeOptionsPresented, titleVisibility: .visible) {
             Button("Create Manually") {
-                path.append(MealsRoute.addMeal)
+                openAddRecipeRoute(.addMeal)
             }
             Button("Import from URL") {
-                path.append(MealsRoute.importRecipeURL)
+                openAddRecipeRoute(.importRecipeURL)
             }
             Button("Cancel", role: .cancel) { }
         }
@@ -256,20 +274,20 @@ struct MealsView: View {
 
     @ViewBuilder
     private var searchAndFilters: some View {
-        if isSearchVisible || !viewModel.searchText.isEmpty {
+        if isSearchVisible || !activeSearchText.wrappedValue.isEmpty {
             HStack(spacing: 12) {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
                     .accessibilityHidden(true)
 
-                TextField("Search recipes", text: $viewModel.searchText)
+                TextField(selectedTab == .explore ? "Search community recipes" : "Search recipes", text: activeSearchText)
                     .textInputAutocapitalization(.words)
                     .autocorrectionDisabled()
                     .submitLabel(.search)
 
-                if !viewModel.searchText.isEmpty {
+                if !activeSearchText.wrappedValue.isEmpty {
                     Button {
-                        viewModel.searchText = ""
+                        activeSearchText.wrappedValue = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundStyle(HomeyDashboardTheme.secondaryText)
@@ -293,7 +311,8 @@ struct MealsView: View {
         if selectedTab != .mealPlan {
             GeometryReader { proxy in
                 ScrollView(.horizontal) {
-                    HStack(spacing: 10) {
+                    ZStack(alignment: .trailing) {
+                        HStack(spacing: 10) {
                         MealTypeFilterChip(title: "All", isSelected: viewModel.selectedMealType == nil) {
                             viewModel.selectedMealType = nil
                         }
@@ -304,8 +323,32 @@ struct MealsView: View {
                             }
                         }
                     }
-                    .padding(.vertical, 2)
-                    .frame(minWidth: proxy.size.width, alignment: .center)
+                        .padding(.trailing, selectedTab == .explore ? 124 : 0)
+                        .padding(.vertical, 2)
+                        .frame(minWidth: proxy.size.width, alignment: .center)
+
+                        if selectedTab == .explore {
+                            Button {
+                                isExploreFiltersPresented = true
+                            } label: {
+                                HStack(spacing: 7) {
+                                    Image(systemName: globalExploreViewModel.filters.hasActiveFilters ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
+                                        .accessibilityHidden(true)
+                                    Text("Filters")
+                                }
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(globalExploreViewModel.filters.hasActiveFilters ? .white : HomeyDashboardTheme.primaryText)
+                                .padding(.horizontal, 14)
+                                .frame(minHeight: 42)
+                                .background(globalExploreViewModel.filters.hasActiveFilters ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.cardBackground, in: Capsule())
+                                .overlay {
+                                    Capsule().stroke(HomeyDashboardTheme.softBorder, lineWidth: globalExploreViewModel.filters.hasActiveFilters ? 0 : 1)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Filters")
+                        }
+                    }
                 }
                 .scrollIndicators(.hidden)
             }
@@ -313,16 +356,28 @@ struct MealsView: View {
         }
     }
 
-    private var tabPicker: some View {
-        Picker("Meals section", selection: $selectedTab) {
-            ForEach(MealsLandingTab.allCases) { tab in
-                Text(tab.title).tag(tab)
+    private var activeSearchText: Binding<String> {
+        Binding(
+            get: {
+                selectedTab == .explore ? globalExploreViewModel.searchText : viewModel.searchText
+            },
+            set: { newValue in
+                if selectedTab == .explore {
+                    globalExploreViewModel.searchText = newValue
+                } else {
+                    viewModel.searchText = newValue
+                }
             }
-        }
-        .pickerStyle(.segmented)
-        .frame(maxWidth: 520)
-        .frame(maxWidth: .infinity, alignment: .center)
-        .accessibilityLabel("Meals section")
+        )
+    }
+
+    private var tabPicker: some View {
+        ModuleTabSelector(
+            tabs: MealsLandingTab.allCases,
+            selectedTab: $selectedTab,
+            accessibilityLabel: "Meals section",
+            title: { $0.title }
+        )
     }
 
     @ViewBuilder
@@ -393,10 +448,19 @@ struct MealsView: View {
     }
 
     private var exploreTab: some View {
-        MealMessageCard(
-            title: "Coming Soon",
-            message: "Explore is coming in a future Meals phase.",
-            systemImage: "sparkles"
+        GlobalMealsExploreView(
+            viewModel: globalExploreViewModel,
+            selectedHomeID: homeService.selectedHomeID,
+            selectedMealType: viewModel.selectedMealType,
+            isFiltersPresented: $isExploreFiltersPresented,
+            onOpenHomeMeal: { mealId in
+                path.append(MealsRoute.editMeal(mealId))
+            },
+            onHomeMealAdded: { mealId in
+                Task {
+                    _ = await viewModel.refreshMeal(id: mealId, homeId: homeService.selectedHomeID)
+                }
+            }
         )
     }
 
@@ -494,6 +558,14 @@ struct MealsView: View {
             return
         }
         path.append(MealsRoute.editMeal(meal.id))
+    }
+
+    private func openAddRecipeRoute(_ route: MealsRoute) {
+        isAddRecipeOptionsPresented = false
+        Task { @MainActor in
+            await Task.yield()
+            path.append(route)
+        }
     }
 
     private func handleSavedMeal(mealID: UUID, meal: Meal?) {

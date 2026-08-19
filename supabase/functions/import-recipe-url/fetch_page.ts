@@ -12,6 +12,15 @@ const browserUserAgent = [
 export async function fetchRecipePage(url: string): Promise<string> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const requestDomain = hostnameOrNull(url);
+
+  debugLog("External fetch started", {
+    domain: requestDomain,
+    normalizedUrl: url,
+    sourcePolicy: "allowed_public_hostname",
+    robotsPolicy: "not_checked",
+    importerStrategy: "generic_json_ld",
+  });
 
   let response: Response;
   try {
@@ -36,18 +45,29 @@ export async function fetchRecipePage(url: string): Promise<string> {
   }
 
   validateFinalUrl(url, response.url);
+  logExternalFetchResponse(url, response);
 
   if (!response.ok) {
     logExternalFetchFailure(url, response);
 
     if (response.status === 401 || response.status === 403) {
-      throw new RecipeImportError("SOURCE_BLOCKED", "This website doesn't currently allow Homey to import this recipe.", 403);
+      debugLog("Recipe import mapped error", {
+        domain: requestDomain,
+        upstreamStatus: response.status,
+        mappedCode: "SOURCE_ACCESS_DENIED",
+      });
+      throw new RecipeImportError("SOURCE_ACCESS_DENIED", "This website blocked Homey's recipe importer.", 403);
     }
     if (response.status === 404) {
       throw new RecipeImportError("FETCH_FAILED", "We couldn't find this recipe page.", 404);
     }
     if (response.status === 429) {
-      throw new RecipeImportError("SOURCE_BLOCKED", "This website is temporarily limiting recipe imports.", 429);
+      debugLog("Recipe import mapped error", {
+        domain: requestDomain,
+        upstreamStatus: response.status,
+        mappedCode: "SOURCE_ACCESS_DENIED",
+      });
+      throw new RecipeImportError("SOURCE_ACCESS_DENIED", "This website is temporarily limiting Homey's recipe importer.", 429);
     }
     if (response.status >= 500 && response.status <= 599) {
       throw new RecipeImportError("FETCH_FAILED", "This recipe page is temporarily unavailable.", 502);
@@ -137,6 +157,17 @@ function logExternalFetchFailure(originalUrl: string, response: Response): void 
     finalUrlChanged: Boolean(response.url && response.url !== originalUrl),
     contentType: response.headers.get("content-type"),
     responseSize: response.headers.get("content-length"),
+  });
+}
+
+function logExternalFetchResponse(originalUrl: string, response: Response): void {
+  debugLog("External fetch response", {
+    domain: hostnameOrNull(originalUrl),
+    finalDomain: hostnameOrNull(response.url),
+    upstreamStatus: response.status,
+    upstreamContentType: response.headers.get("content-type"),
+    finalUrlChanged: Boolean(response.url && response.url !== originalUrl),
+    importerStrategy: "generic_json_ld",
   });
 }
 

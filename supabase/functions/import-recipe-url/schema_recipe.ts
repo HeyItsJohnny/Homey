@@ -21,12 +21,12 @@ export interface NormalizedRecipe {
 export async function normalizeSchemaRecipe(recipeNode: JsonObject, sourceUrl: NormalizedRecipeURL): Promise<NormalizedRecipe> {
   const title = firstString(recipeNode.name);
   if (!title) {
-    throw new RecipeImportError("INVALID_RECIPE_DATA", "The recipe data on this page is missing a title.", 422);
+    throw new RecipeImportError("SOURCE_PARSE_FAILED", "Homey found recipe information, but it could not read the recipe title.", 422);
   }
 
   const ingredients = normalizeIngredients(recipeNode.recipeIngredient);
   if (ingredients.length === 0) {
-    throw new RecipeImportError("INVALID_RECIPE_DATA", "The recipe data on this page is missing ingredients.", 422);
+    throw new RecipeImportError("SOURCE_PARSE_FAILED", "Homey found recipe information, but it could not read the ingredients.", 422);
   }
 
   const steps = normalizeInstructions(recipeNode.recipeInstructions);
@@ -241,7 +241,10 @@ function jsonValueForResponse(value: unknown): RecipeImportJSONValue | null {
   if (value === null || value === undefined) {
     return null;
   }
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+  if (typeof value === "string") {
+    return cleanText(value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
     return value;
   }
   if (Array.isArray(value)) {

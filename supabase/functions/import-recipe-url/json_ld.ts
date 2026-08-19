@@ -29,7 +29,7 @@ export function extractRecipeJsonLd(html: string): JsonObject {
 
   debugLog("JSON-LD parseable blocks", parseableBlocks);
   debugLog("Recipe nodes found", recipeNodesFound);
-  throw new RecipeImportError("NO_RECIPE_FOUND", "We couldn't find recipe information on this page.", 422);
+  throw new RecipeImportError("SOURCE_UNSUPPORTED", "Homey can't read recipes from this website yet.", 422);
 }
 
 function extractJsonLdScripts(html: string): string[] {
