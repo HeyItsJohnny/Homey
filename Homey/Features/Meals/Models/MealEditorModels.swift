@@ -1,5 +1,10 @@
 import Foundation
 
+enum RecipeSaveDestination: Hashable, Sendable {
+    case home
+    case community
+}
+
 enum MealEditorMode: Hashable, Sendable {
     case create
     case imported(response: RecipeImportResponse)
@@ -223,6 +228,70 @@ struct SaveMealRecipeStep: Encodable, Equatable, Hashable, Sendable {
         case instruction
         case timerMinutes = "timer_minutes"
         case photoPath = "photo_path"
+    }
+}
+
+struct SaveGlobalRecipeParameters: Encodable, Sendable {
+    let requestedTitle: String
+    let requestedDescription: String?
+    let requestedImageURL: String?
+    let requestedPrepTimeMinutes: Int?
+    let requestedCookTimeMinutes: Int?
+    let requestedTotalTimeMinutes: Int?
+    let requestedServings: String?
+    let requestedCuisine: String?
+    let requestedMealTypes: [String]
+    let requestedKeywords: [String]
+    let requestedIngredients: [SaveGlobalRecipeIngredient]
+    let requestedSteps: [SaveGlobalRecipeStep]
+    let requestedSourceType: String
+    let requestedSourceName: String?
+    let requestedSourceURL: String?
+
+    enum CodingKeys: String, CodingKey {
+        case requestedTitle = "requested_title"
+        case requestedDescription = "requested_description"
+        case requestedImageURL = "requested_image_url"
+        case requestedPrepTimeMinutes = "requested_prep_time_minutes"
+        case requestedCookTimeMinutes = "requested_cook_time_minutes"
+        case requestedTotalTimeMinutes = "requested_total_time_minutes"
+        case requestedServings = "requested_servings"
+        case requestedCuisine = "requested_cuisine"
+        case requestedMealTypes = "requested_meal_types"
+        case requestedKeywords = "requested_keywords"
+        case requestedIngredients = "requested_ingredients"
+        case requestedSteps = "requested_steps"
+        case requestedSourceType = "requested_source_type"
+        case requestedSourceName = "requested_source_name"
+        case requestedSourceURL = "requested_source_url"
+    }
+}
+
+struct SaveGlobalRecipeIngredient: Encodable, Equatable, Hashable, Sendable {
+    let quantity: String?
+    let sortOrder: Int
+    let isOptional: Bool
+    let sectionName: String?
+    let ingredientName: String
+
+    enum CodingKeys: String, CodingKey {
+        case quantity
+        case sortOrder = "sort_order"
+        case isOptional = "is_optional"
+        case sectionName = "section_name"
+        case ingredientName = "ingredient_name"
+    }
+}
+
+struct SaveGlobalRecipeStep: Encodable, Equatable, Hashable, Sendable {
+    let stepText: String
+    let sortOrder: Int
+    let sectionName: String?
+
+    enum CodingKeys: String, CodingKey {
+        case stepText = "step_text"
+        case sortOrder = "sort_order"
+        case sectionName = "section_name"
     }
 }
 

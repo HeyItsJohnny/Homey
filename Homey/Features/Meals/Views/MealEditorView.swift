@@ -18,17 +18,20 @@ struct MealEditorView: View {
     @State private var tagText = ""
     @FocusState private var focusedField: MealEditorField?
 
+    private let saveDestination: RecipeSaveDestination
     var onSaved: (UUID, Meal?) -> Void
     var onCancel: () -> Void
     var onDelete: (UUID) -> Void
 
     init(
         mode: MealEditorMode,
+        saveDestination: RecipeSaveDestination = .home,
         onSaved: @escaping (UUID, Meal?) -> Void = { _, _ in },
         onCancel: @escaping () -> Void = { },
         onDelete: @escaping (UUID) -> Void = { _ in }
     ) {
-        _viewModel = StateObject(wrappedValue: MealEditorViewModel(mode: mode))
+        _viewModel = StateObject(wrappedValue: MealEditorViewModel(mode: mode, saveDestination: saveDestination))
+        self.saveDestination = saveDestination
         self.onSaved = onSaved
         self.onCancel = onCancel
         self.onDelete = onDelete
@@ -150,7 +153,9 @@ struct MealEditorView: View {
     private var topControls: some View {
         HStack(spacing: 10) {
             cancelButton
-            saveDraftButton
+            if saveDestination == .home {
+                saveDraftButton
+            }
             saveMealButton
         }
     }
@@ -159,8 +164,10 @@ struct MealEditorView: View {
         HStack(spacing: 10) {
             cancelButton
                 .frame(maxWidth: .infinity)
-            saveDraftButton
-                .frame(maxWidth: .infinity)
+            if saveDestination == .home {
+                saveDraftButton
+                    .frame(maxWidth: .infinity)
+            }
             saveMealButton
                 .frame(maxWidth: .infinity)
         }
@@ -200,7 +207,7 @@ struct MealEditorView: View {
         Button {
             Task { await saveMeal() }
         } label: {
-            saveButtonLabel(title: "Save Meal", compactTitle: "Save", isPrimary: true)
+            saveButtonLabel(title: saveDestination == .community ? "Contribute Recipe" : "Save Meal", compactTitle: "Save", isPrimary: true)
         }
         .buttonStyle(.plain)
         .disabled(viewModel.isSaving || !canSave)
@@ -208,6 +215,9 @@ struct MealEditorView: View {
 
     @ViewBuilder
     private var permissionState: some View {
+        if saveDestination == .community {
+            EmptyView()
+        } else {
         switch effectivePermissionResolution {
         case .loading:
             MealEditorNoticeCard(
@@ -229,6 +239,7 @@ struct MealEditorView: View {
                     systemImage: "lock.fill"
                 )
             }
+        }
         }
     }
 
@@ -763,6 +774,10 @@ struct MealEditorView: View {
     }
 
     private var canSave: Bool {
+        if saveDestination == .community {
+            return true
+        }
+
         guard let resolvedPermissions else {
             return false
         }
@@ -781,7 +796,11 @@ struct MealEditorView: View {
     }
 
     private var permissionDeniedMessage: String {
-        viewModel.isCreatingNewMeal
+        if saveDestination == .community {
+            return "You do not have permission to contribute recipes."
+        }
+
+        return viewModel.isCreatingNewMeal
             ? "You do not have permission to create meals in this Home."
             : "You do not have permission to edit meals in this Home."
     }
@@ -812,6 +831,15 @@ struct MealEditorView: View {
     }
 
     private func saveMeal() async {
+        if saveDestination == .community {
+            let result = await viewModel.saveCommunityRecipe()
+            if case .saved(let globalRecipeID, let meal) = result {
+                onSaved(globalRecipeID, meal)
+                dismiss()
+            }
+            return
+        }
+
         guard let permissions = permissionsForSave() else { return }
         let result = await viewModel.saveMeal(homeId: homeService.selectedHomeID, permissions: permissions)
         if case .saved(let mealID, let meal) = result {

@@ -10,6 +10,7 @@ protocol GlobalMealsServicing: AnyObject {
     func fetchExistingHomeMeal(homeId: UUID, globalMealId: UUID) async throws -> Meal?
     func fetchExistingHomeMeals(homeId: UUID) async throws -> [Meal]
     func addGlobalMealToHome(globalMeal: GlobalMeal, homeId: UUID) async throws -> GlobalMealAddResult
+    func saveCommunityRecipe(draft: MealEditorDraft) async throws -> UUID
 }
 
 @MainActor
@@ -265,6 +266,48 @@ final class GlobalMealsService: GlobalMealsServicing {
         }
     }
 
+    func saveCommunityRecipe(draft: MealEditorDraft) async throws -> UUID {
+        var parameters: SaveGlobalRecipeParameters?
+        do {
+            try await requireAuthenticatedSession()
+            parameters = try saveGlobalRecipeParameters(from: draft)
+
+            #if DEBUG
+            print("Community recipe contribution started")
+            print("canonical_table: global_recipes")
+            if let parameters {
+                print("requested_title: \(parameters.requestedTitle)")
+                print("requested_meal_types: \(parameters.requestedMealTypes)")
+                print("requested_ingredient_count: \(parameters.requestedIngredients.count)")
+                print("requested_step_count: \(parameters.requestedSteps.count)")
+            }
+            #endif
+
+            guard let parameters else {
+                throw MealServiceError.saveMealFailed
+            }
+
+            let globalRecipeId: UUID = try await client
+                .rpc("save_global_recipe", params: parameters)
+                .execute()
+                .value
+
+            #if DEBUG
+            print("Community recipe contribution completed")
+            print("global_recipe_id: \(globalRecipeId.uuidString)")
+            print("home_recipe_created: false")
+            #endif
+
+            return globalRecipeId
+        } catch let error as MealServiceError {
+            logGlobalMealError(error, operation: "saveCommunityRecipe")
+            throw error
+        } catch {
+            logGlobalMealError(error, operation: "saveCommunityRecipe")
+            throw MealServiceError.saveMealFailed
+        }
+    }
+
     private func downloadGlobalMealImage(urlString: String) async throws -> Data {
         guard let url = URL(string: urlString),
               let scheme = url.scheme?.lowercased(),
@@ -284,6 +327,103 @@ final class GlobalMealsService: GlobalMealsServicing {
 
     private func requireAuthenticatedSession() async throws {
         _ = try await client.auth.session
+    }
+
+    private func saveGlobalRecipeParameters(from draft: MealEditorDraft) throws -> SaveGlobalRecipeParameters {
+        let title = try normalizedRequiredString(draft.name, error: .emptyMealName)
+        let ingredients = try globalRecipeIngredients(from: draft.ingredients)
+        let steps = try globalRecipeSteps(from: draft.steps)
+
+        return SaveGlobalRecipeParameters(
+            requestedTitle: title,
+            requestedDescription: normalizedOptionalString(draft.description),
+            requestedImageURL: draft.importedImageURL?.absoluteString,
+            requestedPrepTimeMinutes: draft.prepTimeMinutes,
+            requestedCookTimeMinutes: draft.cookTimeMinutes,
+            requestedTotalTimeMinutes: totalTime(prep: draft.prepTimeMinutes, cook: draft.cookTimeMinutes),
+            requestedServings: normalizedServings(draft.servings),
+            requestedCuisine: normalizedOptionalString(draft.cuisine),
+            requestedMealTypes: draft.mealTypes.map(\.rawValue),
+            requestedKeywords: normalizedTags(draft.tags),
+            requestedIngredients: ingredients,
+            requestedSteps: steps,
+            requestedSourceType: "manual",
+            requestedSourceName: normalizedOptionalString(draft.sourceName),
+            requestedSourceURL: normalizedOptionalString(draft.sourceURL)
+        )
+    }
+
+    private func globalRecipeIngredients(from ingredients: [MealEditorIngredient]) throws -> [SaveGlobalRecipeIngredient] {
+        try ingredients.enumerated().compactMap { index, ingredient in
+            let name = trimmed(ingredient.name)
+            let quantity = trimmed(ingredient.quantityText)
+            let hasContent = !name.isEmpty
+                || !quantity.isEmpty
+                || !trimmed(ingredient.unit).isEmpty
+                || !trimmed(ingredient.preparation).isEmpty
+                || !trimmed(ingredient.notes).isEmpty
+            guard hasContent else { return nil }
+            guard !name.isEmpty else { throw MealServiceError.emptyIngredientName }
+
+            let combinedQuantity = [quantity, trimmed(ingredient.unit)].filter { !$0.isEmpty }.joined(separator: " ")
+            let preparation = trimmed(ingredient.preparation)
+            let notes = trimmed(ingredient.notes)
+            let combinedNotes = [preparation, notes].filter { !$0.isEmpty }.joined(separator: "; ")
+
+            return SaveGlobalRecipeIngredient(
+                quantity: nilIfTrimmedEmpty(combinedQuantity),
+                sortOrder: index,
+                isOptional: ingredient.isOptional,
+                sectionName: nilIfTrimmedEmpty(ingredient.sectionName),
+                ingredientName: combinedNotes.isEmpty ? name : "\(name), \(combinedNotes)"
+            )
+        }
+    }
+
+    private func globalRecipeSteps(from steps: [MealEditorStep]) throws -> [SaveGlobalRecipeStep] {
+        try steps.enumerated().compactMap { index, step in
+            let instruction = trimmed(step.instruction)
+            guard !instruction.isEmpty || !trimmed(step.timerMinutesText).isEmpty else { return nil }
+            guard !instruction.isEmpty else { throw MealServiceError.emptyRecipeStep }
+            return SaveGlobalRecipeStep(
+                stepText: instruction,
+                sortOrder: index,
+                sectionName: nil
+            )
+        }
+    }
+
+    private func normalizedRequiredString(_ value: String, error: MealServiceError) throws -> String {
+        let trimmedValue = trimmed(value)
+        guard !trimmedValue.isEmpty else { throw error }
+        return trimmedValue
+    }
+
+    private func normalizedOptionalString(_ value: String?) -> String? {
+        nilIfTrimmedEmpty(value)
+    }
+
+    private func normalizedServings(_ servings: Decimal?) -> String? {
+        servings.map { NSDecimalNumber(decimal: $0).stringValue }
+    }
+
+    private func normalizedTags(_ tags: [String]) -> [String] {
+        Array(Set(tags.map { trimmed($0) }.filter { !$0.isEmpty }))
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    private func totalTime(prep: Int?, cook: Int?) -> Int? {
+        let total = (prep ?? 0) + (cook ?? 0)
+        return total > 0 ? total : nil
+    }
+
+    private func trimmed(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func nilIfTrimmedEmpty(_ value: String?) -> String? {
+        let trimmedValue = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmedValue.isEmpty ? nil : trimmedValue
     }
 
     private func logGlobalMealError(_ error: Error, operation: String, homeId: UUID? = nil, globalMealId: UUID? = nil) {

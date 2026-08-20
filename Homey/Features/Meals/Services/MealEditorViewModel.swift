@@ -33,15 +33,19 @@ final class MealEditorViewModel: ObservableObject {
     @Published private(set) var validationErrors: [MealEditorValidationError] = []
 
     let mode: MealEditorMode
+    let saveDestination: RecipeSaveDestination
     private let mealService: MealServicing
+    private let globalMealsService: GlobalMealsServicing
     private var initialDraft = MealEditorDraft()
     private var loadedMealID: UUID?
     private var persistedMealID: UUID?
     private var selectedPhotoSource: MealEditorSelectedPhotoSource?
 
-    init(mode: MealEditorMode, mealService: MealServicing? = nil) {
+    init(mode: MealEditorMode, saveDestination: RecipeSaveDestination = .home, mealService: MealServicing? = nil, globalMealsService: GlobalMealsServicing? = nil) {
         self.mode = mode
+        self.saveDestination = saveDestination
         self.mealService = mealService ?? MealService()
+        self.globalMealsService = globalMealsService ?? GlobalMealsService()
         persistedMealID = mode.mealID
         if let importedResponse = mode.importedResponse {
             applyImportedResponse(importedResponse)
@@ -53,6 +57,10 @@ final class MealEditorViewModel: ObservableObject {
     }
 
     var title: String {
+        if saveDestination == .community {
+            return "Contribute Recipe"
+        }
+
         if persistedMealID != nil {
             return "Edit Meal"
         }
@@ -66,6 +74,10 @@ final class MealEditorViewModel: ObservableObject {
     }
 
     var subtitle: String {
+        if saveDestination == .community {
+            return "Share a recipe with the Homey community library."
+        }
+
         if persistedMealID != nil {
             return "Make changes to your recipe."
         }
@@ -176,6 +188,10 @@ final class MealEditorViewModel: ObservableObject {
     }
 
     func saveMeal(homeId: UUID?, permissions: HomePermissions) async -> MealEditorSaveResult {
+        if saveDestination == .community {
+            return await saveCommunityRecipe()
+        }
+
         guard validateForPublish(permissions: permissions), let homeId else {
             if homeId == nil {
                 validationErrors.append(MealEditorValidationError(field: .permission, message: "Choose a Home before saving."))
@@ -190,6 +206,53 @@ final class MealEditorViewModel: ObservableObject {
             return .failed
         }
         return await save(homeId: homeId, permissions: permissions, saveAsDraft: false)
+    }
+
+    func saveCommunityRecipe() async -> MealEditorSaveResult {
+        guard validateForCommunityPublish() else {
+            logSaveDiagnostic(
+                error: nil,
+                operation: "saveCommunityRecipe_validation",
+                homeId: nil,
+                mealId: nil,
+                isDraft: false
+            )
+            return .failed
+        }
+
+        guard !isSaving else { return .failed }
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+
+        do {
+            let draft = buildDraft()
+            let globalRecipeId = try await globalMealsService.saveCommunityRecipe(draft: draft)
+            apply(draft: draft)
+            existingPhotoPath = nil
+            selectedPhotoData = nil
+            selectedPhotoSource = nil
+            isDraft = false
+            persistedMealID = nil
+            loadedMealID = nil
+            captureInitialDraft()
+            successMessage = nil
+            return .saved(mealID: globalRecipeId, meal: nil)
+        } catch {
+            let draft = buildDraft()
+            logSaveDiagnostic(
+                error: error,
+                operation: "saveCommunityRecipe",
+                homeId: nil,
+                mealId: nil,
+                isDraft: false,
+                draft: draft
+            )
+            if errorMessage == nil {
+                errorMessage = "Homey couldn't save this community recipe."
+            }
+            return .failed
+        }
     }
 
     func uploadPhotoIfNeeded(homeId: UUID, mealId: UUID) async throws -> MealPhoto? {
@@ -811,6 +874,30 @@ final class MealEditorViewModel: ObservableObject {
         if !canSave {
             errors.append(MealEditorValidationError(field: .permission, message: permissionDeniedMessage))
         }
+        if name.trimmed.isEmpty {
+            errors.append(MealEditorValidationError(field: .name, message: "Meal name is required."))
+        } else if name.trimmed.count > 120 {
+            errors.append(MealEditorValidationError(field: .name, message: "Use 120 characters or fewer."))
+        }
+        if requiresCompleteRecipe && selectedMealTypes.isEmpty {
+            errors.append(MealEditorValidationError(field: .mealTypes, message: "Choose at least one meal type."))
+        }
+        validateNonNegativeInt(prepTimeText, field: .prepTime, message: "Prep time cannot be negative.", errors: &errors)
+        validateNonNegativeInt(cookTimeText, field: .cookTime, message: "Cook time cannot be negative.", errors: &errors)
+        validateServings(errors: &errors)
+        validateSourceURL(errors: &errors)
+        validateIngredients(errors: &errors)
+        validateSteps(errors: &errors)
+        return errors
+    }
+
+    private func validateForCommunityPublish() -> Bool {
+        validationErrors = communityValidationErrors(requiresCompleteRecipe: true)
+        return validationErrors.isEmpty
+    }
+
+    private func communityValidationErrors(requiresCompleteRecipe: Bool) -> [MealEditorValidationError] {
+        var errors: [MealEditorValidationError] = []
         if name.trimmed.isEmpty {
             errors.append(MealEditorValidationError(field: .name, message: "Meal name is required."))
         } else if name.trimmed.count > 120 {

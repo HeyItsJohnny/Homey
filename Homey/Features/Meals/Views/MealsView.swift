@@ -132,6 +132,40 @@ struct MealsView: View {
                         handleSavedMeal(mealID: mealID, meal: nil)
                         path = NavigationPath()
                     }
+                case .contributeRecipe:
+                    MealEditorView(mode: .create, saveDestination: .community) { globalRecipeID, _ in
+                        #if DEBUG
+                        print("Community manual recipe completed")
+                        print("global_recipe_id: \(globalRecipeID.uuidString)")
+                        print("home_recipe_created: false")
+                        print("explore_refresh_requested: true")
+                        #endif
+                        globalExploreViewModel.refreshAfterGlobalRecipeImport(
+                            globalRecipeId: globalRecipeID,
+                            homeMealId: nil,
+                            homeId: homeService.selectedHomeID,
+                            selectedMealType: viewModel.selectedMealType
+                        )
+                        selectedTab = .explore
+                        path = NavigationPath()
+                    }
+                case .contributeRecipeURL:
+                    ImportRecipeURLView(homeId: homeService.selectedHomeID) { response in
+                        #if DEBUG
+                        print("Community URL recipe import completed")
+                        print("global_recipe_id: \(response.globalRecipeId.uuidString)")
+                        print("home_recipe_created: false")
+                        print("explore_refresh_requested: true")
+                        #endif
+                        globalExploreViewModel.refreshAfterGlobalRecipeImport(
+                            globalRecipeId: response.globalRecipeId,
+                            homeMealId: nil,
+                            homeId: homeService.selectedHomeID,
+                            selectedMealType: viewModel.selectedMealType
+                        )
+                        selectedTab = .explore
+                        path = NavigationPath()
+                    }
                 case .editMeal(let mealID):
                     switch effectivePermissionResolution {
                     case .loading:
@@ -460,6 +494,12 @@ struct MealsView: View {
                 Task {
                     _ = await viewModel.refreshMeal(id: mealId, homeId: homeService.selectedHomeID)
                 }
+            },
+            onContributeManualRecipe: {
+                path.append(MealsRoute.contributeRecipe)
+            },
+            onContributeRecipeURL: {
+                path.append(MealsRoute.contributeRecipeURL)
             }
         )
     }
@@ -603,6 +643,8 @@ private enum MealsRoute: Hashable {
     case addMeal
     case importRecipeURL
     case importedRecipePreview(RecipeImportResponse)
+    case contributeRecipe
+    case contributeRecipeURL
     case editMeal(UUID)
 }
 
