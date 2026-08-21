@@ -12,7 +12,7 @@ struct RecipeImportRequest: Codable, Hashable, Sendable {
 
 struct RecipeImportResponse: Codable, Hashable, Sendable {
     let importId: UUID
-    let globalRecipeId: UUID
+    let globalRecipeId: UUID?
     let alreadyExists: Bool
     let normalizedUrl: String
     let recipe: ImportedRecipePreview

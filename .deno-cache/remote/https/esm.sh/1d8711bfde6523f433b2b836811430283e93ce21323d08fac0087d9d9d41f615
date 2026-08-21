@@ -1,0 +1,10 @@
+/* esm.sh - @supabase/supabase-js@2.112.3 */
+import "/@supabase/auth-js@2.112.3/denonext/auth-js.mjs";
+import "/@supabase/functions-js@2.112.3/denonext/functions-js.mjs";
+import "/@supabase/postgrest-js@2.112.3/denonext/postgrest-js.mjs";
+import "/@supabase/realtime-js@2.112.3/denonext/realtime-js.mjs";
+import "/@supabase/storage-js@2.112.3/denonext/storage-js.mjs";
+import "/@supabase/supabase-js@2.112.3/denonext/dist/tracingRegistry.mjs";
+export * from "/@supabase/supabase-js@2.112.3/denonext/supabase-js.mjs";
+
+// denoCacheMetadata={"headers":{"date":"Fri, 21 Aug 2026 05:12:36 GMT","vary":"User-Agent","access-control-expose-headers":"X-ESM-Path, X-TypeScript-Types","x-esm-path":"/@supabase/supabase-js@2.112.3/denonext/supabase-js.mjs","x-typescript-types":"https://esm.sh/@supabase/supabase-js@2.112.3/dist/index.d.mts","cf-cache-status":"DYNAMIC","content-type":"application/javascript; charset=utf-8","access-control-allow-origin":"*","server":"cloudflare","cf-ray":"a2e724ce6a8aa0f2-SJC","cache-control":"public, max-age=31536000, immutable"},"url":"https://esm.sh/@supabase/supabase-js@2.112.3","time":1787289156}

@@ -2,27 +2,30 @@ import SwiftUI
 
 struct ImportedRecipePreviewView: View {
     let response: RecipeImportResponse
-    var onOpenSavedRecipe: (UUID) -> Void
+    let saveDestination: RecipeSaveDestination
+    var onOpenSavedRecipe: (UUID, Meal?) -> Void
 
     init(
         response: RecipeImportResponse,
         homeId: UUID? = nil,
-        onOpenSavedRecipe: @escaping (UUID) -> Void = { _ in }
+        saveDestination: RecipeSaveDestination = .home,
+        onOpenSavedRecipe: @escaping (UUID, Meal?) -> Void = { _, _ in }
     ) {
         self.response = response
+        self.saveDestination = saveDestination
         self.onOpenSavedRecipe = onOpenSavedRecipe
     }
 
     var body: some View {
-        MealEditorView(mode: .imported(response: response)) { mealID, _ in
-            onOpenSavedRecipe(mealID)
+        MealEditorView(mode: .imported(response: response), saveDestination: saveDestination) { mealID, meal in
+            onOpenSavedRecipe(mealID, meal)
         }
     }
 }
 
 struct ImportedRecipeDraft: Equatable, Hashable, Sendable {
     let importId: UUID
-    let globalRecipeId: UUID
+    let globalRecipeId: UUID?
     let imageUrl: String?
     let originalUrl: String
     let normalizedUrl: String

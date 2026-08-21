@@ -1,0 +1,6 @@
+import GoTrueClient from './GoTrueClient.d.ts';
+declare const AuthClient: typeof GoTrueClient;
+export default AuthClient;
+//# sourceMappingURL=AuthClient.d.ts.map
+
+// denoCacheMetadata={"headers":{"content-length":"163","accept-ranges":"bytes","age":"855167","cf-ray":"a2e724d00eb0a0f2-SJC","server":"cloudflare","cache-control":"public, max-age=31536000, immutable","date":"Fri, 21 Aug 2026 05:12:37 GMT","cf-cache-status":"HIT","content-type":"application/typescript; charset=utf-8","access-control-allow-origin":"*","last-modified":"Tue, 11 Aug 2026 07:39:48 GMT"},"url":"https://esm.sh/@supabase/auth-js@2.112.3/dist/module/AuthClient.d.ts","time":1787289157}

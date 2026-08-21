@@ -446,6 +446,7 @@ final class MealEditorViewModel: ObservableObject {
 
         do {
             var draft = buildDraft()
+            try await commitImportedGlobalRecipeIfNeeded(draft: &draft, saveAsDraft: saveAsDraft)
 
             let savedMealID: UUID
             if let existingMealID = persistedMealID {
@@ -507,7 +508,8 @@ final class MealEditorViewModel: ObservableObject {
 
     private func createMeal(homeId: UUID, draft: inout MealEditorDraft, saveAsDraft: Bool) async throws -> UUID {
         if let importedMetadata = draft.importedMetadata,
-           try await mealService.fetchImportedMeal(homeId: homeId, globalRecipeId: importedMetadata.globalRecipeId) != nil {
+           let globalRecipeId = importedMetadata.globalRecipeId,
+           try await mealService.fetchImportedMeal(homeId: homeId, globalRecipeId: globalRecipeId) != nil {
             throw MealServiceError.duplicateImportedRecipe
         }
 
@@ -587,6 +589,25 @@ final class MealEditorViewModel: ObservableObject {
             )
             throw MealServiceError.uploadPhotoFailed
         }
+    }
+
+    private func commitImportedGlobalRecipeIfNeeded(draft: inout MealEditorDraft, saveAsDraft: Bool) async throws {
+        guard !saveAsDraft,
+              let importedMetadata = draft.importedMetadata,
+              importedMetadata.globalRecipeId == nil else {
+            return
+        }
+
+        let globalRecipeId = try await globalMealsService.saveCommunityRecipe(draft: draft)
+        let committedMetadata = importedMetadata.committed(globalRecipeId: globalRecipeId)
+        draft.importedMetadata = committedMetadata
+        initialDraft.importedMetadata = committedMetadata
+
+        #if DEBUG
+        print("Imported Home recipe committed to global recipe after review")
+        print("global_recipe_id: \(globalRecipeId.uuidString)")
+        print("home_recipe_created: pending")
+        #endif
     }
 
     private func prepareImportedSourcePhotoIfNeeded() async {

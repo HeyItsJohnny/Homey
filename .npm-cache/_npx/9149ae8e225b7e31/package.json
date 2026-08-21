@@ -1,0 +1,10 @@
+{
+  "dependencies": {
+    "deno-bin": "^2.2.7"
+  },
+  "_npx": {
+    "packages": [
+      "deno-bin@latest"
+    ]
+  }
+}

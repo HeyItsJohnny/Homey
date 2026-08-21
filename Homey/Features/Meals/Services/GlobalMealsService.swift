@@ -11,6 +11,7 @@ protocol GlobalMealsServicing: AnyObject {
     func fetchExistingHomeMeals(homeId: UUID) async throws -> [Meal]
     func addGlobalMealToHome(globalMeal: GlobalMeal, homeId: UUID) async throws -> GlobalMealAddResult
     func saveCommunityRecipe(draft: MealEditorDraft) async throws -> UUID
+    func deleteCommunityRecipe(globalMealId: UUID) async throws
 }
 
 @MainActor
@@ -267,44 +268,97 @@ final class GlobalMealsService: GlobalMealsServicing {
     }
 
     func saveCommunityRecipe(draft: MealEditorDraft) async throws -> UUID {
-        var parameters: SaveGlobalRecipeParameters?
+        let parameters: SaveGlobalRecipeParameters
         do {
             try await requireAuthenticatedSession()
             parameters = try saveGlobalRecipeParameters(from: draft)
+        } catch {
+            logGlobalMealError(
+                error,
+                operation: "saveCommunityRecipe_prepare",
+                tableOrRPC: "rpc: save_global_recipe"
+            )
+            throw MealServiceError.saveMealFailed
+        }
+
+        logCommunityRecipeRPCStart(parameters)
+
+        let response: PostgrestResponse<Void>
+        do {
+            response = try await client
+                .rpc("save_global_recipe", params: parameters)
+                .execute()
 
             #if DEBUG
-            print("Community recipe contribution started")
-            print("canonical_table: global_recipes")
-            if let parameters {
-                print("requested_title: \(parameters.requestedTitle)")
-                print("requested_meal_types: \(parameters.requestedMealTypes)")
-                print("requested_ingredient_count: \(parameters.requestedIngredients.count)")
-                print("requested_step_count: \(parameters.requestedSteps.count)")
-            }
+            print("========== COMMUNITY RECIPE RPC EXECUTED ==========")
+            print("rpc: save_global_recipe")
+            print("http_status: \(response.status)")
+            print("response_body: \(response.string() ?? "")")
+            print("===================================================")
+            #endif
+        } catch {
+            logCommunityRecipeRPCFailed(
+                error,
+                parameters: parameters
+            )
+            throw MealServiceError.saveMealFailed
+        }
+
+        do {
+            let globalRecipeId = try decodeGlobalRecipeID(from: response.data)
+            logCommunityRecipeRPCSucceeded(globalRecipeId: globalRecipeId)
+            return globalRecipeId
+        } catch {
+            logCommunityRecipeRPCDecodeFailed(error, responseData: response.data)
+            throw MealServiceError.saveMealFailed
+        }
+    }
+
+    func deleteCommunityRecipe(globalMealId: UUID) async throws {
+        do {
+            try await requireAuthenticatedSession()
+
+            #if DEBUG
+            print("========== COMMUNITY RECIPE DELETE START ==========")
+            print("table: global_recipes")
+            print("global_recipe_id: \(globalMealId.uuidString)")
+            print("home_recipe_delete: false")
+            print("===================================================")
             #endif
 
-            guard let parameters else {
-                throw MealServiceError.saveMealFailed
-            }
-
-            let globalRecipeId: UUID = try await client
-                .rpc("save_global_recipe", params: parameters)
+            let deletedRows: [DeletedGlobalRecipeRow] = try await client
+                .from("global_recipes")
+                .delete()
+                .eq("id", value: globalMealId.uuidString)
+                .select("id")
                 .execute()
                 .value
 
-            #if DEBUG
-            print("Community recipe contribution completed")
-            print("global_recipe_id: \(globalRecipeId.uuidString)")
-            print("home_recipe_created: false")
-            #endif
+            guard deletedRows.contains(where: { $0.id == globalMealId }) else {
+                #if DEBUG
+                print("========== COMMUNITY RECIPE DELETE DENIED ==========")
+                print("table: global_recipes")
+                print("global_recipe_id: \(globalMealId.uuidString)")
+                print("deleted_row_count: \(deletedRows.count)")
+                print("reason: RLS or ownership check deleted no rows")
+                print("====================================================")
+                #endif
+                throw MealServiceError.permissionDenied
+            }
 
-            return globalRecipeId
+            #if DEBUG
+            print("========== COMMUNITY RECIPE DELETE SUCCEEDED ==========")
+            print("table: global_recipes")
+            print("global_recipe_id: \(globalMealId.uuidString)")
+            print("deleted_row_count: \(deletedRows.count)")
+            print("home_recipe_deleted: false")
+            print("=======================================================")
+            #endif
         } catch let error as MealServiceError {
-            logGlobalMealError(error, operation: "saveCommunityRecipe")
             throw error
         } catch {
-            logGlobalMealError(error, operation: "saveCommunityRecipe")
-            throw MealServiceError.saveMealFailed
+            logGlobalMealError(error, operation: "deleteCommunityRecipe", globalMealId: globalMealId, tableOrRPC: "table: global_recipes")
+            throw MealServiceError.deleteMealFailed
         }
     }
 
@@ -347,7 +401,7 @@ final class GlobalMealsService: GlobalMealsServicing {
             requestedKeywords: normalizedTags(draft.tags),
             requestedIngredients: ingredients,
             requestedSteps: steps,
-            requestedSourceType: "manual",
+            requestedSourceType: draft.importedMetadata == nil ? "manual" : "url",
             requestedSourceName: normalizedOptionalString(draft.sourceName),
             requestedSourceURL: normalizedOptionalString(draft.sourceURL)
         )
@@ -426,20 +480,129 @@ final class GlobalMealsService: GlobalMealsServicing {
         return trimmedValue.isEmpty ? nil : trimmedValue
     }
 
-    private func logGlobalMealError(_ error: Error, operation: String, homeId: UUID? = nil, globalMealId: UUID? = nil) {
+    private func decodeGlobalRecipeID(from data: Data) throws -> UUID {
+        if let uuid = try? JSONDecoder().decode(UUID.self, from: data) {
+            return uuid
+        }
+
+        let responseText = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"").union(.whitespacesAndNewlines))
+            ?? ""
+        guard let uuid = UUID(uuidString: responseText) else {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: [],
+                    debugDescription: "Expected save_global_recipe to return a UUID scalar."
+                )
+            )
+        }
+        return uuid
+    }
+
+    private func logGlobalMealError(
+        _ error: Error,
+        operation: String,
+        homeId: UUID? = nil,
+        globalMealId: UUID? = nil,
+        tableOrRPC: String? = nil,
+        saveGlobalRecipeParameters: SaveGlobalRecipeParameters? = nil
+    ) {
         #if DEBUG
-        print("========== GLOBAL MEALS ERROR ==========")
+        if operation == "saveCommunityRecipe" {
+            print("========== COMMUNITY RECIPE SAVE FAILED ==========")
+        } else {
+            print("========== GLOBAL MEALS ERROR ==========")
+        }
         print("operation: \(operation)")
+        if let tableOrRPC { print("table/rpc: \(tableOrRPC)") }
         if let homeId { print("home_id: \(homeId.uuidString)") }
         if let globalMealId { print("global_recipe_id: \(globalMealId.uuidString)") }
+        if let saveGlobalRecipeParameters {
+            logSaveGlobalRecipeParameters(saveGlobalRecipeParameters)
+        }
         if let postgrestError = error as? PostgrestError {
             print("PostgREST code: \(postgrestError.code ?? "")")
             print("PostgREST message: \(postgrestError.message)")
             print("PostgREST detail: \(postgrestError.detail ?? "")")
             print("PostgREST hint: \(postgrestError.hint ?? "")")
         }
+        print("underlying_error_type: \(String(reflecting: type(of: error)))")
         print(String(reflecting: error))
         print("========================================")
+        #endif
+    }
+
+    private func logSaveGlobalRecipeParameters(_ parameters: SaveGlobalRecipeParameters) {
+        #if DEBUG
+        print("requested_title: \(parameters.requestedTitle)")
+        print("requested_description_present: \((parameters.requestedDescription?.isEmpty == false))")
+        print("requested_image_url_present: \((parameters.requestedImageURL?.isEmpty == false))")
+        print("requested_prep_time_minutes: \(parameters.requestedPrepTimeMinutes.map(String.init) ?? "nil")")
+        print("requested_cook_time_minutes: \(parameters.requestedCookTimeMinutes.map(String.init) ?? "nil")")
+        print("requested_total_time_minutes: \(parameters.requestedTotalTimeMinutes.map(String.init) ?? "nil")")
+        print("requested_servings: \(parameters.requestedServings ?? "nil")")
+        print("requested_cuisine: \(parameters.requestedCuisine ?? "nil")")
+        print("requested_meal_types: \(parameters.requestedMealTypes)")
+        print("requested_keywords: \(parameters.requestedKeywords)")
+        print("requested_ingredient_count: \(parameters.requestedIngredients.count)")
+        print("requested_step_count: \(parameters.requestedSteps.count)")
+        print("requested_source_type: \(parameters.requestedSourceType)")
+        print("requested_source_name_present: \((parameters.requestedSourceName?.isEmpty == false))")
+        print("requested_source_url_present: \((parameters.requestedSourceURL?.isEmpty == false))")
+        #endif
+    }
+
+    private func logCommunityRecipeRPCStart(_ parameters: SaveGlobalRecipeParameters) {
+        #if DEBUG
+        print("========== COMMUNITY RECIPE RPC START ==========")
+        print("rpc: save_global_recipe")
+        print("title: \(parameters.requestedTitle)")
+        print("source_type: \(parameters.requestedSourceType)")
+        print("source_url_present: \((parameters.requestedSourceURL?.isEmpty == false))")
+        print("meal_types: \(parameters.requestedMealTypes)")
+        print("ingredients_count: \(parameters.requestedIngredients.count)")
+        print("steps_count: \(parameters.requestedSteps.count)")
+        print("keywords_count: \(parameters.requestedKeywords.count)")
+        print("===============================================")
+        #endif
+    }
+
+    private func logCommunityRecipeRPCFailed(_ error: Error, parameters: SaveGlobalRecipeParameters) {
+        #if DEBUG
+        print("========== COMMUNITY RECIPE RPC FAILED ==========")
+        print("rpc: save_global_recipe")
+        print("error_type: \(String(reflecting: type(of: error)))")
+        logSaveGlobalRecipeParameters(parameters)
+        if let postgrestError = error as? PostgrestError {
+            print("PostgREST code: \(postgrestError.code ?? "")")
+            print("PostgREST message: \(postgrestError.message)")
+            print("PostgREST detail: \(postgrestError.detail ?? "")")
+            print("PostgREST hint: \(postgrestError.hint ?? "")")
+        }
+        print("underlying error: \(String(reflecting: error))")
+        print("================================================")
+        #endif
+    }
+
+    private func logCommunityRecipeRPCDecodeFailed(_ error: Error, responseData: Data) {
+        #if DEBUG
+        print("========== COMMUNITY RECIPE RPC DECODE FAILED ==========")
+        print("rpc: save_global_recipe")
+        print("expected_type: UUID")
+        print("error_type: \(String(reflecting: type(of: error)))")
+        print("error: \(String(reflecting: error))")
+        print("response_body: \(String(data: responseData, encoding: .utf8) ?? "<non-UTF8 response body>")")
+        print("========================================================")
+        #endif
+    }
+
+    private func logCommunityRecipeRPCSucceeded(globalRecipeId: UUID) {
+        #if DEBUG
+        print("========== COMMUNITY RECIPE RPC SUCCEEDED ==========")
+        print("rpc: save_global_recipe")
+        print("global_recipe_id: \(globalRecipeId.uuidString)")
+        print("home_recipe_created: false")
+        print("====================================================")
         #endif
     }
 }
@@ -452,6 +615,10 @@ private struct AddGlobalMealToHomeRPCParameters: Encodable {
         case requestedGlobalMealId = "requested_global_meal_id"
         case requestedHomeId = "requested_home_id"
     }
+}
+
+private struct DeletedGlobalRecipeRow: Decodable {
+    let id: UUID
 }
 
 private extension String {

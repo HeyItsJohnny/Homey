@@ -640,7 +640,20 @@ final class MealService: ObservableObject, MealServicing {
                 .limit(1)
                 .execute()
                 .value
-            return meals.first
+            if let meal = meals.first {
+                return meal
+            }
+
+            let originMeals: [Meal] = try await client
+                .from("meals")
+                .select()
+                .eq("home_id", value: homeId.uuidString)
+                .eq("origin_global_recipe_id", value: globalRecipeId.uuidString)
+                .eq("is_archived", value: false)
+                .limit(1)
+                .execute()
+                .value
+            return originMeals.first
         } catch {
             logMealError(error, operation: "fetchImportedMeal", homeId: homeId)
             throw MealServiceError.loadMealFailed
@@ -649,7 +662,8 @@ final class MealService: ObservableObject, MealServicing {
 
     func saveImportedRecipe(homeId: UUID, draft: ImportedRecipeDraft) async throws -> ImportedRecipeSaveResult {
         do {
-            if let existingMeal = try await fetchImportedMeal(homeId: homeId, globalRecipeId: draft.globalRecipeId) {
+            if let globalRecipeId = draft.globalRecipeId,
+               let existingMeal = try await fetchImportedMeal(homeId: homeId, globalRecipeId: globalRecipeId) {
                 return .alreadyExists(existingMeal)
             }
 
@@ -660,6 +674,7 @@ final class MealService: ObservableObject, MealServicing {
                 sourceName: draft.sourceDisplayName,
                 sourceURL: draft.originalUrl,
                 sourceType: "url",
+                originGlobalRecipeId: draft.globalRecipeId,
                 globalRecipeId: draft.globalRecipeId,
                 importedAt: Date(),
                 updatedBy: userId
@@ -672,13 +687,16 @@ final class MealService: ObservableObject, MealServicing {
                     .eq("id", value: mealId.uuidString)
                     .execute()
             } catch {
-                if let existingMeal = try? await fetchImportedMeal(homeId: homeId, globalRecipeId: draft.globalRecipeId) {
+                if let globalRecipeId = draft.globalRecipeId,
+                   let existingMeal = try? await fetchImportedMeal(homeId: homeId, globalRecipeId: globalRecipeId) {
                     return .alreadyExists(existingMeal)
                 }
                 throw error
             }
 
-            try await markRecipeImportSaved(importId: draft.importId, globalRecipeId: draft.globalRecipeId)
+            if let globalRecipeId = draft.globalRecipeId {
+                try await markRecipeImportSaved(importId: draft.importId, globalRecipeId: globalRecipeId)
+            }
             return .saved(mealId)
         } catch let error as MealServiceError {
             logMealError(error, operation: "saveImportedRecipe", homeId: homeId)
@@ -691,7 +709,8 @@ final class MealService: ObservableObject, MealServicing {
 
     func applyImportedRecipeMetadata(homeId: UUID, mealId: UUID, metadata: ImportedMealMetadata) async throws {
         do {
-            if let existingMeal = try await fetchImportedMeal(homeId: homeId, globalRecipeId: metadata.globalRecipeId),
+            if let globalRecipeId = metadata.globalRecipeId,
+               let existingMeal = try await fetchImportedMeal(homeId: homeId, globalRecipeId: globalRecipeId),
                existingMeal.id != mealId {
                 throw MealServiceError.duplicateImportedRecipe
             }
@@ -701,6 +720,7 @@ final class MealService: ObservableObject, MealServicing {
                 sourceName: metadata.sourceDisplayName,
                 sourceURL: metadata.originalURL,
                 sourceType: "url",
+                originGlobalRecipeId: metadata.globalRecipeId,
                 globalRecipeId: metadata.globalRecipeId,
                 importedAt: Date(),
                 updatedBy: userId
@@ -712,7 +732,9 @@ final class MealService: ObservableObject, MealServicing {
                 .eq("id", value: mealId.uuidString)
                 .execute()
 
-            try await markRecipeImportSaved(importId: metadata.importId, globalRecipeId: metadata.globalRecipeId)
+            if let globalRecipeId = metadata.globalRecipeId {
+                try await markRecipeImportSaved(importId: metadata.importId, globalRecipeId: globalRecipeId)
+            }
         } catch let error as MealServiceError {
             logMealError(error, operation: "applyImportedRecipeMetadata", homeId: homeId, mealId: mealId)
             throw error
@@ -1126,6 +1148,7 @@ final class MealService: ObservableObject, MealServicing {
             sourceName: normalizedOptionalString(payload.sourceName),
             sourceURL: normalizedOptionalString(payload.sourceURL),
             sourceType: normalizedOptionalString(payload.sourceType),
+            originGlobalRecipeId: payload.originGlobalRecipeId,
             globalRecipeId: payload.globalRecipeId,
             importedAt: payload.importedAt,
             notes: normalizedOptionalString(payload.notes),

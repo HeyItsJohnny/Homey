@@ -5,7 +5,7 @@ export interface RecipeImportRequest {
 
 export interface RecipeImportResponse {
   importId: string;
-  globalRecipeId: string;
+  globalRecipeId: string | null;
   alreadyExists: boolean;
   normalizedUrl: string;
   recipe: ImportedRecipePreview;

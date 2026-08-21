@@ -1,0 +1,31 @@
+export default class LongPoll {
+    constructor(endPoint: any, protocols: any);
+    authToken: string | undefined;
+    endPoint: any;
+    token: any;
+    skipHeartbeat: boolean;
+    reqs: Set<any>;
+    awaitingBatchAck: boolean;
+    currentBatch: any[] | null;
+    currentBatchTimer: NodeJS.Timeout | null;
+    batchBuffer: any[];
+    onopen: () => void;
+    onerror: () => void;
+    onmessage: () => void;
+    onclose: () => void;
+    pollEndpoint: any;
+    readyState: 0;
+    normalizeEndpoint(endPoint: any): any;
+    endpointURL(): any;
+    closeAndRetry(code: any, reason: any, wasClean: any): void;
+    ontimeout(): void;
+    isActive(): boolean;
+    poll(): void;
+    send(body: any): void;
+    batchSend(messages: any, offset?: number): void;
+    close(code: any, reason: any, wasClean: any): void;
+    ajax(method: any, headers: any, body: any, onCallerTimeout: any, callback: any): void;
+}
+//# sourceMappingURL=longpoll.d.ts.map
+
+// denoCacheMetadata={"headers":{"accept-ranges":"bytes","cf-ray":"a2e724d25bcda0f2-SJC","date":"Fri, 21 Aug 2026 05:12:37 GMT","content-length":"939","access-control-allow-origin":"*","cf-cache-status":"HIT","cache-control":"public, max-age=31536000, immutable","last-modified":"Wed, 15 Jul 2026 23:50:30 GMT","server":"cloudflare","age":"1913254","content-type":"application/typescript; charset=utf-8"},"url":"https://esm.sh/@supabase/phoenix@0.4.5/priv/static/types/longpoll.d.ts","time":1787289157}

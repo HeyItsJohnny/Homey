@@ -5,7 +5,8 @@ import type {
   ImportedRecipeStep,
   RecipeImportJSONValue,
 } from "./types.ts";
-import { cleanText, firstRawString, firstString, isJsonObject, type JsonObject, type JsonValue, stringArray } from "./json_ld.ts";
+import { firstRawString, firstString, isJsonObject, type JsonObject, type JsonValue, stringArray } from "./json_ld.ts";
+import { cleanText } from "./text_normalization.ts";
 import type { NormalizedRecipeURL } from "./url_normalization.ts";
 import { sha256Hex } from "./hash.ts";
 import { RecipeImportError } from "./errors.ts";
@@ -72,7 +73,9 @@ export function previewFromGlobalRecipe(recipe: Record<string, unknown>, source:
     servings: nullableCleanRecordString(recipe, "servings"),
     cuisine: nullableCleanRecordString(recipe, "cuisine"),
     mealTypes: stringArrayFromRecord(recipe, "meal_types"),
-    keywords: stringArrayFromRecord(recipe, "keywords").map(cleanText).filter(Boolean),
+    keywords: stringArrayFromRecord(recipe, "keywords")
+      .map(cleanText)
+      .filter((value) => value.length > 0),
     ingredients: importedIngredientArray(recipe.ingredients),
     steps: importedStepArray(recipe.steps),
     nutrition: jsonValueForResponse(recipe.nutrition as JsonValue | undefined),

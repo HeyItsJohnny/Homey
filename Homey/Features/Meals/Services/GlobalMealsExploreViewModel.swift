@@ -10,6 +10,7 @@ final class GlobalMealsExploreViewModel: ObservableObject {
     @Published private(set) var isLoadingInitial = false
     @Published private(set) var isLoadingMore = false
     @Published private(set) var isLoadingDetail = false
+    @Published private(set) var deletingGlobalMealIds: Set<UUID> = []
     @Published private(set) var hasMorePages = true
     @Published private(set) var errorMessage: String?
     @Published private(set) var successMessage: String?
@@ -101,6 +102,10 @@ final class GlobalMealsExploreViewModel: ObservableObject {
         selectedDetail = nil
     }
 
+    func isDeletingCommunityRecipe(_ mealId: UUID) -> Bool {
+        deletingGlobalMealIds.contains(mealId)
+    }
+
     func addToHome(_ meal: GlobalMeal) async -> GlobalMealAddResult? {
         guard let activeHomeId else {
             errorMessage = "Select a Home before adding recipes."
@@ -144,6 +149,31 @@ final class GlobalMealsExploreViewModel: ObservableObject {
             addStates[meal.id] = .available
             errorMessage = "Homey couldn't add this recipe to your Home."
             return nil
+        }
+    }
+
+    func deleteCommunityRecipe(_ meal: GlobalMeal) async -> Bool {
+        guard !deletingGlobalMealIds.contains(meal.id) else { return false }
+        deletingGlobalMealIds.insert(meal.id)
+        errorMessage = nil
+        successMessage = nil
+        defer {
+            deletingGlobalMealIds.remove(meal.id)
+        }
+
+        do {
+            try await service.deleteCommunityRecipe(globalMealId: meal.id)
+            removeGlobalMealLocally(id: meal.id)
+            selectedDetail = nil
+            successMessage = "Community recipe deleted."
+            refreshAfterCommunityRecipeDelete()
+            return true
+        } catch MealServiceError.permissionDenied {
+            errorMessage = MealServiceError.permissionDenied.localizedDescription
+            return false
+        } catch {
+            errorMessage = "Homey couldn't delete this community recipe."
+            return false
         }
     }
 
@@ -402,6 +432,22 @@ final class GlobalMealsExploreViewModel: ObservableObject {
             } else if addStates[meal.id] != .adding {
                 addStates[meal.id] = .available
             }
+        }
+    }
+
+    private func removeGlobalMealLocally(id: UUID) {
+        trendingMeals.removeAll { $0.id == id }
+        meals.removeAll { $0.id == id }
+        loadedMealIds.remove(id)
+        addStates[id] = nil
+        homeMealIdsByGlobalMealId[id] = nil
+    }
+
+    private func refreshAfterCommunityRecipeDelete() {
+        guard activeHomeId != nil else { return }
+        loadTask?.cancel()
+        loadTask = Task { [weak self] in
+            await self?.loadInitialData()
         }
     }
 }

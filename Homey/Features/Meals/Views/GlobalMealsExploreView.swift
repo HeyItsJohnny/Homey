@@ -614,6 +614,8 @@ private struct GlobalMealDetailView: View {
     let onOpenHomeMeal: (UUID) -> Void
     let onHomeMealAdded: (UUID) -> Void
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var authenticationService: AuthenticationService
+    @State private var isShowingDeleteConfirmation = false
 
     var body: some View {
         NavigationStack {
@@ -643,33 +645,73 @@ private struct GlobalMealDetailView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
                 }
+                if canDeleteCommunityRecipe {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button(role: .destructive) {
+                            isShowingDeleteConfirmation = true
+                        } label: {
+                            if viewModel.isDeletingCommunityRecipe(displayedMeal.id) {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Label("Delete Recipe", systemImage: "trash")
+                            }
+                        }
+                        .disabled(viewModel.isDeletingCommunityRecipe(displayedMeal.id))
+                    }
+                }
             }
         }
         .task(id: meal.id) {
             await viewModel.loadDetail(for: meal)
         }
+        .confirmationDialog(
+            "Delete Community Recipe?",
+            isPresented: $isShowingDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Recipe", role: .destructive) {
+                deleteCommunityRecipe()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove this recipe from Community Recipes.")
+        }
+    }
+
+    private var displayedMeal: GlobalMeal {
+        viewModel.selectedDetail?.meal ?? meal
+    }
+
+    private var canDeleteCommunityRecipe: Bool {
+        guard let currentUserId = authenticationService.currentUser?.id,
+              let createdBy = displayedMeal.createdBy else {
+            return false
+        }
+        return currentUserId == createdBy
     }
 
     private var hero: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            GlobalMealPhotoView(path: meal.primaryPhotoPath)
+        let displayedMeal = displayedMeal
+        return VStack(alignment: .leading, spacing: 14) {
+            GlobalMealPhotoView(path: displayedMeal.primaryPhotoPath)
                 .frame(height: 280)
                 .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
 
             VStack(alignment: .leading, spacing: 10) {
-                Text(meal.name)
+                Text(displayedMeal.name)
                     .font(.system(size: 30, weight: .bold, design: .rounded))
                     .foregroundStyle(HomeyDashboardTheme.primaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
-                if let description = meal.description, !description.isEmpty {
+                if let description = displayedMeal.description, !description.isEmpty {
                     Text(description)
                         .font(.body)
                         .foregroundStyle(HomeyDashboardTheme.secondaryText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                metadataGrid(for: meal)
+                metadataGrid(for: displayedMeal)
                 primaryAction
             }
             .padding(20)
@@ -728,6 +770,16 @@ private struct GlobalMealDetailView: View {
                         detailRow(row.0, value: row.1, systemImage: "leaf")
                     }
                 }
+            }
+        }
+    }
+
+    private func deleteCommunityRecipe() {
+        let mealToDelete = displayedMeal
+        Task {
+            let didDelete = await viewModel.deleteCommunityRecipe(mealToDelete)
+            if didDelete {
+                dismiss()
             }
         }
     }

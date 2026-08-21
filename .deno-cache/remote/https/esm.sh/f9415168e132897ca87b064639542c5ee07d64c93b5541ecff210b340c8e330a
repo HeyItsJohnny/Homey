@@ -1,0 +1,5 @@
+/* esm.sh - html-entities@2.5.2 */
+export * from "/html-entities@2.5.2/denonext/html-entities.mjs";
+export { default } from "/html-entities@2.5.2/denonext/html-entities.mjs";
+
+// denoCacheMetadata={"headers":{"content-type":"application/javascript; charset=utf-8","date":"Fri, 21 Aug 2026 05:12:37 GMT","access-control-expose-headers":"X-ESM-Path, X-TypeScript-Types","x-esm-path":"/html-entities@2.5.2/denonext/html-entities.mjs","access-control-allow-origin":"*","cache-control":"public, max-age=31536000, immutable","x-typescript-types":"https://esm.sh/html-entities@2.5.2/lib/index.d.ts","server":"cloudflare","vary":"User-Agent","cf-cache-status":"DYNAMIC","cf-ray":"a2e724ceebb1a0f2-SJC"},"url":"https://esm.sh/html-entities@2.5.2","time":1787289157}

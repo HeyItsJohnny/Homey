@@ -207,7 +207,7 @@ struct MealEditorView: View {
         Button {
             Task { await saveMeal() }
         } label: {
-            saveButtonLabel(title: saveDestination == .community ? "Contribute Recipe" : "Save Meal", compactTitle: "Save", isPrimary: true)
+            saveButtonLabel(title: saveDestination == .community ? "Add to Community" : "Save Meal", compactTitle: saveDestination == .community ? "Add" : "Save", isPrimary: true)
         }
         .buttonStyle(.plain)
         .disabled(viewModel.isSaving || !canSave)

@@ -6,9 +6,10 @@ import { normalizeRecipeUrl } from "./url_normalization.ts";
 import { sha256Hex } from "./hash.ts";
 import { fetchRecipePage } from "./fetch_page.ts";
 import { extractRecipeJsonLd } from "./json_ld.ts";
-import { normalizeSchemaRecipe, previewFromGlobalRecipe } from "./schema_recipe.ts";
+import { normalizeSchemaRecipe } from "./schema_recipe.ts";
 
 type RecipeImportStatus = "processing" | "succeeded" | "failed";
+const pipelineVersion = "parse-preview-v2";
 
 interface ImportTrackingInput {
   homeId: string;
@@ -25,12 +26,20 @@ Deno.serve(async (request) => {
 
   let importId: string | null = null;
   let serviceClient: SupabaseClient | null = null;
+  let stage = "request";
 
   try {
+    console.log("========== RECIPE IMPORT ==========", {
+      stage: "request_received",
+      pipeline_version: pipelineVersion,
+    });
+
+    stage = "method";
     if (request.method !== "POST") {
       throw new RecipeImportError("INVALID_URL", "Use POST to import a recipe URL.", 405);
     }
 
+    stage = "configure";
     const env = readSupabaseEnvironment();
     serviceClient = createClient(env.url, env.serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
@@ -40,12 +49,22 @@ Deno.serve(async (request) => {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
+    stage = "auth";
     const user = await authenticatedUser(userClient);
+    stage = "parse-request";
     const payload = await parseRequest(request);
+    stage = "home-membership";
     await assertHomeMembership(serviceClient, payload.home_id, user.id);
 
+    stage = "normalize-url";
     const normalized = normalizeRecipeUrl(payload.url);
     const normalizedUrlHash = await sha256Hex(normalized.normalizedUrl);
+    console.log("========== RECIPE IMPORT ==========", {
+      stage: "url_normalized",
+      pipeline_version: pipelineVersion,
+      domain: normalized.domain,
+      normalized_url_hash: normalizedUrlHash,
+    });
     debugLog("Normalized recipe URL", {
       domain: normalized.domain,
       normalizedUrl: normalized.normalizedUrl,
@@ -59,62 +78,52 @@ Deno.serve(async (request) => {
       normalizedUrlHash,
     };
 
-    const existingByUrl = await findExistingRecipeBySourceHash(serviceClient, normalizedUrlHash);
-    if (existingByUrl) {
-      debugLog("Existing global recipe matched by normalized URL hash", {
-        globalRecipeId: String(existingByUrl.recipe.id),
-      });
-      importId = await createRecipeImport(serviceClient, trackingInput);
-      await markRecipeImportSucceeded(serviceClient, importId, String(existingByUrl.recipe.id), true);
-      return jsonResponse(responseFromRecords(importId, existingByUrl.recipe, existingByUrl.source, true));
-    }
-
+    stage = "recipe-imports.insert";
     importId = await createRecipeImport(serviceClient, trackingInput);
 
+    stage = "fetch";
     const html = await fetchRecipePage(normalized.normalizedUrl);
+    console.log("========== RECIPE IMPORT ==========", {
+      stage: "source_fetched",
+      pipeline_version: pipelineVersion,
+      byte_length: html.length,
+    });
     debugLog("Starting JSON-LD recipe extraction", normalized.domain);
+    stage = "parse-json-ld";
     const recipeNode = extractRecipeJsonLd(html);
+    console.log("========== RECIPE IMPORT ==========", {
+      stage: "recipe_parsed",
+      pipeline_version: pipelineVersion,
+    });
     debugLog("Starting Schema.org recipe normalization", null);
+    stage = "normalize-recipe";
     const normalizedRecipe = await normalizeSchemaRecipe(recipeNode, normalized);
+    console.log("========== RECIPE IMPORT ==========", {
+      stage: "recipe_normalized",
+      pipeline_version: pipelineVersion,
+      ingredient_count: normalizedRecipe.preview.ingredients.length,
+      step_count: normalizedRecipe.preview.steps.length,
+    });
     debugLog("Normalized recipe preview", {
       title: normalizedRecipe.preview.title,
       ingredientCount: normalizedRecipe.preview.ingredients.length,
       stepCount: normalizedRecipe.preview.steps.length,
     });
 
-    const duplicate = await findStrongDuplicate(
-      serviceClient,
-      normalized.domain,
-      normalizedRecipe.sourceRecipeId,
-      normalizedRecipe.recipeFingerprint,
-    );
+    stage = "recipe_imports.update-succeeded";
+    await markRecipeImportSucceeded(serviceClient, importId, null, false);
 
-    let globalRecipeId: string;
-    let alreadyExists = false;
-
-    if (duplicate) {
-      globalRecipeId = String(duplicate.id);
-      alreadyExists = true;
-    } else {
-      globalRecipeId = await createGlobalRecipe(serviceClient, normalizedRecipe);
-    }
-
-    await createGlobalRecipeSource(serviceClient, {
-      globalRecipeId,
-      originalUrl: normalized.originalUrl,
-      normalizedUrl: normalized.normalizedUrl,
-      normalizedUrlHash,
-      sourceDomain: normalized.domain,
-      sourceName: normalizedRecipe.preview.source.name,
-      sourceRecipeId: normalizedRecipe.sourceRecipeId,
+    stage = "response";
+    console.log("========== RECIPE IMPORT ==========", {
+      stage: "returning_preview",
+      pipeline_version: pipelineVersion,
+      global_recipe_created: false,
+      global_recipe_source_created: false,
     });
-
-    await markRecipeImportSucceeded(serviceClient, importId, globalRecipeId, alreadyExists);
-
     const response: RecipeImportResponse = {
       importId,
-      globalRecipeId,
-      alreadyExists,
+      globalRecipeId: null,
+      alreadyExists: false,
       normalizedUrl: normalized.normalizedUrl,
       recipe: {
         ...normalizedRecipe.preview,
@@ -133,6 +142,7 @@ Deno.serve(async (request) => {
       await markRecipeImportFailed(serviceClient, importId, error);
     }
 
+    logRecipeImportFailure(stage, error, { importId });
     debugLog("Recipe import failed", error);
     return errorResponse(error);
   }
@@ -186,89 +196,13 @@ async function assertHomeMembership(client: SupabaseClient, homeId: string, user
     .maybeSingle();
 
   if (error) {
-    debugSupabaseError("assertHomeMembership", error, { homeId, userId });
+    logSupabaseError("assertHomeMembership", error, { homeId, userId });
     throw new RecipeImportError("HOME_ACCESS_DENIED", "You do not have access to this Home.", 403);
   }
 
   if (!data) {
     throw new RecipeImportError("HOME_ACCESS_DENIED", "You do not have access to this Home.", 403);
   }
-}
-
-async function findExistingRecipeBySourceHash(
-  client: SupabaseClient,
-  normalizedUrlHash: string,
-): Promise<{ source: Record<string, unknown>; recipe: Record<string, unknown> } | null> {
-  const { data: source, error: sourceError } = await client
-    .from("global_recipe_sources")
-    .select("*")
-    .eq("normalized_url_hash", normalizedUrlHash)
-    .maybeSingle();
-
-  if (sourceError) {
-    debugSupabaseError("findExistingRecipeBySourceHash.source", sourceError, { normalizedUrlHash });
-    throw new RecipeImportError("INTERNAL_ERROR", "We couldn't check this recipe source.", 500);
-  }
-
-  if (!source) {
-    return null;
-  }
-
-  const recipe = await loadGlobalRecipe(client, String(source.global_recipe_id));
-  return { source, recipe };
-}
-
-async function findStrongDuplicate(
-  client: SupabaseClient,
-  domain: string,
-  sourceRecipeId: string | null,
-  recipeFingerprint: string,
-): Promise<Record<string, unknown> | null> {
-  if (sourceRecipeId) {
-    const { data: source, error } = await client
-      .from("global_recipe_sources")
-      .select("global_recipe_id")
-      .eq("source_domain", domain)
-      .eq("source_recipe_id", sourceRecipeId)
-      .maybeSingle();
-
-    if (error) {
-      debugSupabaseError("findStrongDuplicate.sourceRecipeId", error, { domain, sourceRecipeId });
-      throw new RecipeImportError("INTERNAL_ERROR", "We couldn't check this recipe source.", 500);
-    }
-
-    if (source) {
-      return await loadGlobalRecipe(client, String(source.global_recipe_id));
-    }
-  }
-
-  const { data: recipe, error } = await client
-    .from("global_recipes")
-    .select("*")
-    .eq("recipe_fingerprint", recipeFingerprint)
-    .maybeSingle();
-
-  if (error) {
-    debugSupabaseError("findStrongDuplicate.recipeFingerprint", error, { domain, recipeFingerprint });
-    throw new RecipeImportError("INTERNAL_ERROR", "We couldn't check for existing recipes.", 500);
-  }
-
-  return recipe ?? null;
-}
-
-async function loadGlobalRecipe(client: SupabaseClient, globalRecipeId: string): Promise<Record<string, unknown>> {
-  const { data, error } = await client
-    .from("global_recipes")
-    .select("*")
-    .eq("id", globalRecipeId)
-    .single();
-
-  if (error || !data) {
-    debugSupabaseError("loadGlobalRecipe", error, { globalRecipeId, missingData: !data });
-    throw new RecipeImportError("INTERNAL_ERROR", "We couldn't load the imported recipe.", 500);
-  }
-
-  return data;
 }
 
 async function createRecipeImport(client: SupabaseClient, input: ImportTrackingInput): Promise<string> {
@@ -286,7 +220,7 @@ async function createRecipeImport(client: SupabaseClient, input: ImportTrackingI
     .single();
 
   if (error || !data?.id) {
-    debugSupabaseError("createRecipeImport", error, {
+    logSupabaseError("createRecipeImport", error, {
       homeId: input.homeId,
       userId: input.userId,
       normalizedUrlHash: input.normalizedUrlHash,
@@ -301,7 +235,7 @@ async function createRecipeImport(client: SupabaseClient, input: ImportTrackingI
 async function markRecipeImportSucceeded(
   client: SupabaseClient,
   importId: string,
-  globalRecipeId: string,
+  globalRecipeId: string | null,
   alreadyExists: boolean,
 ): Promise<void> {
   const { error } = await client
@@ -317,7 +251,7 @@ async function markRecipeImportSucceeded(
     .eq("id", importId);
 
   if (error) {
-    debugSupabaseError("markRecipeImportSucceeded", error, { importId, globalRecipeId, alreadyExists });
+    logSupabaseError("markRecipeImportSucceeded", error, { importId, globalRecipeId, alreadyExists });
   }
 }
 
@@ -337,108 +271,8 @@ async function markRecipeImportFailed(client: SupabaseClient, importId: string, 
     .eq("id", importId);
 
   if (updateError) {
-    debugSupabaseError("markRecipeImportFailed", updateError, { importId, errorCode: recipeError.code });
+    logSupabaseError("markRecipeImportFailed", updateError, { importId, errorCode: recipeError.code });
   }
-}
-
-async function createGlobalRecipe(client: SupabaseClient, normalizedRecipe: Awaited<ReturnType<typeof normalizeSchemaRecipe>>): Promise<string> {
-  const recipe = normalizedRecipe.preview;
-  const { data, error } = await client
-    .from("global_recipes")
-    .insert({
-      title: recipe.title,
-      description: recipe.description,
-      image_url: recipe.imageUrl,
-      prep_time_minutes: recipe.prepTimeMinutes,
-      cook_time_minutes: recipe.cookTimeMinutes,
-      total_time_minutes: recipe.totalTimeMinutes,
-      servings: recipe.servings,
-      cuisine: recipe.cuisine,
-      meal_types: recipe.mealTypes,
-      keywords: recipe.keywords,
-      ingredients: recipe.ingredients.map((ingredient) => ({
-        section_name: ingredient.sectionName,
-        ingredient_name: ingredient.ingredientName,
-        quantity: ingredient.quantity,
-        is_optional: ingredient.isOptional,
-        sort_order: ingredient.sortOrder,
-      })),
-      steps: recipe.steps.map((step) => ({
-        section_name: step.sectionName,
-        step_text: step.stepText,
-        sort_order: step.sortOrder,
-      })),
-      nutrition: recipe.nutrition,
-      recipe_fingerprint: normalizedRecipe.recipeFingerprint,
-      source_type: "url",
-      status: "active",
-      last_verified_at: new Date().toISOString(),
-    })
-    .select("id")
-    .single();
-
-  if (error || !data?.id) {
-    debugSupabaseError("createGlobalRecipe", error, {
-      title: recipe.title,
-      recipeFingerprint: normalizedRecipe.recipeFingerprint,
-      missingRecipeId: !data?.id,
-    });
-    throw new RecipeImportError("INTERNAL_ERROR", "We couldn't save the imported recipe.", 500);
-  }
-
-  return String(data.id);
-}
-
-async function createGlobalRecipeSource(
-  client: SupabaseClient,
-  input: {
-    globalRecipeId: string;
-    originalUrl: string;
-    normalizedUrl: string;
-    normalizedUrlHash: string;
-    sourceDomain: string;
-    sourceName: string | null;
-    sourceRecipeId: string | null;
-  },
-): Promise<void> {
-  const { error } = await client
-    .from("global_recipe_sources")
-    .insert({
-      global_recipe_id: input.globalRecipeId,
-      original_url: input.originalUrl,
-      normalized_url: input.normalizedUrl,
-      normalized_url_hash: input.normalizedUrlHash,
-      source_domain: input.sourceDomain,
-      source_name: input.sourceName,
-      source_recipe_id: input.sourceRecipeId,
-      is_primary: true,
-      last_verified_at: new Date().toISOString(),
-    });
-
-  if (error) {
-    debugSupabaseError("createGlobalRecipeSource", error, {
-      globalRecipeId: input.globalRecipeId,
-      normalizedUrlHash: input.normalizedUrlHash,
-      sourceDomain: input.sourceDomain,
-      sourceRecipeId: input.sourceRecipeId,
-    });
-    throw new RecipeImportError("INTERNAL_ERROR", "We couldn't save the recipe source.", 500);
-  }
-}
-
-function responseFromRecords(
-  importId: string,
-  recipe: Record<string, unknown>,
-  source: Record<string, unknown>,
-  alreadyExists: boolean,
-): RecipeImportResponse {
-  return {
-    importId,
-    globalRecipeId: String(recipe.id),
-    alreadyExists,
-    normalizedUrl: String(source.normalized_url ?? ""),
-    recipe: previewFromGlobalRecipe(recipe, source),
-  };
 }
 
 function debugLog(message: string, value: unknown): void {
@@ -450,25 +284,56 @@ function debugLog(message: string, value: unknown): void {
   console.log(`[import-recipe-url] ${message}`, value);
 }
 
-function debugSupabaseError(operation: string, error: unknown, context?: Record<string, unknown>): void {
-  const debugEnabled = Deno.env.get("DEBUG_RECIPE_IMPORT") === "true";
-  if (!debugEnabled) {
-    return;
-  }
-
-  console.error(`[import-recipe-url] Supabase error in ${operation}`, {
+function logRecipeImportFailure(stage: string, error: unknown, context?: Record<string, unknown>): void {
+  console.error("========== RECIPE IMPORT FAILED ==========", {
+    stage,
+    error_type: errorType(error),
     code: errorField(error, "code"),
     message: errorField(error, "message"),
     details: errorField(error, "details"),
     hint: errorField(error, "hint"),
+    constraint: errorField(error, "constraint"),
+    status: errorField(error, "status"),
+    stack: errorStack(error),
     context,
   });
 }
 
-function errorField(error: unknown, field: "code" | "message" | "details" | "hint"): unknown {
+function logSupabaseError(operation: string, error: unknown, context?: Record<string, unknown>): void {
+  console.error(`[import-recipe-url] Supabase error in ${operation}`, {
+    operation,
+    error_type: errorType(error),
+    code: errorField(error, "code"),
+    message: errorField(error, "message"),
+    details: errorField(error, "details"),
+    hint: errorField(error, "hint"),
+    constraint: errorField(error, "constraint"),
+    status: errorField(error, "status"),
+    stack: errorStack(error),
+    context,
+  });
+}
+
+function errorField(error: unknown, field: "code" | "message" | "details" | "hint" | "constraint" | "status"): unknown {
   if (!error || typeof error !== "object") {
     return null;
   }
 
   return (error as Record<string, unknown>)[field] ?? null;
+}
+
+function errorType(error: unknown): string {
+  if (error instanceof Error) {
+    return error.name;
+  }
+
+  return typeof error;
+}
+
+function errorStack(error: unknown): string | null {
+  if (error instanceof Error) {
+    return error.stack ?? null;
+  }
+
+  return null;
 }

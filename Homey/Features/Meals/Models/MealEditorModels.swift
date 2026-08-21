@@ -51,7 +51,7 @@ struct MealEditorDraft: Equatable, Sendable {
 
 struct ImportedMealMetadata: Equatable, Hashable, Sendable {
     let importId: UUID
-    let globalRecipeId: UUID
+    var globalRecipeId: UUID?
     let originalURL: String
     let normalizedURL: String
     let sourceDomain: String
@@ -60,6 +60,12 @@ struct ImportedMealMetadata: Equatable, Hashable, Sendable {
     var sourceDisplayName: String {
         let trimmedName = sourceName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmedName.isEmpty ? sourceDomain : trimmedName
+    }
+
+    func committed(globalRecipeId: UUID) -> ImportedMealMetadata {
+        var metadata = self
+        metadata.globalRecipeId = globalRecipeId
+        return metadata
     }
 }
 
@@ -265,6 +271,37 @@ struct SaveGlobalRecipeParameters: Encodable, Sendable {
         case requestedSourceName = "requested_source_name"
         case requestedSourceURL = "requested_source_url"
     }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(requestedTitle, forKey: .requestedTitle)
+        try encodeNullable(requestedDescription, into: &container, forKey: .requestedDescription)
+        try encodeNullable(requestedImageURL, into: &container, forKey: .requestedImageURL)
+        try encodeNullable(requestedPrepTimeMinutes, into: &container, forKey: .requestedPrepTimeMinutes)
+        try encodeNullable(requestedCookTimeMinutes, into: &container, forKey: .requestedCookTimeMinutes)
+        try encodeNullable(requestedTotalTimeMinutes, into: &container, forKey: .requestedTotalTimeMinutes)
+        try encodeNullable(requestedServings, into: &container, forKey: .requestedServings)
+        try encodeNullable(requestedCuisine, into: &container, forKey: .requestedCuisine)
+        try container.encode(requestedMealTypes, forKey: .requestedMealTypes)
+        try container.encode(requestedKeywords, forKey: .requestedKeywords)
+        try container.encode(requestedIngredients, forKey: .requestedIngredients)
+        try container.encode(requestedSteps, forKey: .requestedSteps)
+        try container.encode(requestedSourceType, forKey: .requestedSourceType)
+        try encodeNullable(requestedSourceName, into: &container, forKey: .requestedSourceName)
+        try encodeNullable(requestedSourceURL, into: &container, forKey: .requestedSourceURL)
+    }
+
+    private func encodeNullable<T: Encodable>(
+        _ value: T?,
+        into container: inout KeyedEncodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) throws {
+        if let value {
+            try container.encode(value, forKey: key)
+        } else {
+            try container.encodeNil(forKey: key)
+        }
+    }
 }
 
 struct SaveGlobalRecipeIngredient: Encodable, Equatable, Hashable, Sendable {
@@ -281,6 +318,27 @@ struct SaveGlobalRecipeIngredient: Encodable, Equatable, Hashable, Sendable {
         case sectionName = "section_name"
         case ingredientName = "ingredient_name"
     }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try encodeNullable(quantity, into: &container, forKey: .quantity)
+        try container.encode(sortOrder, forKey: .sortOrder)
+        try container.encode(isOptional, forKey: .isOptional)
+        try encodeNullable(sectionName, into: &container, forKey: .sectionName)
+        try container.encode(ingredientName, forKey: .ingredientName)
+    }
+
+    private func encodeNullable<T: Encodable>(
+        _ value: T?,
+        into container: inout KeyedEncodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) throws {
+        if let value {
+            try container.encode(value, forKey: key)
+        } else {
+            try container.encodeNil(forKey: key)
+        }
+    }
 }
 
 struct SaveGlobalRecipeStep: Encodable, Equatable, Hashable, Sendable {
@@ -292,6 +350,25 @@ struct SaveGlobalRecipeStep: Encodable, Equatable, Hashable, Sendable {
         case stepText = "step_text"
         case sortOrder = "sort_order"
         case sectionName = "section_name"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(stepText, forKey: .stepText)
+        try container.encode(sortOrder, forKey: .sortOrder)
+        try encodeNullable(sectionName, into: &container, forKey: .sectionName)
+    }
+
+    private func encodeNullable<T: Encodable>(
+        _ value: T?,
+        into container: inout KeyedEncodingContainer<CodingKeys>,
+        forKey key: CodingKeys
+    ) throws {
+        if let value {
+            try container.encode(value, forKey: key)
+        } else {
+            try container.encodeNil(forKey: key)
+        }
     }
 }
 

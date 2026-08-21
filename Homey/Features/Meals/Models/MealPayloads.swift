@@ -53,6 +53,7 @@ struct UpdateMealPayload: Encodable, Hashable, Sendable {
     var sourceName: String?
     var sourceURL: String?
     var sourceType: String?
+    var originGlobalRecipeId: UUID?
     var globalRecipeId: UUID?
     var importedAt: Date?
     var notes: String?
@@ -73,6 +74,7 @@ struct UpdateMealPayload: Encodable, Hashable, Sendable {
         sourceName: String? = nil,
         sourceURL: String? = nil,
         sourceType: String? = nil,
+        originGlobalRecipeId: UUID? = nil,
         globalRecipeId: UUID? = nil,
         importedAt: Date? = nil,
         notes: String? = nil,
@@ -92,6 +94,7 @@ struct UpdateMealPayload: Encodable, Hashable, Sendable {
         self.sourceName = sourceName
         self.sourceURL = sourceURL
         self.sourceType = sourceType
+        self.originGlobalRecipeId = originGlobalRecipeId
         self.globalRecipeId = globalRecipeId
         self.importedAt = importedAt
         self.notes = notes
@@ -113,6 +116,7 @@ struct UpdateMealPayload: Encodable, Hashable, Sendable {
         case sourceName = "source_name"
         case sourceURL = "source_url"
         case sourceType = "source_type"
+        case originGlobalRecipeId = "origin_global_recipe_id"
         case globalRecipeId = "global_recipe_id"
         case importedAt = "imported_at"
         case notes

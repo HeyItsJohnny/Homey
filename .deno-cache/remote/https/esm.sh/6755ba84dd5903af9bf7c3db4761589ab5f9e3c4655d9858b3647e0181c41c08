@@ -1,0 +1,35 @@
+export type Msg<T> = {
+    join_ref?: string | null;
+    ref?: string | null;
+    topic: string;
+    event: string;
+    payload: T;
+};
+export default class Serializer {
+    HEADER_LENGTH: number;
+    USER_BROADCAST_PUSH_META_LENGTH: number;
+    KINDS: {
+        userBroadcastPush: number;
+        userBroadcast: number;
+    };
+    BINARY_ENCODING: number;
+    JSON_ENCODING: number;
+    BROADCAST_EVENT: string;
+    allowedMetadataKeys: string[];
+    constructor(allowedMetadataKeys?: string[] | null);
+    encode(msg: Msg<{
+        [key: string]: any;
+    }>, callback: (result: ArrayBuffer | string) => any): any;
+    private _binaryEncodeUserBroadcastPush;
+    private _encodeBinaryUserBroadcastPush;
+    private _encodeJsonUserBroadcastPush;
+    private _encodeUserBroadcastPush;
+    decode(rawPayload: ArrayBuffer | string, callback: Function): any;
+    private _binaryDecode;
+    private _decodeUserBroadcast;
+    private _isArrayBuffer;
+    private _pick;
+}
+//# sourceMappingURL=serializer.d.ts.map
+
+// denoCacheMetadata={"headers":{"age":"855613","cf-cache-status":"HIT","date":"Fri, 21 Aug 2026 05:12:37 GMT","content-length":"1006","last-modified":"Tue, 11 Aug 2026 07:32:23 GMT","access-control-allow-origin":"*","cf-ray":"a2e724d23b5ba0f2-SJC","content-type":"application/typescript; charset=utf-8","cache-control":"public, max-age=31536000, immutable","server":"cloudflare","accept-ranges":"bytes"},"url":"https://esm.sh/@supabase/realtime-js@2.112.3/dist/module/lib/serializer.d.ts","time":1787289157}

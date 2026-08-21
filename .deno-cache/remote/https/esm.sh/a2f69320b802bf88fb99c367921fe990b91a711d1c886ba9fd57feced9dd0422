@@ -1,0 +1,7 @@
+export type { Socket, SocketOptions, SocketState, SocketOnOpen, SocketOnError, SocketOnMessage, SocketOnClose, SocketStateChangeCallbacks, Channel, ChannelState, ChannelEvent, ChannelBindingCallback, ChannelFilterBindings, ChannelOnMessage, ChannelOnErrorCallback, PresenceState, Message, Params, Transport, Timer, Vsn, Encode, Decode, HeartbeatCallback, HeartbeatStatus, } from 'https://esm.sh/@supabase/phoenix@0.4.5/priv/static/types/index.d.ts';
+import type { Channel, PresenceState } from 'https://esm.sh/@supabase/phoenix@0.4.5/priv/static/types/index.d.ts';
+export type Push = ReturnType<Channel['push']>;
+export type PresenceStates = Record<string, PresenceState>;
+//# sourceMappingURL=types.d.ts.map
+
+// denoCacheMetadata={"headers":{"cache-control":"public, max-age=31536000, immutable","access-control-allow-origin":"*","content-length":"709","date":"Fri, 21 Aug 2026 05:12:37 GMT","cf-cache-status":"HIT","cf-ray":"a2e724d23b5da0f2-SJC","content-type":"application/typescript; charset=utf-8","server":"cloudflare","last-modified":"Tue, 11 Aug 2026 07:32:23 GMT","accept-ranges":"bytes","age":"855613"},"url":"https://esm.sh/@supabase/realtime-js@2.112.3/dist/module/phoenix/types.d.ts","time":1787289157}

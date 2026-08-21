@@ -19,6 +19,7 @@ struct GlobalRecipe: Identifiable, Codable, Hashable, Sendable {
     let sourceType: String
     let status: String
     let saveCount: Int64
+    let createdBy: UUID?
     let createdAt: Date
     let updatedAt: Date
     let lastVerifiedAt: Date?
@@ -42,6 +43,7 @@ struct GlobalRecipe: Identifiable, Codable, Hashable, Sendable {
         case sourceType = "source_type"
         case status
         case saveCount = "save_count"
+        case createdBy = "created_by"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
         case lastVerifiedAt = "last_verified_at"
