@@ -190,7 +190,7 @@ struct CalendarView: View {
         }) { presentation in
             MealEditorView(
                 mode: .edit(mealID: presentation.plannedMeal.meal.id),
-                onSaved: { _, _ in
+                onSaved: { _, _, _ in
                     Task {
                         await viewModel.reload()
                     }

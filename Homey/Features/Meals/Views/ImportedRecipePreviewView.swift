@@ -3,13 +3,13 @@ import SwiftUI
 struct ImportedRecipePreviewView: View {
     let response: RecipeImportResponse
     let saveDestination: RecipeSaveDestination
-    var onOpenSavedRecipe: (UUID, Meal?) -> Void
+    var onOpenSavedRecipe: (UUID, Meal?, UUID?) -> Void
 
     init(
         response: RecipeImportResponse,
         homeId: UUID? = nil,
         saveDestination: RecipeSaveDestination = .home,
-        onOpenSavedRecipe: @escaping (UUID, Meal?) -> Void = { _, _ in }
+        onOpenSavedRecipe: @escaping (UUID, Meal?, UUID?) -> Void = { _, _, _ in }
     ) {
         self.response = response
         self.saveDestination = saveDestination
@@ -17,8 +17,8 @@ struct ImportedRecipePreviewView: View {
     }
 
     var body: some View {
-        MealEditorView(mode: .imported(response: response), saveDestination: saveDestination) { mealID, meal in
-            onOpenSavedRecipe(mealID, meal)
+        MealEditorView(mode: .imported(response: response), saveDestination: saveDestination) { mealID, meal, globalRecipeID in
+            onOpenSavedRecipe(mealID, meal, globalRecipeID)
         }
     }
 }

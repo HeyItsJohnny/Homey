@@ -18,20 +18,18 @@ struct MealEditorView: View {
     @State private var tagText = ""
     @FocusState private var focusedField: MealEditorField?
 
-    private let saveDestination: RecipeSaveDestination
-    var onSaved: (UUID, Meal?) -> Void
+    var onSaved: (UUID, Meal?, UUID?) -> Void
     var onCancel: () -> Void
     var onDelete: (UUID) -> Void
 
     init(
         mode: MealEditorMode,
         saveDestination: RecipeSaveDestination = .home,
-        onSaved: @escaping (UUID, Meal?) -> Void = { _, _ in },
+        onSaved: @escaping (UUID, Meal?, UUID?) -> Void = { _, _, _ in },
         onCancel: @escaping () -> Void = { },
         onDelete: @escaping (UUID) -> Void = { _ in }
     ) {
         _viewModel = StateObject(wrappedValue: MealEditorViewModel(mode: mode, saveDestination: saveDestination))
-        self.saveDestination = saveDestination
         self.onSaved = onSaved
         self.onCancel = onCancel
         self.onDelete = onDelete
@@ -153,7 +151,7 @@ struct MealEditorView: View {
     private var topControls: some View {
         HStack(spacing: 10) {
             cancelButton
-            if saveDestination == .home {
+            if canSaveDraft {
                 saveDraftButton
             }
             saveMealButton
@@ -164,7 +162,7 @@ struct MealEditorView: View {
         HStack(spacing: 10) {
             cancelButton
                 .frame(maxWidth: .infinity)
-            if saveDestination == .home {
+            if canSaveDraft {
                 saveDraftButton
                     .frame(maxWidth: .infinity)
             }
@@ -200,14 +198,14 @@ struct MealEditorView: View {
             saveButtonLabel(title: "Save Draft", compactTitle: "Draft", isPrimary: false)
         }
         .buttonStyle(.plain)
-        .disabled(viewModel.isSaving || !canSave)
+        .disabled(!canSaveDraft)
     }
 
     private var saveMealButton: some View {
         Button {
             Task { await saveMeal() }
         } label: {
-            saveButtonLabel(title: saveDestination == .community ? "Add to Community" : "Save Meal", compactTitle: saveDestination == .community ? "Add" : "Save", isPrimary: true)
+            saveButtonLabel(title: primarySaveTitle, compactTitle: primarySaveCompactTitle, isPrimary: true)
         }
         .buttonStyle(.plain)
         .disabled(viewModel.isSaving || !canSave)
@@ -215,7 +213,7 @@ struct MealEditorView: View {
 
     @ViewBuilder
     private var permissionState: some View {
-        if saveDestination == .community {
+        if viewModel.showsDestinationControls && !viewModel.addToHomeRecipes {
             EmptyView()
         } else {
         switch effectivePermissionResolution {
@@ -399,7 +397,11 @@ struct MealEditorView: View {
 
     private var mealDetailsCard: some View {
         MealEditorCard(title: "Meal Details") {
+            destinationControls
+        } content: {
             VStack(alignment: .leading, spacing: 15) {
+                destinationValidationText
+
                 labeledTextField("Meal Name", text: $viewModel.name, field: .name, placeholder: "Chicken Tortilla Soup")
                 validationText(for: .name)
 
@@ -426,6 +428,43 @@ struct MealEditorView: View {
                 cuisineSuggestions
                 tagsEditor
             }
+        }
+    }
+
+    @ViewBuilder
+    private var destinationControls: some View {
+        if viewModel.showsDestinationControls {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) {
+                    destinationToggle("Add to Home Recipes", isOn: $viewModel.addToHomeRecipes)
+                    destinationToggle("Share with Community", isOn: $viewModel.shareWithCommunity)
+                }
+
+                VStack(alignment: .trailing, spacing: 6) {
+                    destinationToggle("Add to Home Recipes", isOn: $viewModel.addToHomeRecipes)
+                    destinationToggle("Share with Community", isOn: $viewModel.shareWithCommunity)
+                }
+            }
+            .tint(HomeyDashboardTheme.warmBrown)
+        }
+    }
+
+    private func destinationToggle(_ title: String, isOn: Binding<Bool>) -> some View {
+        Toggle(title, isOn: isOn)
+            .toggleStyle(.switch)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            .fixedSize(horizontal: true, vertical: false)
+            .disabled(viewModel.isSaving)
+    }
+
+    @ViewBuilder
+    private var destinationValidationText: some View {
+        if viewModel.showsDestinationControls && !viewModel.hasSelectedSaveDestination {
+            Text("Choose at least one place to save this recipe.")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.coralAccent)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -774,8 +813,20 @@ struct MealEditorView: View {
     }
 
     private var canSave: Bool {
-        if saveDestination == .community {
-            return true
+        guard viewModel.hasSelectedSaveDestination else {
+            return false
+        }
+
+        if viewModel.showsDestinationControls {
+            guard viewModel.addToHomeRecipes else {
+                return true
+            }
+
+            guard let resolvedPermissions else {
+                return false
+            }
+
+            return resolvedPermissions.meals.canCreate
         }
 
         guard let resolvedPermissions else {
@@ -783,6 +834,43 @@ struct MealEditorView: View {
         }
 
         return viewModel.isCreatingNewMeal ? resolvedPermissions.meals.canCreate : resolvedPermissions.meals.canEdit
+    }
+
+    private var canSaveDraft: Bool {
+        guard !viewModel.isSaving else { return false }
+
+        if viewModel.showsDestinationControls {
+            guard viewModel.addToHomeRecipes,
+                  let resolvedPermissions else {
+                return false
+            }
+            return resolvedPermissions.meals.canCreate
+        }
+
+        guard let resolvedPermissions else {
+            return false
+        }
+        return viewModel.isCreatingNewMeal ? resolvedPermissions.meals.canCreate : resolvedPermissions.meals.canEdit
+    }
+
+    private var primarySaveTitle: String {
+        if viewModel.showsDestinationControls,
+           !viewModel.addToHomeRecipes,
+           viewModel.shareWithCommunity {
+            return "Add to Community"
+        }
+
+        return "Save Meal"
+    }
+
+    private var primarySaveCompactTitle: String {
+        if viewModel.showsDestinationControls,
+           !viewModel.addToHomeRecipes,
+           viewModel.shareWithCommunity {
+            return "Add"
+        }
+
+        return "Save"
     }
 
     private var canDeleteMeal: Bool {
@@ -796,10 +884,6 @@ struct MealEditorView: View {
     }
 
     private var permissionDeniedMessage: String {
-        if saveDestination == .community {
-            return "You do not have permission to contribute recipes."
-        }
-
         return viewModel.isCreatingNewMeal
             ? "You do not have permission to create meals in this Home."
             : "You do not have permission to edit meals in this Home."
@@ -825,25 +909,16 @@ struct MealEditorView: View {
     private func saveDraft() async {
         guard let permissions = permissionsForSave() else { return }
         let result = await viewModel.saveDraft(homeId: homeService.selectedHomeID, permissions: permissions)
-        if case .saved(let mealID, let meal) = result {
-            onSaved(mealID, meal)
+        if case .saved(let mealID, let meal, _) = result {
+            onSaved(mealID, meal, nil)
         }
     }
 
     private func saveMeal() async {
-        if saveDestination == .community {
-            let result = await viewModel.saveCommunityRecipe()
-            if case .saved(let globalRecipeID, let meal) = result {
-                onSaved(globalRecipeID, meal)
-                dismiss()
-            }
-            return
-        }
-
-        guard let permissions = permissionsForSave() else { return }
+        let permissions = permissionsForSave() ?? .restrictive
         let result = await viewModel.saveMeal(homeId: homeService.selectedHomeID, permissions: permissions)
-        if case .saved(let mealID, let meal) = result {
-            onSaved(mealID, meal)
+        if case .saved(let mealID, let meal, let globalRecipeID) = result {
+            onSaved(mealID, meal, globalRecipeID)
             dismiss()
         }
     }

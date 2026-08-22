@@ -29,6 +29,7 @@ protocol MealServicing: AnyObject {
     func fetchImportedMeal(homeId: UUID, globalRecipeId: UUID) async throws -> Meal?
     func saveImportedRecipe(homeId: UUID, draft: ImportedRecipeDraft) async throws -> ImportedRecipeSaveResult
     func applyImportedRecipeMetadata(homeId: UUID, mealId: UUID, metadata: ImportedMealMetadata) async throws
+    func linkMealToGlobalRecipe(homeId: UUID, mealId: UUID, globalRecipeId: UUID) async throws
     func deleteRecipe(mealId: UUID) async throws
     func uploadMealPhoto(homeId: UUID, mealId: UUID, imageData: Data, fileExtension: String) async throws -> MealPhoto
     func deleteMealPhoto(photo: MealPhoto) async throws
@@ -740,6 +741,29 @@ final class MealService: ObservableObject, MealServicing {
             throw error
         } catch {
             logMealError(error, operation: "applyImportedRecipeMetadata", homeId: homeId, mealId: mealId)
+            throw MealServiceError.saveMealFailed
+        }
+    }
+
+    func linkMealToGlobalRecipe(homeId: UUID, mealId: UUID, globalRecipeId: UUID) async throws {
+        do {
+            let userId = try await authenticatedUserId()
+            let metadataPayload = UpdateMealPayload(
+                originGlobalRecipeId: globalRecipeId,
+                updatedBy: userId
+            )
+
+            try await client
+                .from("meals")
+                .update(metadataPayload)
+                .eq("id", value: mealId.uuidString)
+                .eq("home_id", value: homeId.uuidString)
+                .execute()
+        } catch let error as MealServiceError {
+            logMealError(error, operation: "linkMealToGlobalRecipe", homeId: homeId, mealId: mealId)
+            throw error
+        } catch {
+            logMealError(error, operation: "linkMealToGlobalRecipe", homeId: homeId, mealId: mealId)
             throw MealServiceError.saveMealFailed
         }
     }

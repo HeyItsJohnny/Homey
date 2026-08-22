@@ -31,22 +31,33 @@ final class MealEditorViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var successMessage: String?
     @Published private(set) var validationErrors: [MealEditorValidationError] = []
+    @Published var addToHomeRecipes = true
+    @Published var shareWithCommunity = true
 
     let mode: MealEditorMode
-    let saveDestination: RecipeSaveDestination
     private let mealService: MealServicing
     private let globalMealsService: GlobalMealsServicing
     private var initialDraft = MealEditorDraft()
     private var loadedMealID: UUID?
     private var persistedMealID: UUID?
     private var selectedPhotoSource: MealEditorSelectedPhotoSource?
+    private var initialAddToHomeRecipes = true
+    private var initialShareWithCommunity = true
+    private var committedGlobalRecipeId: UUID?
 
     init(mode: MealEditorMode, saveDestination: RecipeSaveDestination = .home, mealService: MealServicing? = nil, globalMealsService: GlobalMealsServicing? = nil) {
         self.mode = mode
-        self.saveDestination = saveDestination
         self.mealService = mealService ?? MealService()
         self.globalMealsService = globalMealsService ?? GlobalMealsService()
         persistedMealID = mode.mealID
+        switch mode {
+        case .create, .imported:
+            addToHomeRecipes = saveDestination != .community
+            shareWithCommunity = true
+        case .edit:
+            addToHomeRecipes = true
+            shareWithCommunity = false
+        }
         if let importedResponse = mode.importedResponse {
             applyImportedResponse(importedResponse)
         } else {
@@ -57,10 +68,6 @@ final class MealEditorViewModel: ObservableObject {
     }
 
     var title: String {
-        if saveDestination == .community {
-            return "Contribute Recipe"
-        }
-
         if persistedMealID != nil {
             return "Edit Meal"
         }
@@ -74,10 +81,6 @@ final class MealEditorViewModel: ObservableObject {
     }
 
     var subtitle: String {
-        if saveDestination == .community {
-            return "Share a recipe with the Homey community library."
-        }
-
         if persistedMealID != nil {
             return "Make changes to your recipe."
         }
@@ -91,7 +94,10 @@ final class MealEditorViewModel: ObservableObject {
     }
 
     var hasUnsavedChanges: Bool {
-        buildDraft() != initialDraft || selectedPhotoData != nil
+        buildDraft() != initialDraft
+            || selectedPhotoData != nil
+            || addToHomeRecipes != initialAddToHomeRecipes
+            || shareWithCommunity != initialShareWithCommunity
     }
 
     var hasPhoto: Bool {
@@ -100,6 +106,14 @@ final class MealEditorViewModel: ObservableObject {
 
     var isCreatingNewMeal: Bool {
         persistedMealID == nil && mode.mealID == nil
+    }
+
+    var showsDestinationControls: Bool {
+        isCreatingNewMeal
+    }
+
+    var hasSelectedSaveDestination: Bool {
+        !showsDestinationControls || addToHomeRecipes || shareWithCommunity
     }
 
     private var permissionDeniedMessage: String {
@@ -171,6 +185,11 @@ final class MealEditorViewModel: ObservableObject {
     }
 
     func saveDraft(homeId: UUID?, permissions: HomePermissions) async -> MealEditorSaveResult {
+        guard !showsDestinationControls || addToHomeRecipes else {
+            validationErrors = [MealEditorValidationError(field: .destination, message: "Drafts can only be saved to Home Recipes.")]
+            return .failed
+        }
+
         guard validateForDraft(permissions: permissions), let homeId else {
             if homeId == nil {
                 validationErrors.append(MealEditorValidationError(field: .permission, message: "Choose a Home before saving."))
@@ -188,11 +207,16 @@ final class MealEditorViewModel: ObservableObject {
     }
 
     func saveMeal(homeId: UUID?, permissions: HomePermissions) async -> MealEditorSaveResult {
-        if saveDestination == .community {
+        if showsDestinationControls && !hasSelectedSaveDestination {
+            validationErrors = [MealEditorValidationError(field: .destination, message: "Choose at least one place to save this recipe.")]
+            return .failed
+        }
+
+        if showsDestinationControls && shareWithCommunity && !addToHomeRecipes {
             return await saveCommunityRecipe()
         }
 
-        guard validateForPublish(permissions: permissions), let homeId else {
+        guard validateForPublish(permissions: permissions), let homeId, addToHomeRecipes || !showsDestinationControls else {
             if homeId == nil {
                 validationErrors.append(MealEditorValidationError(field: .permission, message: "Choose a Home before saving."))
             }
@@ -209,6 +233,11 @@ final class MealEditorViewModel: ObservableObject {
     }
 
     func saveCommunityRecipe() async -> MealEditorSaveResult {
+        if showsDestinationControls && !hasSelectedSaveDestination {
+            validationErrors = [MealEditorValidationError(field: .destination, message: "Choose at least one place to save this recipe.")]
+            return .failed
+        }
+
         guard validateForCommunityPublish() else {
             logSaveDiagnostic(
                 error: nil,
@@ -237,7 +266,7 @@ final class MealEditorViewModel: ObservableObject {
             loadedMealID = nil
             captureInitialDraft()
             successMessage = nil
-            return .saved(mealID: globalRecipeId, meal: nil)
+            return .saved(mealID: globalRecipeId, meal: nil, globalRecipeID: globalRecipeId)
         } catch {
             let draft = buildDraft()
             logSaveDiagnostic(
@@ -309,6 +338,8 @@ final class MealEditorViewModel: ObservableObject {
 
     func discardChanges() {
         apply(draft: initialDraft)
+        addToHomeRecipes = initialAddToHomeRecipes
+        shareWithCommunity = initialShareWithCommunity
         selectedPhotoData = nil
         selectedPhotoImage = nil
         selectedPhotoSource = nil
@@ -446,7 +477,7 @@ final class MealEditorViewModel: ObservableObject {
 
         do {
             var draft = buildDraft()
-            try await commitImportedGlobalRecipeIfNeeded(draft: &draft, saveAsDraft: saveAsDraft)
+            let globalRecipeId = try await commitGlobalRecipeIfNeeded(draft: &draft, saveAsDraft: saveAsDraft)
 
             let savedMealID: UUID
             if let existingMealID = persistedMealID {
@@ -470,6 +501,12 @@ final class MealEditorViewModel: ObservableObject {
                     mealId: savedMealID,
                     metadata: importedMetadata
                 )
+            } else if let globalRecipeId {
+                try await mealService.linkMealToGlobalRecipe(
+                    homeId: homeId,
+                    mealId: savedMealID,
+                    globalRecipeId: globalRecipeId
+                )
             }
 
             apply(draft: draft)
@@ -488,7 +525,7 @@ final class MealEditorViewModel: ObservableObject {
                 successMessage = nil
             }
             NotificationCenter.default.post(name: .homeyMealsDidChange, object: nil)
-            return .saved(mealID: savedMealID, meal: savedMeal)
+            return .saved(mealID: savedMealID, meal: savedMeal, globalRecipeID: globalRecipeId)
         } catch {
             let draft = buildDraft()
             logSaveDiagnostic(
@@ -591,23 +628,35 @@ final class MealEditorViewModel: ObservableObject {
         }
     }
 
-    private func commitImportedGlobalRecipeIfNeeded(draft: inout MealEditorDraft, saveAsDraft: Bool) async throws {
+    private func commitGlobalRecipeIfNeeded(draft: inout MealEditorDraft, saveAsDraft: Bool) async throws -> UUID? {
         guard !saveAsDraft,
-              let importedMetadata = draft.importedMetadata,
-              importedMetadata.globalRecipeId == nil else {
-            return
+              shareWithCommunity else {
+            return nil
+        }
+
+        if let globalRecipeId = draft.importedMetadata?.globalRecipeId {
+            return globalRecipeId
+        }
+
+        if let committedGlobalRecipeId {
+            return committedGlobalRecipeId
         }
 
         let globalRecipeId = try await globalMealsService.saveCommunityRecipe(draft: draft)
-        let committedMetadata = importedMetadata.committed(globalRecipeId: globalRecipeId)
-        draft.importedMetadata = committedMetadata
-        initialDraft.importedMetadata = committedMetadata
+        committedGlobalRecipeId = globalRecipeId
+        if let importedMetadata = draft.importedMetadata {
+            let committedMetadata = importedMetadata.committed(globalRecipeId: globalRecipeId)
+            draft.importedMetadata = committedMetadata
+            initialDraft.importedMetadata = committedMetadata
+        }
 
         #if DEBUG
-        print("Imported Home recipe committed to global recipe after review")
+        print("Home recipe committed to global recipe after review")
         print("global_recipe_id: \(globalRecipeId.uuidString)")
         print("home_recipe_created: pending")
         #endif
+
+        return globalRecipeId
     }
 
     private func prepareImportedSourcePhotoIfNeeded() async {
@@ -1119,6 +1168,8 @@ final class MealEditorViewModel: ObservableObject {
 
     private func captureInitialDraft() {
         initialDraft = buildDraft()
+        initialAddToHomeRecipes = addToHomeRecipes
+        initialShareWithCommunity = shareWithCommunity
     }
 
     private func renumberIngredients() {

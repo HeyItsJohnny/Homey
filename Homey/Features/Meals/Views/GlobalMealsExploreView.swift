@@ -7,8 +7,6 @@ struct GlobalMealsExploreView: View {
     @Binding var isFiltersPresented: Bool
     let onOpenHomeMeal: (UUID) -> Void
     let onHomeMealAdded: (UUID) -> Void
-    let onContributeManualRecipe: () -> Void
-    let onContributeRecipeURL: () -> Void
 
     @State private var browseLayout: GlobalMealsBrowseLayout = .grid
     @State private var selectedDetailMeal: GlobalMeal?
@@ -64,9 +62,7 @@ struct GlobalMealsExploreView: View {
         ViewThatFits(in: .horizontal) {
             HStack(alignment: .top, spacing: 20) {
                 CommunityRecipesIntroCard(
-                    recipeCount: visibleRecipeCount,
-                    onContributeManualRecipe: onContributeManualRecipe,
-                    onContributeRecipeURL: onContributeRecipeURL
+                    recipeCount: visibleRecipeCount
                 )
                     .frame(width: 300)
                     .fixedSize(horizontal: false, vertical: true)
@@ -78,9 +74,7 @@ struct GlobalMealsExploreView: View {
 
             HStack(alignment: .top, spacing: 16) {
                 CommunityRecipesIntroCard(
-                    recipeCount: visibleRecipeCount,
-                    onContributeManualRecipe: onContributeManualRecipe,
-                    onContributeRecipeURL: onContributeRecipeURL
+                    recipeCount: visibleRecipeCount
                 )
                     .frame(width: 280)
                     .fixedSize(horizontal: false, vertical: true)
@@ -976,8 +970,6 @@ private struct GlobalMealsFiltersView: View {
 
 private struct CommunityRecipesIntroCard: View {
     let recipeCount: Int
-    let onContributeManualRecipe: () -> Void
-    let onContributeRecipeURL: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -1003,19 +995,6 @@ private struct CommunityRecipesIntroCard: View {
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(HomeyDashboardTheme.secondaryText)
-
-            Menu {
-                Button("Manual Recipe", action: onContributeManualRecipe)
-                Button("Import from URL", action: onContributeRecipeURL)
-            } label: {
-                Label("Contribute Recipe", systemImage: "square.and.pencil")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .background(HomeyDashboardTheme.warmBrown, in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 2)
         }
         .padding(18)
         .dashboardCard(cornerRadius: 24)

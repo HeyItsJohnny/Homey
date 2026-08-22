@@ -76,8 +76,8 @@ struct MealsView: View {
                         )
                     case .resolved(let resolvedPermissions):
                         if resolvedPermissions.meals.canCreate {
-                            AddMealView { mealID, meal in
-                                handleSavedMeal(mealID: mealID, meal: meal)
+                            AddMealView { savedID, meal, globalRecipeID in
+                                handleCreatedRecipeSave(savedID: savedID, meal: meal, globalRecipeID: globalRecipeID)
                             }
                         } else {
                             MealMessageCard(
@@ -115,8 +115,9 @@ struct MealsView: View {
                         }
                     }
                 case .importedRecipePreview(let response):
-                    ImportedRecipePreviewView(response: response, homeId: homeService.selectedHomeID) { mealID, savedMeal in
-                        let savedGlobalRecipeId = savedMeal?.originGlobalRecipeId ?? savedMeal?.globalRecipeId ?? response.globalRecipeId
+                    ImportedRecipePreviewView(response: response, homeId: homeService.selectedHomeID) { savedID, savedMeal, globalRecipeID in
+                        let savedGlobalRecipeId = globalRecipeID ?? savedMeal?.originGlobalRecipeId ?? savedMeal?.globalRecipeId ?? response.globalRecipeId
+                        let savedToHome = savedGlobalRecipeId == nil || savedGlobalRecipeId != savedID
 
                         #if DEBUG
                         print("URL import completed")
@@ -130,68 +131,21 @@ struct MealsView: View {
                         } else {
                             print("saved_global_recipe_id: nil")
                         }
-                        print("home_meal_id: \(mealID.uuidString)")
+                        print("saved_id: \(savedID.uuidString)")
                         print("explore_refresh_requested: true")
                         #endif
                         if let globalRecipeId = savedGlobalRecipeId {
                             globalExploreViewModel.refreshAfterGlobalRecipeImport(
                                 globalRecipeId: globalRecipeId,
-                                homeMealId: mealID,
+                                homeMealId: savedToHome ? savedID : nil,
                                 homeId: homeService.selectedHomeID,
                                 selectedMealType: viewModel.selectedMealType
                             )
-                        } else {
-                            globalExploreViewModel.reload()
                         }
-                        selectedTab = .recipes
-                        handleSavedMeal(mealID: mealID, meal: nil)
-                        path = NavigationPath()
-                    }
-                case .contributeRecipe:
-                    MealEditorView(mode: .create, saveDestination: .community) { globalRecipeID, _ in
-                        #if DEBUG
-                        print("Community manual recipe completed")
-                        print("global_recipe_id: \(globalRecipeID.uuidString)")
-                        print("home_recipe_created: false")
-                        print("explore_refresh_requested: true")
-                        #endif
-                        globalExploreViewModel.refreshAfterGlobalRecipeImport(
-                            globalRecipeId: globalRecipeID,
-                            homeMealId: nil,
-                            homeId: homeService.selectedHomeID,
-                            selectedMealType: viewModel.selectedMealType
-                        )
-                        selectedTab = .explore
-                        path = NavigationPath()
-                    }
-                case .contributeRecipeURL:
-                    ImportRecipeURLView(homeId: homeService.selectedHomeID) { response in
-                        path.append(MealsRoute.contributeImportedRecipePreview(response))
-                    }
-                case .contributeImportedRecipePreview(let response):
-                    ImportedRecipePreviewView(
-                        response: response,
-                        homeId: homeService.selectedHomeID,
-                        saveDestination: .community
-                    ) { globalRecipeID, _ in
-                        #if DEBUG
-                        print("Community URL recipe contribution completed")
-                        if let parsedGlobalRecipeId = response.globalRecipeId {
-                            print("parsed_global_recipe_id: \(parsedGlobalRecipeId.uuidString)")
-                        } else {
-                            print("parsed_global_recipe_id: nil")
+                        selectedTab = savedToHome ? .recipes : .explore
+                        if savedToHome {
+                            handleSavedMeal(mealID: savedID, meal: savedMeal)
                         }
-                        print("saved_global_recipe_id: \(globalRecipeID.uuidString)")
-                        print("home_recipe_created: false")
-                        print("explore_refresh_requested: true")
-                        #endif
-                        globalExploreViewModel.refreshAfterGlobalRecipeImport(
-                            globalRecipeId: globalRecipeID,
-                            homeMealId: nil,
-                            homeId: homeService.selectedHomeID,
-                            selectedMealType: viewModel.selectedMealType
-                        )
-                        selectedTab = .explore
                         path = NavigationPath()
                     }
                 case .editMeal(let mealID):
@@ -210,7 +164,7 @@ struct MealsView: View {
                         )
                     case .resolved(let resolvedPermissions):
                         if resolvedPermissions.meals.canEdit {
-                            MealEditorView(mode: .edit(mealID: mealID)) { savedMealID, meal in
+                            MealEditorView(mode: .edit(mealID: mealID)) { savedMealID, meal, _ in
                                 handleSavedMeal(mealID: savedMealID, meal: meal)
                             } onDelete: { deletedMealID in
                                 deleteMeal(id: deletedMealID)
@@ -522,12 +476,6 @@ struct MealsView: View {
                 Task {
                     _ = await viewModel.refreshMeal(id: mealId, homeId: homeService.selectedHomeID)
                 }
-            },
-            onContributeManualRecipe: {
-                path.append(MealsRoute.contributeRecipe)
-            },
-            onContributeRecipeURL: {
-                path.append(MealsRoute.contributeRecipeURL)
             }
         )
     }
@@ -645,6 +593,28 @@ struct MealsView: View {
             }
         }
     }
+
+    private func handleCreatedRecipeSave(savedID: UUID, meal: Meal?, globalRecipeID: UUID?) {
+        let savedToHome = globalRecipeID == nil || globalRecipeID != savedID
+
+        if let globalRecipeID {
+            globalExploreViewModel.refreshAfterGlobalRecipeImport(
+                globalRecipeId: globalRecipeID,
+                homeMealId: savedToHome ? savedID : nil,
+                homeId: homeService.selectedHomeID,
+                selectedMealType: viewModel.selectedMealType
+            )
+        }
+
+        if savedToHome {
+            selectedTab = .recipes
+            handleSavedMeal(mealID: savedID, meal: meal)
+        } else {
+            selectedTab = .explore
+        }
+
+        path = NavigationPath()
+    }
 }
 
 private enum MealsLandingTab: String, CaseIterable, Identifiable {
@@ -671,9 +641,6 @@ private enum MealsRoute: Hashable {
     case addMeal
     case importRecipeURL
     case importedRecipePreview(RecipeImportResponse)
-    case contributeRecipe
-    case contributeRecipeURL
-    case contributeImportedRecipePreview(RecipeImportResponse)
     case editMeal(UUID)
 }
 

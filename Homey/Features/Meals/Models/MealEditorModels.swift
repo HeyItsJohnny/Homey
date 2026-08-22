@@ -383,6 +383,7 @@ enum MealEditorValidationField: Hashable, Sendable {
     case steps
     case permission
     case photo
+    case destination
 }
 
 struct MealEditorValidationError: Identifiable, Equatable, Sendable {
@@ -393,6 +394,6 @@ struct MealEditorValidationError: Identifiable, Equatable, Sendable {
 }
 
 enum MealEditorSaveResult: Equatable, Sendable {
-    case saved(mealID: UUID, meal: Meal?)
+    case saved(mealID: UUID, meal: Meal?, globalRecipeID: UUID?)
     case failed
 }
