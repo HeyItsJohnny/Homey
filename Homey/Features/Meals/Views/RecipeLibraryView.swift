@@ -15,6 +15,7 @@ struct RecipeLibraryView: View {
 
     @State private var selectedCategory: RecipeLibraryCategory
     @State private var mealPendingDeletion: Meal?
+    @State private var browseLayout: RecipeLibraryBrowseLayout = .list
 
     init(
         meals: [Meal],
@@ -174,6 +175,8 @@ struct RecipeLibraryView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Filter recipes")
+
+            RecipeLibraryBrowseLayoutToggle(selection: $browseLayout)
         }
     }
 
@@ -206,20 +209,41 @@ struct RecipeLibraryView: View {
                 onAddRecipe: onAddRecipe
             )
         } else {
-            LazyVStack(spacing: 20) {
-                ForEach(filteredMeals) { meal in
-                    RecipeLibraryRow(
-                        meal: meal,
-                        isFavorite: isFavorite(meal),
-                        canFavorite: canFavorite,
-                        canDelete: canDelete,
-                        onToggleFavorite: { onToggleFavorite(meal) },
-                        onDelete: { mealPendingDeletion = meal },
-                        onSelect: { onSelectMeal(meal) }
-                    )
+            switch browseLayout {
+            case .list:
+                LazyVStack(spacing: 20) {
+                    ForEach(filteredMeals) { meal in
+                        RecipeLibraryRow(
+                            meal: meal,
+                            isFavorite: isFavorite(meal),
+                            canFavorite: canFavorite,
+                            canDelete: canDelete,
+                            onToggleFavorite: { onToggleFavorite(meal) },
+                            onDelete: { mealPendingDeletion = meal },
+                            onSelect: { onSelectMeal(meal) }
+                        )
+                    }
+                }
+            case .grid:
+                LazyVGrid(columns: gridColumns, spacing: 16) {
+                    ForEach(filteredMeals) { meal in
+                        RecipeLibraryCard(
+                            meal: meal,
+                            isFavorite: isFavorite(meal),
+                            canFavorite: canFavorite,
+                            canDelete: canDelete,
+                            onToggleFavorite: { onToggleFavorite(meal) },
+                            onDelete: { mealPendingDeletion = meal },
+                            onSelect: { onSelectMeal(meal) }
+                        )
+                    }
                 }
             }
         }
+    }
+
+    private var gridColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 230), spacing: 16)]
     }
 
     private var deleteConfirmationBinding: Binding<Bool> {
@@ -395,7 +419,177 @@ private struct RecipeLibraryQuickInfo: View {
     }
 }
 
-private struct RecipeLibraryCategoryTab: View {
+private struct RecipeLibraryCard: View {
+    let meal: Meal
+    let isFavorite: Bool
+    let canFavorite: Bool
+    let canDelete: Bool
+    let onToggleFavorite: () -> Void
+    let onDelete: () -> Void
+    let onSelect: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            MealPhotoThumbnail(path: meal.primaryPhotoPath)
+                .frame(height: 150)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text(meal.name)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    if let totalTimeText {
+                        Label(totalTimeText, systemImage: "clock")
+                    }
+
+                    if let servingsText {
+                        Label(servingsText, systemImage: "fork.knife")
+                    }
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .lineLimit(1)
+
+                if let cuisine = meal.cuisine?.trimmingCharacters(in: .whitespacesAndNewlines), !cuisine.isEmpty {
+                    Text(cuisine)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .lineLimit(1)
+                }
+
+                HStack(spacing: 6) {
+                    ForEach(Array(meal.mealTypes.prefix(2)), id: \.self) { type in
+                        Text(type.displayName)
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(HomeyDashboardTheme.selectedSidebarBackground, in: Capsule())
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                if canFavorite {
+                    Button(action: onToggleFavorite) {
+                        Label(isFavorite ? "Favorite" : "Favorite", systemImage: isFavorite ? "heart.fill" : "heart")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(isFavorite ? HomeyDashboardTheme.coralAccent : HomeyDashboardTheme.warmBrown)
+                    .accessibilityLabel(isFavorite ? "Remove from favorites" : "Add to favorites")
+                }
+
+                Menu {
+                    Button("Open Recipe", action: onSelect)
+                    if canFavorite {
+                        Button(isFavorite ? "Remove from Favorites" : "Add to Favorites", action: onToggleFavorite)
+                    }
+                    if canDelete {
+                        Button("Delete Recipe", role: .destructive, action: onDelete)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                        .frame(width: 38, height: 34)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Recipe actions")
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+        .shadow(color: HomeyDashboardTheme.shadow, radius: 18, x: 0, y: 10)
+        .contentShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .onTapGesture(perform: onSelect)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityHint("Opens recipe details")
+    }
+
+    private var totalTimeText: String? {
+        let total = (meal.prepTimeMinutes ?? 0) + (meal.cookTimeMinutes ?? 0)
+        return total > 0 ? "\(total) min" : nil
+    }
+
+    private var servingsText: String? {
+        guard let servings = meal.servings else { return nil }
+        return "\(servings) servings"
+    }
+
+    private var accessibilityLabel: String {
+        var parts = [meal.name]
+        let mealTypes = meal.mealTypes.map(\.displayName).joined(separator: ", ")
+        if !mealTypes.isEmpty { parts.append(mealTypes) }
+        if let totalTimeText { parts.append(totalTimeText) }
+        if isFavorite { parts.append("Favorite") }
+        return parts.joined(separator: ", ")
+    }
+}
+
+private enum RecipeLibraryBrowseLayout: String, CaseIterable, Identifiable {
+    case list
+    case grid
+
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .list:
+            return "list.bullet"
+        case .grid:
+            return "square.grid.2x2"
+        }
+    }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .list:
+            return "List view"
+        case .grid:
+            return "Grid view"
+        }
+    }
+}
+
+private struct RecipeLibraryBrowseLayoutToggle: View {
+    @Binding var selection: RecipeLibraryBrowseLayout
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(RecipeLibraryBrowseLayout.allCases) { layout in
+                Button {
+                    selection = layout
+                } label: {
+                    Image(systemName: layout.systemImage)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(selection == layout ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.secondaryText)
+                        .frame(width: 36, height: 34)
+                        .background(selection == layout ? HomeyDashboardTheme.selectedSidebarBackground : .clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(layout.accessibilityLabel)
+            }
+        }
+        .padding(3)
+        .background(HomeyDashboardTheme.cardBackground, in: Capsule())
+        .overlay { Capsule().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+    }
+}
+
+struct RecipeLibraryCategoryTab: View {
     let title: String
     let isSelected: Bool
     let action: () -> Void

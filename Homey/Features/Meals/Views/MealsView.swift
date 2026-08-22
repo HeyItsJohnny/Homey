@@ -148,6 +148,19 @@ struct MealsView: View {
                         }
                         path = NavigationPath()
                     }
+                case .globalRecipesLibrary(let launchContext):
+                    GlobalRecipesLibraryView(
+                        launchContext: launchContext,
+                        selectedHomeID: homeService.selectedHomeID,
+                        onOpenHomeMeal: { mealId in
+                            path.append(MealsRoute.editMeal(mealId))
+                        },
+                        onHomeMealAdded: { mealId in
+                            Task {
+                                _ = await viewModel.refreshMeal(id: mealId, homeId: homeService.selectedHomeID)
+                            }
+                        }
+                    )
                 case .editMeal(let mealID):
                     switch effectivePermissionResolution {
                     case .loading:
@@ -476,6 +489,9 @@ struct MealsView: View {
                 Task {
                     _ = await viewModel.refreshMeal(id: mealId, homeId: homeService.selectedHomeID)
                 }
+            },
+            onViewAllTrending: {
+                path.append(MealsRoute.globalRecipesLibrary(.trending))
             }
         )
     }
@@ -641,7 +657,12 @@ private enum MealsRoute: Hashable {
     case addMeal
     case importRecipeURL
     case importedRecipePreview(RecipeImportResponse)
+    case globalRecipesLibrary(GlobalRecipesLibraryLaunchContext)
     case editMeal(UUID)
+}
+
+enum GlobalRecipesLibraryLaunchContext: Hashable {
+    case trending
 }
 
 private struct FeaturedMealsSection: View {

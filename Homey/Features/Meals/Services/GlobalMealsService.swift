@@ -61,36 +61,60 @@ final class GlobalMealsService: GlobalMealsServicing {
     ) async throws -> [GlobalMeal] {
         do {
             try await requireAuthenticatedSession()
-            let lowerBound = max(0, page) * pageSize
-            let upperBound = lowerBound + pageSize - 1
-            let meals: [GlobalMeal] = try await client
-                .from("global_recipes")
-                .select()
-                .eq("status", value: "active")
-                .order(filters.sort.orderColumn, ascending: filters.sort.isAscending)
-                .range(from: lowerBound, to: upperBound)
-                .execute()
-                .value
+            let normalizedSearch = searchText.normalizedGlobalMealSearch
+            let requestedMatchOffset = max(0, page) * pageSize
+            let rawPageSize = max(pageSize, 30)
+            var rawPage = 0
+            var skippedMatches = 0
+            var matchingMeals: [GlobalMeal] = []
+            var rowsScanned = 0
+            var shouldContinue = true
 
-            let filteredMeals = meals.filter { meal in
-                meal.matchesExploreFilters(filters)
+            while shouldContinue && matchingMeals.count < pageSize {
+                let lowerBound = rawPage * rawPageSize
+                let upperBound = lowerBound + rawPageSize - 1
+                let meals: [GlobalMeal] = try await client
+                    .from("global_recipes")
+                    .select()
+                    .eq("status", value: "active")
+                    .order(filters.sort.orderColumn, ascending: filters.sort.isAscending)
+                    .order("updated_at", ascending: false)
+                    .range(from: lowerBound, to: upperBound)
+                    .execute()
+                    .value
+
+                rowsScanned += meals.count
+                shouldContinue = meals.count == rawPageSize
+
+                for meal in meals where meal.matchesExploreFilters(filters)
                     && meal.matchesSelectedMealType(selectedMealType)
-                    && meal.matchesExploreSearch(searchText.normalizedGlobalMealSearch)
+                    && meal.matchesExploreSearch(normalizedSearch) {
+                    if skippedMatches < requestedMatchOffset {
+                        skippedMatches += 1
+                    } else if matchingMeals.count < pageSize {
+                        matchingMeals.append(meal)
+                    }
+                }
+
+                rawPage += 1
             }
 
             #if DEBUG
             print("Global Explore load: browse")
             print("query_table: global_recipes")
             print("query: \(searchText)")
+            print("meal_type: \(selectedMealType?.rawValue ?? "all")")
+            print("filters: cuisine=\(filters.cuisine), maximum_total_time=\(filters.maximumTotalTimeMinutes.map(String.init) ?? "none"), source_type=\(filters.sourceType ?? "any")")
             print("sort: \(filters.sort.title)")
             print("page: \(page)")
-            print("range: \(lowerBound)-\(upperBound)")
-            print("rows_returned: \(filteredMeals.count)")
-            print("active_rows: \(meals.count)")
-            print("decoded_recipe_ids: \(filteredMeals.map { $0.id.uuidString }.joined(separator: ", "))")
+            print("page_size: \(pageSize)")
+            print("rows_received: \(matchingMeals.count)")
+            print("rows_scanned: \(rowsScanned)")
+            print("has_more_scan: \(shouldContinue)")
+            print("decoded_recipe_ids: \(matchingMeals.map { $0.id.uuidString }.joined(separator: ", "))")
             #endif
 
-            return filteredMeals
+            return matchingMeals
         } catch {
             logGlobalMealError(error, operation: "fetchMeals")
             throw MealServiceError.loadMealsFailed

@@ -7,6 +7,7 @@ struct GlobalMealsExploreView: View {
     @Binding var isFiltersPresented: Bool
     let onOpenHomeMeal: (UUID) -> Void
     let onHomeMealAdded: (UUID) -> Void
+    let onViewAllTrending: () -> Void
 
     @State private var browseLayout: GlobalMealsBrowseLayout = .grid
     @State private var selectedDetailMeal: GlobalMeal?
@@ -96,7 +97,7 @@ struct GlobalMealsExploreView: View {
                 subtitle: "Popular recipes this week in Homey homes.",
                 actionTitle: viewModel.trendingMeals.isEmpty ? nil : "View All >"
             ) {
-                viewModel.filters.sort = .mostSaved
+                onViewAllTrending()
             }
 
             if viewModel.isLoadingInitial && viewModel.trendingMeals.isEmpty {
@@ -309,6 +310,322 @@ struct GlobalMealsExploreView: View {
 private struct GlobalMealsExploreLoadKey: Hashable {
     let homeId: UUID?
     let selectedMealType: MealType?
+}
+
+struct GlobalRecipesLibraryView: View {
+    let launchContext: GlobalRecipesLibraryLaunchContext
+    let selectedHomeID: UUID?
+    let onOpenHomeMeal: (UUID) -> Void
+    let onHomeMealAdded: (UUID) -> Void
+
+    @StateObject private var viewModel = GlobalMealsExploreViewModel()
+    @State private var selectedMealType: MealType?
+    @State private var selectedDetailMeal: GlobalMeal?
+    @State private var isFiltersPresented = false
+    @State private var browseLayout: GlobalMealsBrowseLayout = .grid
+
+    var body: some View {
+        ZStack {
+            HomeyDashboardTheme.appBackground
+                .ignoresSafeArea()
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 22) {
+                    header
+                    searchBar
+                    controls
+                    recipeContent
+                }
+                .padding(.horizontal, 34)
+                .padding(.top, 34)
+                .padding(.bottom, 38)
+                .frame(maxWidth: 1180, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .navigationTitle("Community Recipes")
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: GlobalMealsExploreLoadKey(homeId: selectedHomeID, selectedMealType: selectedMealType)) {
+            #if DEBUG
+            print("Community Recipes View All opened")
+            print("launch_context: \(launchContext.debugName)")
+            print("selected_home_id: \(selectedHomeID?.uuidString ?? "nil")")
+            #endif
+            viewModel.configure(homeId: selectedHomeID, selectedMealType: selectedMealType)
+        }
+        .sheet(item: $selectedDetailMeal) { meal in
+            GlobalMealDetailView(
+                meal: meal,
+                viewModel: viewModel,
+                addState: viewModel.addStates[meal.id] ?? .available,
+                onOpenHomeMeal: onOpenHomeMeal,
+                onHomeMealAdded: onHomeMealAdded
+            )
+        }
+        .sheet(isPresented: $isFiltersPresented) {
+            GlobalMealsFiltersView(filters: $viewModel.filters)
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Community Recipes")
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .accessibilityAddTraits(.isHeader)
+
+            Text("Discover recipes shared across Homey.")
+                .font(.title3)
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+        }
+    }
+
+    private var searchBar: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                searchField
+                filterButton
+                GlobalMealsBrowseLayoutToggle(selection: $browseLayout)
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                searchField
+                HStack(spacing: 10) {
+                    filterButton
+                    GlobalMealsBrowseLayoutToggle(selection: $browseLayout)
+                }
+            }
+        }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .accessibilityHidden(true)
+
+            TextField("Search community recipes...", text: $viewModel.searchText)
+                .textInputAutocapitalization(.words)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+
+            if !viewModel.searchText.isEmpty {
+                Button {
+                    viewModel.searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .font(.body.weight(.medium))
+        .foregroundStyle(HomeyDashboardTheme.primaryText)
+        .padding(.horizontal, 18)
+        .frame(minHeight: 56)
+        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+    }
+
+    private var controls: some View {
+        mealTypeChips
+    }
+
+    private var mealTypeChips: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 18) {
+                RecipeLibraryCategoryTab(title: "All", isSelected: selectedMealType == nil) {
+                    selectedMealType = nil
+                }
+
+                ForEach(MealType.allCases) { mealType in
+                    RecipeLibraryCategoryTab(title: mealType.displayName, isSelected: selectedMealType == mealType) {
+                        selectedMealType = mealType
+                    }
+                }
+
+                sortMenu
+            }
+            .padding(.vertical, 2)
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    private var filterButton: some View {
+        Button {
+            isFiltersPresented = true
+        } label: {
+            Label("Filters", systemImage: "line.3.horizontal.decrease.circle")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 42)
+                .background(HomeyDashboardTheme.cardBackground, in: Capsule())
+                .overlay { Capsule().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Filter community recipes")
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            ForEach(GlobalMealsSort.allCases) { sort in
+                Button {
+                    viewModel.filters.sort = sort
+                } label: {
+                    if viewModel.filters.sort == sort {
+                        Label(sort.title, systemImage: "checkmark")
+                    } else {
+                        Text(sort.title)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text("Sort: \(viewModel.filters.sort.title)")
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.bold))
+            }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(HomeyDashboardTheme.primaryText)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 42)
+            .background(HomeyDashboardTheme.cardBackground, in: Capsule())
+            .overlay { Capsule().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Sort community recipes")
+    }
+
+    @ViewBuilder
+    private var recipeContent: some View {
+        if viewModel.isLoadingInitial && viewModel.meals.isEmpty {
+            LazyVGrid(columns: gridColumns, spacing: 16) {
+                ForEach(0..<8, id: \.self) { _ in
+                    GlobalMealSkeletonCard(width: nil, imageHeight: 136)
+                }
+            }
+        } else if let errorMessage = viewModel.errorMessage, viewModel.meals.isEmpty {
+            GlobalMealMessageCard(
+                title: "Homey couldn't load Community Recipes.",
+                message: errorMessage.isEmpty ? "Please try again." : "Please try again.",
+                systemImage: "exclamationmark.triangle.fill",
+                buttonTitle: "Retry"
+            ) {
+                viewModel.reload()
+            }
+        } else if viewModel.meals.isEmpty {
+            GlobalMealMessageCard(
+                title: hasActiveQuery ? "No recipes matched your search and filters." : "Community recipes are coming soon.",
+                message: hasActiveQuery ? "Clear filters or try a different search." : "Shared recipes will appear here when they are available.",
+                systemImage: "fork.knife",
+                buttonTitle: hasActiveQuery ? "Clear Filters" : nil
+            ) {
+                clearFilters()
+            }
+        } else {
+            switch browseLayout {
+            case .grid:
+                LazyVGrid(columns: gridColumns, spacing: 16) {
+                    ForEach(viewModel.meals) { meal in
+                        GlobalMealCard(
+                            meal: meal,
+                            style: .standard,
+                            addState: viewModel.addStates[meal.id] ?? .available,
+                            onSelect: { openGlobalRecipe(meal) },
+                            onAdd: { addToHome(meal) },
+                            onOpenHomeMeal: onOpenHomeMeal
+                        )
+                        .onAppear {
+                            viewModel.loadNextPageIfNeeded(currentMeal: meal)
+                        }
+                    }
+                }
+            case .list:
+                LazyVStack(spacing: 12) {
+                    ForEach(viewModel.meals) { meal in
+                        GlobalMealListRow(
+                            meal: meal,
+                            addState: viewModel.addStates[meal.id] ?? .available,
+                            onSelect: { openGlobalRecipe(meal) },
+                            onAdd: { addToHome(meal) },
+                            onOpenHomeMeal: onOpenHomeMeal
+                        )
+                        .onAppear {
+                            viewModel.loadNextPageIfNeeded(currentMeal: meal)
+                        }
+                    }
+                }
+            }
+
+            if viewModel.isLoadingMore {
+                HStack {
+                    Spacer()
+                    ProgressView()
+                        .tint(HomeyDashboardTheme.warmBrown)
+                    Spacer()
+                }
+                .padding(.vertical, 8)
+            }
+        }
+    }
+
+    private var gridColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 230), spacing: 16)]
+    }
+
+    private var hasActiveQuery: Bool {
+        !viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || selectedMealType != nil
+            || viewModel.filters.cuisine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            || viewModel.filters.maximumTotalTimeMinutes != nil
+            || viewModel.filters.sourceType != nil
+    }
+
+    private func clearFilters() {
+        viewModel.searchText = ""
+        selectedMealType = nil
+        viewModel.filters = GlobalMealsFilters()
+    }
+
+    private func openGlobalRecipe(_ meal: GlobalMeal) {
+        #if DEBUG
+        print("global_recipe_opened")
+        print("global_recipe_id: \(meal.id.uuidString)")
+        #endif
+        selectedDetailMeal = meal
+    }
+
+    private func addToHome(_ meal: GlobalMeal) {
+        Task {
+            #if DEBUG
+            print("add_to_home_started")
+            print("global_recipe_id: \(meal.id.uuidString)")
+            #endif
+            guard let result = await viewModel.addToHome(meal) else { return }
+            #if DEBUG
+            print("add_to_home_completed")
+            print("global_recipe_id: \(meal.id.uuidString)")
+            print("home_meal_id: \(result.homeMealId.uuidString)")
+            #endif
+            onHomeMealAdded(result.homeMealId)
+        }
+    }
+}
+
+extension GlobalRecipesLibraryLaunchContext {
+    var debugName: String {
+        switch self {
+        case .trending:
+            return "trending"
+        }
+    }
 }
 
 private enum GlobalMealsBrowseLayout: String, CaseIterable, Identifiable {
@@ -941,6 +1258,14 @@ private struct GlobalMealsFiltersView: View {
                         Text("Under 15 min").tag(Int?.some(15))
                         Text("Under 30 min").tag(Int?.some(30))
                         Text("Under 60 min").tag(Int?.some(60))
+                    }
+                }
+
+                Section("Source Type") {
+                    Picker("Source Type", selection: $filters.sourceType) {
+                        Text("Any").tag(String?.none)
+                        Text("URL").tag(String?.some("url"))
+                        Text("Manual").tag(String?.some("manual"))
                     }
                 }
 

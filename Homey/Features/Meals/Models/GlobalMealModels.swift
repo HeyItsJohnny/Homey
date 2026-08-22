@@ -105,6 +105,11 @@ struct GlobalRecipe: Identifiable, Codable, Hashable, Sendable {
             return false
         }
 
+        if let sourceType = filters.sourceType,
+           self.sourceType.caseInsensitiveCompare(sourceType) != .orderedSame {
+            return false
+        }
+
         return true
     }
 }
@@ -264,11 +269,13 @@ enum GlobalMealsSort: String, CaseIterable, Identifiable, Sendable {
 struct GlobalMealsFilters: Equatable, Sendable {
     var cuisine: String = ""
     var maximumTotalTimeMinutes: Int?
+    var sourceType: String?
     var sort: GlobalMealsSort = .mostSaved
 
     var hasActiveFilters: Bool {
         !cuisine.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || maximumTotalTimeMinutes != nil
+            || sourceType != nil
             || sort != .mostSaved
     }
 }
