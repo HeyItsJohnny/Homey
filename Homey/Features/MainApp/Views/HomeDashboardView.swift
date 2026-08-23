@@ -5,7 +5,7 @@ struct HomeDashboardView: View {
     @EnvironmentObject private var homeService: HomeService
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var selectedDestination: DashboardDestination = .home
+    @State private var selectedDestination: DashboardDestination = .calendar
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var isShowingSettingsMenu = false
     @State private var calendarFocusDate: Date?
@@ -109,7 +109,7 @@ struct HomeDashboardView: View {
         case .homeSettings:
             HomeSettingsView(
                 onClose: {
-                    selectedDestination = .home
+                    selectedDestination = .calendar
                 },
                 onShowCalendarCategories: {
                     selectedDestination = .calendarCategories
@@ -121,12 +121,12 @@ struct HomeDashboardView: View {
             }
         case .members:
             HomeMembersView {
-                selectedDestination = .home
+                selectedDestination = .calendar
             }
         case .myAccount:
             MyAccountView(
                 onClose: {
-                    selectedDestination = .home
+                    selectedDestination = .calendar
                 },
                 onShowInvitations: {
                     selectedDestination = .homeInvitations
@@ -138,7 +138,7 @@ struct HomeDashboardView: View {
                     selectedDestination = .myAccount
                 },
                 onSwitchHome: {
-                    selectedDestination = .home
+                    selectedDestination = .calendar
                 }
             )
         case .manageHome:
@@ -146,7 +146,7 @@ struct HomeDashboardView: View {
         case .changeHome:
             NavigationStack {
                 HomeSelectionView(restoresStoredSelectionOnAppear: false) {
-                    selectedDestination = .home
+                    selectedDestination = .calendar
                 }
             }
         }
@@ -1101,7 +1101,6 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     static let sidebarItems: [DashboardDestination] = [
-        .home,
         .calendar,
         .meals,
         .chores,
@@ -1115,7 +1114,7 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
         case .chores:
             "Chores"
         case .calendar:
-            "Calendar"
+            "Home"
         case .lists:
             "Lists"
         case .projects:
@@ -1308,7 +1307,7 @@ enum HomeyDashboardTheme {
 }
 
 private struct HomeSidebarPreview: View {
-    @State private var selectedDestination: DashboardDestination = .home
+    @State private var selectedDestination: DashboardDestination = .calendar
 
     var body: some View {
         HomeSidebarView(selectedDestination: $selectedDestination)
