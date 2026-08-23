@@ -918,8 +918,11 @@ final class ChoresRepository {
                 continue
             }
 
-            guard occurrence.status == .awaitingApproval else {
-                logApprovalQueueDecision(homeId: homeId, submission: submission, occurrence: occurrence, included: false, exclusionReason: "occurrence_not_awaiting_approval")
+            let assignees = try await fetchOccurrenceAssignees(occurrenceId: occurrence.id)
+            guard assignees.contains(where: { assignee in
+                assignee.userId == submission.submittedBy && assignee.status == .awaitingApproval
+            }) else {
+                logApprovalQueueDecision(homeId: homeId, submission: submission, occurrence: occurrence, included: false, exclusionReason: "assignee_not_awaiting_approval")
                 continue
             }
 
@@ -1341,8 +1344,27 @@ final class ChoresRepository {
     // MARK: - Prepared Queries
 
     func fetchMyActionableOccurrences(homeId: UUID, from startDate: Date, through endDate: Date) async throws -> [ChoreOccurrence] {
-        try await fetchMyOccurrences(homeId: homeId, from: startDate, through: endDate)
-            .filter { [.notStarted, .inProgress, .needsRedo].contains($0.status) }
+        let userId = try await authenticatedUserId()
+        let occurrences = try await fetchMyOccurrences(homeId: homeId, from: startDate, through: endDate)
+        var actionableOccurrences: [ChoreOccurrence] = []
+
+        for occurrence in occurrences {
+            if occurrence.assignmentMode == .open {
+                if occurrence.claimedBy == userId && [.notStarted, .inProgress, .needsRedo].contains(occurrence.status) {
+                    actionableOccurrences.append(occurrence)
+                }
+                continue
+            }
+
+            let assignees = try await fetchOccurrenceAssignees(occurrenceId: occurrence.id)
+            if assignees.contains(where: { assignee in
+                assignee.userId == userId && assignee.status.isActionableForAttention
+            }) {
+                actionableOccurrences.append(occurrence)
+            }
+        }
+
+        return actionableOccurrences
     }
 
     func fetchCurrentWeekNotStartedChoreBadgeCount(
@@ -1353,14 +1375,27 @@ final class ChoresRepository {
         let occurrences = try await fetchMyOccurrences(homeId: homeId, from: weekStart, through: nextWeekStart)
         var occurrenceIds: Set<UUID> = []
 
+        let userId = try await authenticatedUserId()
+
         for occurrence in occurrences {
-            guard occurrence.status == .notStarted,
-                  occurrence.dueAt >= weekStart,
+            guard occurrence.dueAt >= weekStart,
                   occurrence.dueAt < nextWeekStart else {
                 continue
             }
 
-            occurrenceIds.insert(occurrence.id)
+            if occurrence.assignmentMode == .open {
+                if occurrence.claimedBy == userId && occurrence.status == .notStarted {
+                    occurrenceIds.insert(occurrence.id)
+                }
+                continue
+            }
+
+            let assignees = try await fetchOccurrenceAssignees(occurrenceId: occurrence.id)
+            if assignees.contains(where: { assignee in
+                assignee.userId == userId && assignee.status == .assigned
+            }) {
+                occurrenceIds.insert(occurrence.id)
+            }
         }
 
         let sortedIds = occurrenceIds.sorted { $0.uuidString < $1.uuidString }
@@ -1368,8 +1403,27 @@ final class ChoresRepository {
     }
 
     func fetchMyCompletedHistory(homeId: UUID, from startDate: Date, through endDate: Date) async throws -> [ChoreOccurrence] {
-        try await fetchMyOccurrences(homeId: homeId, from: startDate, through: endDate)
-            .filter { [.completed, .skipped, .cancelled].contains($0.status) }
+        let userId = try await authenticatedUserId()
+        let occurrences = try await fetchMyOccurrences(homeId: homeId, from: startDate, through: endDate)
+        var completedOccurrences: [ChoreOccurrence] = []
+
+        for occurrence in occurrences {
+            if occurrence.assignmentMode == .open {
+                if occurrence.claimedBy == userId && [.completed, .skipped, .cancelled].contains(occurrence.status) {
+                    completedOccurrences.append(occurrence)
+                }
+                continue
+            }
+
+            let assignees = try await fetchOccurrenceAssignees(occurrenceId: occurrence.id)
+            if assignees.contains(where: { assignee in
+                assignee.userId == userId && [.completed, .skipped, .cancelled].contains(assignee.status)
+            }) {
+                completedOccurrences.append(occurrence)
+            }
+        }
+
+        return completedOccurrences
     }
 
     func fetchHouseChoreOccurrences(homeId: UUID, from startDate: Date, through endDate: Date) async throws -> [ChoreOccurrence] {

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct MyChoresView: View {
     @EnvironmentObject private var homeService: HomeService
+    @EnvironmentObject private var authenticationService: AuthenticationService
     @StateObject private var viewModel = MyChoresViewModel()
     @State private var selectedOccurrence: ChoreOccurrence?
 
@@ -49,6 +50,7 @@ struct MyChoresView: View {
             let selectedHome = homeService.selectedHome()
             await viewModel.configure(
                 homeId: homeService.selectedHomeID,
+                currentUserId: authenticationService.currentUser?.id,
                 weekStartsOn: selectedHome?.weekStartsOn,
                 timezone: selectedHome?.timezone
             )
@@ -68,7 +70,7 @@ struct MyChoresView: View {
 
     private var loadTaskID: String {
         let selectedHome = homeService.selectedHome()
-        return "\(homeService.selectedHomeID?.uuidString ?? "no-home")-\(selectedHome?.weekStartsOn ?? -1)-\(selectedHome?.timezone ?? "")"
+        return "\(homeService.selectedHomeID?.uuidString ?? "no-home")-\(authenticationService.currentUser?.id.uuidString ?? "no-user")-\(selectedHome?.weekStartsOn ?? -1)-\(selectedHome?.timezone ?? "")"
     }
 
     private var weeklyHeader: some View {
@@ -156,11 +158,13 @@ private final class MyChoresViewModel: ObservableObject {
 
     private let repository: ChoresRepository
     private var activeHomeId: UUID?
+    private var activeCurrentUserId: UUID?
     private var timezone = TimeZone.autoupdatingCurrent.identifier
     private var calendar = Calendar.autoupdatingCurrent
     private var visibleWeekAnchor = Date()
     private var categoriesById: [UUID: ChoreCategory] = [:]
     private var roomsById: [UUID: ChoreRoom] = [:]
+    private var assigneeStatusByOccurrenceId: [UUID: ChoreAssigneeStatus] = [:]
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -225,17 +229,10 @@ private final class MyChoresViewModel: ObservableObject {
     }
 
     var summary: MyChoresWeekSummary {
-        let eligibleOccurrences = occurrences.filter { !$0.isExcludedFromWeeklySummary }
-        let approved = eligibleOccurrences.filter { $0.status == .completed }.count
-        let pendingApproval = eligibleOccurrences.filter { $0.status == .awaitingApproval }.count
-        let toDo = eligibleOccurrences.filter { occurrence in
-            switch occurrence.displayStatus {
-            case .overdue:
-                return true
-            case .stored(let status):
-                return status == .notStarted || status == .inProgress || status == .needsRedo
-            }
-        }.count
+        let eligibleOccurrences = displayOccurrences.filter { !$0.isExcludedFromWeeklySummary }
+        let approved = eligibleOccurrences.filter { $0.personalStatus == .completed }.count
+        let pendingApproval = eligibleOccurrences.filter { $0.personalStatus == .awaitingApproval }.count
+        let toDo = eligibleOccurrences.filter(\.isPersonalToDo).count
         return MyChoresWeekSummary(toDo: toDo, pendingApproval: pendingApproval, approved: approved, total: eligibleOccurrences.count)
     }
 
@@ -245,7 +242,7 @@ private final class MyChoresViewModel: ObservableObject {
 
     var daySections: [MyChoresDaySectionModel] {
         weekDays.map { day in
-            let dayOccurrences = occurrences
+            let dayOccurrences = displayOccurrences
                 .filter { calendar.isDate($0.dueAt, inSameDayAs: day) }
                 .sortedForMyChoresWeek()
             return MyChoresDaySectionModel(
@@ -258,13 +255,24 @@ private final class MyChoresViewModel: ObservableObject {
         }
     }
 
-    func configure(homeId: UUID?, weekStartsOn: Int?, timezone: String?) async {
+    private var displayOccurrences: [MyChoresOccurrenceDisplay] {
+        occurrences.map { occurrence in
+            MyChoresOccurrenceDisplay(
+                occurrence: occurrence,
+                assigneeStatus: assigneeStatusByOccurrenceId[occurrence.id]
+            )
+        }
+    }
+
+    func configure(homeId: UUID?, currentUserId: UUID?, weekStartsOn: Int?, timezone: String?) async {
         let previousHomeId = activeHomeId
+        let previousCurrentUserId = activeCurrentUserId
         let previousWeekStart = calendar.firstWeekday
         let previousTimezone = self.timezone
         activeHomeId = homeId
+        activeCurrentUserId = currentUserId
         configureCalendar(weekStartsOn: weekStartsOn, timezone: timezone)
-        if previousHomeId != homeId || previousWeekStart != calendar.firstWeekday || previousTimezone != self.timezone {
+        if previousHomeId != homeId || previousCurrentUserId != currentUserId || previousWeekStart != calendar.firstWeekday || previousTimezone != self.timezone {
             selectedDate = nil
             visibleWeekAnchor = calendar.startOfDay(for: Date())
         }
@@ -276,6 +284,7 @@ private final class MyChoresViewModel: ObservableObject {
         guard let homeId = activeHomeId else {
             activeHomeId = nil
             occurrences = []
+            assigneeStatusByOccurrenceId = [:]
             errorMessage = nil
             isLoading = false
             return
@@ -306,6 +315,7 @@ private final class MyChoresViewModel: ObservableObject {
                 occurrence.status != .cancelled
             }
             self.occurrences = visibleOccurrences
+            assigneeStatusByOccurrenceId = try await loadCurrentUserAssigneeStatuses(for: visibleOccurrences)
             categoriesById = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
             roomsById = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0) })
             #if DEBUG
@@ -313,6 +323,7 @@ private final class MyChoresViewModel: ObservableObject {
             #endif
         } catch {
             occurrences = []
+            assigneeStatusByOccurrenceId = [:]
             errorMessage = error.localizedDescription
         }
 
@@ -406,6 +417,41 @@ private final class MyChoresViewModel: ObservableObject {
         }
     }
 
+    private func loadCurrentUserAssigneeStatuses(for occurrences: [ChoreOccurrence]) async throws -> [UUID: ChoreAssigneeStatus] {
+        guard let activeCurrentUserId else {
+            return [:]
+        }
+
+        var statuses: [UUID: ChoreAssigneeStatus] = [:]
+        for occurrence in occurrences where occurrence.assignmentMode != .open {
+            let assignees = try await repository.fetchOccurrenceAssignees(occurrenceId: occurrence.id)
+            let currentUserAssignee = assignees.first { $0.userId == activeCurrentUserId }
+            if let currentUserAssignee {
+                statuses[occurrence.id] = currentUserAssignee.status
+            }
+            logChoreMemberState(
+                occurrence: occurrence,
+                currentUserId: activeCurrentUserId,
+                assigneeStatus: currentUserAssignee?.status
+            )
+        }
+
+        return statuses
+    }
+
+    private func logChoreMemberState(occurrence: ChoreOccurrence, currentUserId: UUID, assigneeStatus: ChoreAssigneeStatus?) {
+        #if DEBUG
+        print("========== CHORE MEMBER STATE ==========")
+        print("occurrence_id: \(occurrence.id.uuidString)")
+        print("parent_status: \(occurrence.status.rawValue)")
+        print("current_user_id: \(currentUserId.uuidString)")
+        print("assignee_status: \(assigneeStatus?.rawValue ?? "nil")")
+        print("can_start: \(assigneeStatus?.canStartChore == true)")
+        print("can_submit: \(assigneeStatus?.canSubmitChore == true)")
+        print("========================================")
+        #endif
+    }
+
     #if DEBUG
     private func logMyChoresWeekBoundary(range: (start: Date, end: Date)) {
         let groupedCardCount = daySections.reduce(0) { $0 + $1.occurrences.count }
@@ -443,9 +489,36 @@ private struct MyChoresDaySectionModel: Identifiable {
     let title: String
     let dayNumber: String
     let accessibilityDateTitle: String
-    let occurrences: [ChoreOccurrence]
+    let occurrences: [MyChoresOccurrenceDisplay]
 
     var id: Date { date }
+}
+
+private struct MyChoresOccurrenceDisplay: Identifiable {
+    let occurrence: ChoreOccurrence
+    let assigneeStatus: ChoreAssigneeStatus?
+
+    var id: UUID { occurrence.id }
+    var dueAt: Date { occurrence.dueAt }
+    var isAllDay: Bool { occurrence.isAllDay }
+    var titleSnapshot: String { occurrence.titleSnapshot }
+    var pointsValue: Int { occurrence.pointsValue }
+
+    var personalStatus: ChoreOccurrenceStatus {
+        assigneeStatus?.personalOccurrenceStatus ?? occurrence.status
+    }
+
+    var displayStatus: ChoreOccurrenceDisplayStatus {
+        return .stored(personalStatus)
+    }
+
+    var isExcludedFromWeeklySummary: Bool {
+        personalStatus == .skipped || personalStatus == .cancelled
+    }
+
+    var isPersonalToDo: Bool {
+        personalStatus == .notStarted || personalStatus == .needsRedo
+    }
 }
 
 private struct MyChoresWeekSummaryCard: View {
@@ -563,9 +636,9 @@ private struct MyChoresDayColumn: View {
                 } else {
                     ForEach(section.occurrences) { occurrence in
                         MyChoresOccurrenceCard(
-                            occurrence: occurrence,
+                            displayOccurrence: occurrence,
                             dateTitle: section.accessibilityDateTitle,
-                            onTap: { onSelectOccurrence(occurrence) }
+                            onTap: { onSelectOccurrence(occurrence.occurrence) }
                         )
                     }
                 }
@@ -584,14 +657,14 @@ private struct MyChoresDayColumn: View {
 }
 
 private struct MyChoresOccurrenceCard: View {
-    let occurrence: ChoreOccurrence
+    let displayOccurrence: MyChoresOccurrenceDisplay
     let dateTitle: String
     let onTap: () -> Void
 
     var body: some View {
         Button(action: onTap) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(occurrence.titleSnapshot)
+                Text(displayOccurrence.titleSnapshot)
                     .font(.caption.weight(.bold))
                     .foregroundStyle(HomeyDashboardTheme.primaryText)
                     .lineLimit(2)
@@ -629,18 +702,18 @@ private struct MyChoresOccurrenceCard: View {
     }
 
     private var statusStyle: ChoreOccurrenceStatusStyle {
-        ChoreOccurrenceStatusStyle(occurrence: occurrence)
+        ChoreOccurrenceStatusStyle(displayStatus: displayOccurrence.displayStatus)
     }
 
     private var scheduleText: String {
-        if occurrence.isAllDay {
+        if displayOccurrence.isAllDay {
             return "All Day"
         }
-        return occurrence.dueAt.formatted(date: .omitted, time: .shortened)
+        return displayOccurrence.dueAt.formatted(date: .omitted, time: .shortened)
     }
 
     private var pointsText: String {
-        "\(occurrence.pointsValue) \(occurrence.pointsValue == 1 ? "point" : "points")"
+        "\(displayOccurrence.pointsValue) \(displayOccurrence.pointsValue == 1 ? "point" : "points")"
     }
 
     private var statusText: String {
@@ -649,7 +722,7 @@ private struct MyChoresOccurrenceCard: View {
 
     private var accessibilityLabel: String {
         [
-            occurrence.titleSnapshot,
+            displayOccurrence.titleSnapshot,
             dateTitle,
             scheduleText,
             pointsText,
@@ -658,14 +731,8 @@ private struct MyChoresOccurrenceCard: View {
     }
 }
 
-private extension ChoreOccurrence {
-    var isExcludedFromWeeklySummary: Bool {
-        status == .skipped || status == .cancelled
-    }
-}
-
-private extension Array where Element == ChoreOccurrence {
-    func sortedForMyChoresWeek() -> [ChoreOccurrence] {
+private extension Array where Element == MyChoresOccurrenceDisplay {
+    func sortedForMyChoresWeek() -> [MyChoresOccurrenceDisplay] {
         sorted { lhs, rhs in
             if lhs.isAllDay != rhs.isAllDay {
                 return !lhs.isAllDay && rhs.isAllDay

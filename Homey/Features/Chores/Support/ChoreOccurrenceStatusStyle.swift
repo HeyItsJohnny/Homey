@@ -6,7 +6,11 @@ struct ChoreOccurrenceStatusStyle: Equatable {
     let backgroundColor: Color
 
     init(occurrence: ChoreOccurrence) {
-        switch occurrence.displayStatus {
+        self.init(displayStatus: occurrence.displayStatus)
+    }
+
+    init(displayStatus: ChoreOccurrenceDisplayStatus) {
+        switch displayStatus {
         case .overdue:
             title = "Overdue"
             color = HomeyDashboardTheme.softRed
@@ -19,14 +23,14 @@ struct ChoreOccurrenceStatusStyle: Equatable {
                 backgroundColor = color.opacity(0.12)
             case .inProgress:
                 title = "In Progress"
-                color = HomeyDashboardTheme.orangeAccent
+                color = HomeyDashboardTheme.softRed
                 backgroundColor = color.opacity(0.12)
             case .awaitingApproval:
-                title = "Awaiting Approval"
+                title = "Pending Approval"
                 color = HomeyDashboardTheme.orangeAccent
                 backgroundColor = color.opacity(0.12)
             case .completed:
-                title = "Completed"
+                title = "Approved"
                 color = HomeyDashboardTheme.sageAccent
                 backgroundColor = color.opacity(0.12)
             case .needsRedo:

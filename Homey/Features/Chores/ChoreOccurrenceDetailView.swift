@@ -65,7 +65,7 @@ struct ChoreOccurrenceDetailView: View {
         }
         .task(id: viewModel.occurrence?.id) {
             await loadMembersIfNeeded()
-            await viewModel.load(homeId: homeService.selectedHomeID)
+            await viewModel.load(homeId: homeService.selectedHomeID, currentUserId: currentUserId)
         }
         .sheet(isPresented: $isPresentingManageChore) {
             if let occurrence = viewModel.occurrence {
@@ -100,7 +100,7 @@ struct ChoreOccurrenceDetailView: View {
     }
 
     private func header(for occurrence: ChoreOccurrence) -> some View {
-        let statusStyle = ChoreOccurrenceStatusStyle(occurrence: occurrence)
+        let statusStyle = ChoreOccurrenceStatusStyle(displayStatus: personalDisplayStatus(for: occurrence))
 
         return VStack(alignment: .leading, spacing: 10) {
             Text(occurrence.titleSnapshot)
@@ -150,7 +150,6 @@ struct ChoreOccurrenceDetailView: View {
     private func requirementsSection(for occurrence: ChoreOccurrence) -> some View {
         ChoreOccurrenceDetailSection(title: "Requirements") {
             detailRow("Approval", value: occurrence.requiresApproval ? "Required" : "Not Required", systemImage: "checkmark.seal")
-            detailRow("Photo Proof", value: occurrence.requiresPhoto ? "Required" : "Not Required", systemImage: "camera")
         }
     }
 
@@ -182,18 +181,14 @@ struct ChoreOccurrenceDetailView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            if occurrence.status == .completed {
-                completedSummary(for: occurrence)
-            } else if occurrence.status == .awaitingApproval, canManageChores {
-                reviewActions(for: occurrence)
-            } else if occurrence.status == .awaitingApproval {
-                Text("This chore is pending approval.")
-                    .font(.subheadline)
-                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
-            } else if occurrence.status == .cancelled || occurrence.status == .skipped {
+            if occurrence.status == .cancelled || occurrence.status == .skipped {
                 Text("This chore is read-only.")
                     .font(.subheadline)
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            } else if canManageChores, viewModel.pendingSubmission != nil {
+                reviewActions(for: occurrence)
+            } else if personalStatus(for: occurrence) == .completed {
+                completedSummary(for: occurrence, assignee: currentUserAssignee(for: occurrence))
             } else {
                 availableMemberActions(for: occurrence)
             }
@@ -224,38 +219,28 @@ struct ChoreOccurrenceDetailView: View {
             .disabled(viewModel.isPerformingAction)
             .accessibilityLabel("Claim Chore")
         } else if currentUserCanAct(on: occurrence) {
-            if occurrence.status == .notStarted || occurrence.status == .needsRedo {
+            let personalStatus = personalStatus(for: occurrence)
+
+            if personalStatus == .notStarted || personalStatus == .inProgress || personalStatus == .needsRedo {
+                TextField("Completion note", text: $viewModel.completionNote, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(2...4)
+                    .accessibilityLabel("Completion note")
+
                 Button {
-                    Task { await viewModel.startChore() }
+                    Task { await viewModel.submitChore() }
                 } label: {
-                    actionLabel(occurrence.status == .needsRedo ? "Start Again" : "Start Chore", systemImage: "play.fill")
+                    actionLabel("Submit Chore", systemImage: "checkmark.circle.fill")
                 }
                 .buttonStyle(DashboardPrimaryButtonStyle())
                 .disabled(viewModel.isPerformingAction)
-                .accessibilityLabel(occurrence.status == .needsRedo ? "Start Again" : "Start Chore")
-            }
-
-            if occurrence.status == .inProgress {
-                if occurrence.requiresPhoto {
-                    Text("Photo proof is required before this chore can be submitted.")
-                        .font(.subheadline)
-                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    TextField("Completion note", text: $viewModel.completionNote, axis: .vertical)
-                        .textFieldStyle(.roundedBorder)
-                        .lineLimit(2...4)
-                        .accessibilityLabel("Completion note")
-
-                    Button {
-                        Task { await viewModel.submitChore() }
-                    } label: {
-                        actionLabel(occurrence.requiresApproval ? "Submit Chore" : "Complete Chore", systemImage: "checkmark.circle.fill")
-                    }
-                    .buttonStyle(DashboardPrimaryButtonStyle())
-                    .disabled(viewModel.isPerformingAction)
-                    .accessibilityLabel(occurrence.requiresApproval ? "Submit Chore" : "Complete Chore")
-                }
+                .accessibilityLabel("Submit Chore")
+            } else if personalStatus == .awaitingApproval {
+                Text("This chore is pending approval.")
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            } else if personalStatus == .completed {
+                completedSummary(for: occurrence, assignee: currentUserAssignee(for: occurrence))
             }
         } else {
             Text("You can view this chore, but there are no actions available for your account.")
@@ -265,13 +250,15 @@ struct ChoreOccurrenceDetailView: View {
         }
     }
 
-    private func completedSummary(for occurrence: ChoreOccurrence) -> some View {
+    private func completedSummary(for occurrence: ChoreOccurrence, assignee: ChoreOccurrenceAssignee?) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let completedAt = occurrence.completedAt {
+            if let completedAt = assignee?.completedAt ?? occurrence.completedAt {
                 detailRow("Completed", value: ChoreOccurrenceDetailFormatters.fullDateTime.string(from: completedAt), systemImage: "checkmark.circle")
             }
             if let approvedAt = occurrence.approvedAt {
                 detailRow("Approved", value: ChoreOccurrenceDetailFormatters.fullDateTime.string(from: approvedAt), systemImage: "checkmark.seal")
+            } else if occurrence.requiresApproval, let completedAt = assignee?.completedAt {
+                detailRow("Approved", value: ChoreOccurrenceDetailFormatters.fullDateTime.string(from: completedAt), systemImage: "checkmark.seal")
             }
             detailRow("Points Awarded", value: "\(occurrence.pointsValue) \(occurrence.pointsValue == 1 ? "point" : "points")", systemImage: "star")
         }
@@ -426,6 +413,23 @@ struct ChoreOccurrenceDetailView: View {
         return viewModel.assignees.contains { $0.userId == currentUserId }
     }
 
+    private func currentUserAssignee(for occurrence: ChoreOccurrence) -> ChoreOccurrenceAssignee? {
+        guard occurrence.assignmentMode != .open, let currentUserId else {
+            return nil
+        }
+
+        return viewModel.assignees.first { $0.userId == currentUserId }
+    }
+
+    private func personalStatus(for occurrence: ChoreOccurrence) -> ChoreOccurrenceStatus {
+        currentUserAssignee(for: occurrence)?.status.personalOccurrenceStatus ?? occurrence.status
+    }
+
+    private func personalDisplayStatus(for occurrence: ChoreOccurrence) -> ChoreOccurrenceDisplayStatus {
+        let status = personalStatus(for: occurrence)
+        return .stored(status)
+    }
+
     private func loadMembersIfNeeded() async {
         guard let selectedHome = homeService.selectedHome(),
               let currentUser = authenticationService.currentUser else {
@@ -477,6 +481,7 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
     private let repository: ChoresRepository
     private let occurrenceId: UUID
     private var activeHomeId: UUID?
+    private var activeCurrentUserId: UUID?
 
     init(initialOccurrence: ChoreOccurrence, repository: ChoresRepository? = nil) {
         self.occurrence = initialOccurrence
@@ -533,8 +538,9 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
         }
     }
 
-    func load(homeId: UUID?) async {
+    func load(homeId: UUID?, currentUserId: UUID?) async {
         activeHomeId = homeId
+        activeCurrentUserId = currentUserId
         await reload()
     }
 
@@ -554,9 +560,7 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
             occurrence = refreshedOccurrence
             async let loadedAssignees = repository.fetchOccurrenceAssignees(occurrenceId: refreshedOccurrence.id)
             async let loadedRule = repository.fetchRecurrenceRule(templateId: refreshedOccurrence.templateId)
-            async let loadedPendingSubmission = refreshedOccurrence.status == .awaitingApproval
-                ? repository.fetchPendingSubmission(occurrenceId: refreshedOccurrence.id)
-                : nil
+            async let loadedPendingSubmission = repository.fetchPendingSubmission(occurrenceId: refreshedOccurrence.id)
 
             if let activeHomeId {
                 async let loadedCategories = repository.fetchCategories(homeId: activeHomeId)
@@ -568,6 +572,7 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
             assignees = try await loadedAssignees
             recurrenceRule = try await loadedRule
             pendingSubmission = try await loadedPendingSubmission
+            logChoreMemberState(for: refreshedOccurrence)
         } catch {
             errorMessage = "Unable to open this chore."
         }
@@ -587,18 +592,7 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
         }
     }
 
-    func startChore() async {
-        await performAction(failureMessage: "Unable to start chore.") {
-            occurrence = try await repository.startChore(occurrenceId: occurrenceId)
-        }
-    }
-
     func submitChore() async {
-        guard occurrence?.requiresPhoto != true else {
-            actionErrorMessage = "This chore requires a photo before submission."
-            return
-        }
-
         await performAction(failureMessage: "Unable to submit chore.") {
             _ = try await repository.submitChore(occurrenceId: occurrenceId, note: completionNote, photoPath: nil)
             completionNote = ""
@@ -608,11 +602,6 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
     func reviewChore(decision: ChoreApprovalDecision) async {
         guard let occurrence else {
             actionErrorMessage = "Unable to find this chore."
-            return
-        }
-
-        guard occurrence.status == .awaitingApproval else {
-            await reload()
             return
         }
 
@@ -660,6 +649,24 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
         } catch {
             actionErrorMessage = failureMessage
         }
+    }
+
+    private func logChoreMemberState(for occurrence: ChoreOccurrence) {
+        #if DEBUG
+        guard let activeCurrentUserId else {
+            return
+        }
+
+        let assigneeStatus = assignees.first { $0.userId == activeCurrentUserId }?.status
+        print("========== CHORE MEMBER STATE ==========")
+        print("occurrence_id: \(occurrence.id.uuidString)")
+        print("parent_status: \(occurrence.status.rawValue)")
+        print("current_user_id: \(activeCurrentUserId.uuidString)")
+        print("assignee_status: \(assigneeStatus?.rawValue ?? "nil")")
+        print("can_start: \(assigneeStatus?.canStartChore == true)")
+        print("can_submit: \(assigneeStatus?.canSubmitChore == true)")
+        print("========================================")
+        #endif
     }
 }
 

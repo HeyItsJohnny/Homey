@@ -133,7 +133,7 @@ enum ChoreAssigneeStatus: String, Codable, CaseIterable, Identifiable, Sendable 
     var displayName: String {
         switch self {
         case .assigned:
-            return "Assigned"
+            return "Not Started"
         case .inProgress:
             return "In Progress"
         case .awaitingApproval:
@@ -151,6 +151,38 @@ enum ChoreAssigneeStatus: String, Codable, CaseIterable, Identifiable, Sendable 
 }
 
 extension ChoreAssigneeStatus {
+    var personalOccurrenceStatus: ChoreOccurrenceStatus {
+        switch self {
+        case .assigned:
+            return .notStarted
+        case .inProgress:
+            return .inProgress
+        case .awaitingApproval:
+            return .awaitingApproval
+        case .completed:
+            return .completed
+        case .needsRedo:
+            return .needsRedo
+        case .skipped:
+            return .skipped
+        case .cancelled:
+            return .cancelled
+        }
+    }
+
+    var canStartChore: Bool {
+        false
+    }
+
+    var canSubmitChore: Bool {
+        switch self {
+        case .assigned, .inProgress, .needsRedo:
+            return true
+        case .awaitingApproval, .completed, .skipped, .cancelled:
+            return false
+        }
+    }
+
     var isActionableForAttention: Bool {
         switch self {
         case .assigned, .inProgress, .needsRedo:
