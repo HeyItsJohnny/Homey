@@ -444,7 +444,7 @@ struct MealsView: View {
     private var recipesTab: some View {
         VStack(alignment: .leading, spacing: 24) {
             FeaturedMealsSection(
-                title: "Featured Recipes",
+                title: "House Recipes",
                 meals: viewModel.featuredMeals,
                 emptyMessage: "Favorite recipes and recently updated meals will appear here.",
                 canFavorite: mealPermissions.canFavorite,

@@ -41,7 +41,7 @@ enum CalendarEventFilter: String, CaseIterable, Identifiable {
 
 @MainActor
 final class CalendarViewModel: ObservableObject {
-    @Published private(set) var displayMode: CalendarDisplayMode = .week
+    @Published private(set) var displayMode: CalendarDisplayMode = .month
     @Published private(set) var eventFilter: CalendarEventFilter = .all
     @Published private(set) var visibleMonth: Date
     @Published private(set) var visibleWeekAnchor: Date
