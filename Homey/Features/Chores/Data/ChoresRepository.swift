@@ -993,6 +993,28 @@ final class ChoresRepository {
         }
     }
 
+    func fetchOccurrenceAssignees(occurrenceIds: [UUID]) async throws -> [ChoreOccurrenceAssignee] {
+        let uniqueOccurrenceIds = Array(Set(occurrenceIds))
+        guard !uniqueOccurrenceIds.isEmpty else {
+            return []
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let assignees: [ChoreOccurrenceAssignee] = try await client
+                .from("chore_occurrence_assignees")
+                .select()
+                .in("occurrence_id", values: uniqueOccurrenceIds.map(\.uuidString))
+                .order("assigned_at", ascending: true)
+                .execute()
+                .value
+            return assignees
+        } catch {
+            logChoreError(error, operation: "chore_occurrence_assignees.select_occurrences")
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
     private func logFetchedOccurrenceAssignees(_ assignees: [ChoreOccurrenceAssignee], occurrenceId: UUID) {
         #if DEBUG
         print("========== CHORE ASSIGNEES LOADED ==========")

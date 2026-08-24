@@ -33,7 +33,7 @@ struct CalendarView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
-                    if viewModel.eventFilter != .meals {
+                    if viewModel.eventFilter != .meals && viewModel.eventFilter != .chores {
                         header
                     }
 
@@ -348,6 +348,17 @@ struct CalendarView: View {
                     timezone: selectedHome?.timezone,
                     onOpenMeal: { plannedMeal in
                         mealPresentation = MealCalendarPresentation(plannedMeal: plannedMeal)
+                    }
+                )
+            } else if viewModel.eventFilter == .chores {
+                HomeCalendarChoresView(
+                    homeId: selectedHome?.id,
+                    role: homeService.currentMembershipForSelectedHome()?.role ?? selectedHome?.role,
+                    weekStartsOn: selectedHome?.weekStartsOn,
+                    timezone: selectedHome?.timezone,
+                    members: homeService.membersForSelectedHome(),
+                    onOpenChore: { occurrence in
+                        chorePresentation = ChoreCalendarPresentation(occurrence: occurrence)
                     }
                 )
             } else {

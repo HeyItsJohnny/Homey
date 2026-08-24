@@ -1,0 +1,372 @@
+import Combine
+import Foundation
+
+@MainActor
+final class HomeCalendarChoresViewModel: ObservableObject {
+    @Published private(set) var occurrences: [ChoreOccurrence] = []
+    @Published private(set) var assigneesByOccurrenceId: [UUID: [ChoreOccurrenceAssignee]] = [:]
+    @Published private(set) var visibleWeekAnchor: Date
+    @Published private(set) var isLoading = false
+    @Published var errorMessage: String?
+    @Published var selectedAssignee: HomeChoreAssigneeFilter = .all
+
+    private let repository: ChoresRepository
+    private var calendar: Calendar
+    private var activeHomeId: UUID?
+    private var activeRole: HomeMemberRole?
+    private var activeTimezone: String?
+    private var notificationTask: Task<Void, Never>?
+
+    init(repository: ChoresRepository? = nil, calendar: Calendar = .autoupdatingCurrent) {
+        self.repository = repository ?? ChoresRepository()
+        self.calendar = calendar
+        visibleWeekAnchor = calendar.startOfDay(for: Date())
+        Self.configureFormatters(calendar: calendar)
+
+        notificationTask = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: .homeyCalendarEventsDidChange) {
+                await self?.reload()
+            }
+        }
+    }
+
+    deinit {
+        notificationTask?.cancel()
+    }
+
+    func configure(homeId: UUID?, role: HomeMemberRole?, weekStartsOn: Int?, timezone: String?) async {
+        configureWeekStart(weekStartsOn)
+        configureTimezone(timezone)
+
+        if activeHomeId != homeId {
+            visibleWeekAnchor = calendar.startOfDay(for: Date())
+            occurrences = []
+            assigneesByOccurrenceId = [:]
+            selectedAssignee = .all
+        }
+
+        activeHomeId = homeId
+        activeRole = role
+        activeTimezone = timezone
+
+        await reload()
+    }
+
+    func reload() async {
+        guard let activeHomeId else {
+            occurrences = []
+            assigneesByOccurrenceId = [:]
+            errorMessage = "Choose a Home before viewing chores."
+            return
+        }
+
+        guard let range = visibleWeekRange else {
+            errorMessage = ChoreRepositoryError.invalidDateRange.localizedDescription
+            return
+        }
+
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+
+        do {
+            let syncService = ChoreCalendarSyncService(choresRepository: repository)
+            let loadedOccurrences = try await repository.refreshChoreSchedule(
+                homeId: activeHomeId,
+                from: range.start,
+                through: range.end,
+                currentRole: activeRole,
+                calendarSyncService: syncService
+            )
+            let loadedAssignees = try await repository.fetchOccurrenceAssignees(occurrenceIds: loadedOccurrences.map(\.id))
+
+            occurrences = loadedOccurrences.sorted { first, second in
+                if first.dueAt != second.dueAt {
+                    return first.dueAt < second.dueAt
+                }
+                return first.titleSnapshot.localizedCaseInsensitiveCompare(second.titleSnapshot) == .orderedAscending
+            }
+            assigneesByOccurrenceId = Dictionary(grouping: loadedAssignees, by: \.occurrenceId)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func moveToPreviousWeek() {
+        moveWeek(by: -1)
+    }
+
+    func moveToNextWeek() {
+        moveWeek(by: 1)
+    }
+
+    func moveToToday() {
+        visibleWeekAnchor = calendar.startOfDay(for: Date())
+        Task { await reload() }
+    }
+
+    func selectAssignee(_ filter: HomeChoreAssigneeFilter) {
+        selectedAssignee = filter
+    }
+
+    func weekDays() -> [Date] {
+        guard let range = visibleWeekRange else { return [] }
+        return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: range.start) }
+    }
+
+    var visibleWeekRange: (start: Date, end: Date)? {
+        let start = startOfWeek(containing: visibleWeekAnchor)
+        guard let end = calendar.date(byAdding: .day, value: 7, to: start) else {
+            return nil
+        }
+        return (start, end)
+    }
+
+    var visibleWeekTitle: String {
+        guard let range = visibleWeekRange,
+              let inclusiveEnd = calendar.date(byAdding: .day, value: -1, to: range.end) else {
+            return "This Week"
+        }
+
+        if calendar.isDate(range.start, equalTo: inclusiveEnd, toGranularity: .month) {
+            let monthYear = Self.monthYearFormatter.string(from: range.start)
+            let startDay = Self.dayFormatter.string(from: range.start)
+            let endDay = Self.dayFormatter.string(from: inclusiveEnd)
+            return "\(monthYear) \(startDay)-\(endDay)"
+        }
+
+        if calendar.component(.year, from: range.start) == calendar.component(.year, from: inclusiveEnd) {
+            return "\(Self.monthDayFormatter.string(from: range.start)) - \(Self.monthDayYearFormatter.string(from: inclusiveEnd))"
+        }
+
+        return "\(Self.monthDayYearFormatter.string(from: range.start)) - \(Self.monthDayYearFormatter.string(from: inclusiveEnd))"
+    }
+
+    func choreItems(on day: Date, members: [HomeMemberDisplay]) -> [HomeChoreChecklistItemModel] {
+        let memberByUserId = Dictionary(uniqueKeysWithValues: members.map { ($0.userId, $0) })
+        return occurrences
+            .filter { calendar.isDate($0.dueAt, inSameDayAs: day) }
+            .flatMap { occurrence in
+                checklistItems(for: occurrence, memberByUserId: memberByUserId)
+            }
+            .filter { selectedAssignee.includes($0.assigneeUserId) }
+            .sorted()
+    }
+
+    func choreCount(members: [HomeMemberDisplay]) -> Int {
+        Set(weekDays().flatMap { day in
+            choreItems(on: day, members: members).map(\.id)
+        }).count
+    }
+
+    private func checklistItems(
+        for occurrence: ChoreOccurrence,
+        memberByUserId: [UUID: HomeMemberDisplay]
+    ) -> [HomeChoreChecklistItemModel] {
+        let assignees = assigneesByOccurrenceId[occurrence.id, default: []]
+
+        if !assignees.isEmpty {
+            return assignees.map { assignee in
+                HomeChoreChecklistItemModel(
+                    occurrence: occurrence,
+                    assignee: assignee,
+                    member: memberByUserId[assignee.userId]
+                )
+            }
+        }
+
+        if occurrence.assignmentMode == .open, let claimedBy = occurrence.claimedBy {
+            return [
+                HomeChoreChecklistItemModel(
+                    occurrence: occurrence,
+                    assignee: nil,
+                    member: memberByUserId[claimedBy],
+                    fallbackAssigneeUserId: claimedBy
+                )
+            ]
+        }
+
+        return [
+            HomeChoreChecklistItemModel(
+                occurrence: occurrence,
+                assignee: nil,
+                member: nil,
+                fallbackAssigneeUserId: nil
+            )
+        ]
+    }
+
+    private func moveWeek(by value: Int) {
+        guard let next = calendar.date(byAdding: .weekOfYear, value: value, to: visibleWeekAnchor) else {
+            return
+        }
+        visibleWeekAnchor = calendar.startOfDay(for: next)
+        Task { await reload() }
+    }
+
+    private func configureWeekStart(_ weekStartsOn: Int?) {
+        let firstWeekday = weekStartsOn == 2 ? 2 : (weekStartsOn == 1 ? 1 : Calendar.autoupdatingCurrent.firstWeekday)
+        calendar.firstWeekday = firstWeekday
+        Self.configureFormatters(calendar: calendar)
+    }
+
+    private func configureTimezone(_ timezone: String?) {
+        if let timezone, let timeZone = TimeZone(identifier: timezone) {
+            calendar.timeZone = timeZone
+        } else {
+            calendar.timeZone = .autoupdatingCurrent
+        }
+        activeTimezone = timezone
+        Self.configureFormatters(calendar: calendar)
+    }
+
+    private func startOfWeek(containing date: Date) -> Date {
+        let startOfDay = calendar.startOfDay(for: date)
+        let weekday = calendar.component(.weekday, from: startOfDay)
+        let leadingDays = (weekday - calendar.firstWeekday + 7) % 7
+        return calendar.date(byAdding: .day, value: -leadingDays, to: startOfDay) ?? startOfDay
+    }
+
+    private static let dayFormatter = DateFormatter()
+    private static let monthYearFormatter = DateFormatter()
+    private static let monthDayFormatter = DateFormatter()
+    private static let monthDayYearFormatter = DateFormatter()
+
+    private static func configureFormatters(calendar: Calendar) {
+        dayFormatter.calendar = calendar
+        dayFormatter.timeZone = calendar.timeZone
+        dayFormatter.dateFormat = "d"
+
+        monthYearFormatter.calendar = calendar
+        monthYearFormatter.timeZone = calendar.timeZone
+        monthYearFormatter.dateFormat = "MMMM yyyy"
+
+        monthDayFormatter.calendar = calendar
+        monthDayFormatter.timeZone = calendar.timeZone
+        monthDayFormatter.dateFormat = "MMMM d"
+
+        monthDayYearFormatter.calendar = calendar
+        monthDayYearFormatter.timeZone = calendar.timeZone
+        monthDayYearFormatter.dateFormat = "MMMM d, yyyy"
+    }
+}
+
+enum HomeChoreAssigneeFilter: Hashable, Identifiable {
+    case all
+    case member(UUID)
+    case anyone
+
+    var id: String {
+        switch self {
+        case .all:
+            return "all"
+        case .member(let userId):
+            return userId.uuidString
+        case .anyone:
+            return "anyone"
+        }
+    }
+
+    func includes(_ userId: UUID?) -> Bool {
+        switch self {
+        case .all:
+            return true
+        case .member(let selectedUserId):
+            return userId == selectedUserId
+        case .anyone:
+            return userId == nil
+        }
+    }
+}
+
+struct HomeChoreChecklistItemModel: Identifiable, Hashable {
+    let occurrence: ChoreOccurrence
+    let assignee: ChoreOccurrenceAssignee?
+    let member: HomeMemberDisplay?
+    var fallbackAssigneeUserId: UUID? = nil
+
+    var id: String {
+        if let assignee {
+            return "\(occurrence.id.uuidString)-\(assignee.userId.uuidString)"
+        }
+        return "\(occurrence.id.uuidString)-anyone"
+    }
+
+    var assigneeUserId: UUID? {
+        assignee?.userId ?? fallbackAssigneeUserId
+    }
+
+    var assigneeName: String {
+        member?.displayName ?? "Anyone"
+    }
+
+    var assigneeInitials: String {
+        member?.initials ?? "A"
+    }
+
+    var status: HomeChoreChecklistStatus {
+        if let assignee {
+            return HomeChoreChecklistStatus(assigneeStatus: assignee.status)
+        }
+        return HomeChoreChecklistStatus(occurrenceStatus: occurrence.status)
+    }
+
+    var dueAt: Date {
+        occurrence.dueAt
+    }
+}
+
+extension HomeChoreChecklistItemModel: Comparable {
+    static func < (lhs: HomeChoreChecklistItemModel, rhs: HomeChoreChecklistItemModel) -> Bool {
+        if lhs.assigneeName != rhs.assigneeName {
+            if lhs.assigneeName == "Anyone" { return false }
+            if rhs.assigneeName == "Anyone" { return true }
+            return lhs.assigneeName.localizedCaseInsensitiveCompare(rhs.assigneeName) == .orderedAscending
+        }
+
+        if lhs.dueAt != rhs.dueAt {
+            return lhs.dueAt < rhs.dueAt
+        }
+
+        return lhs.occurrence.titleSnapshot.localizedCaseInsensitiveCompare(rhs.occurrence.titleSnapshot) == .orderedAscending
+    }
+}
+
+enum HomeChoreChecklistStatus: Hashable {
+    case notStarted
+    case awaitingApproval
+    case completed
+
+    init(assigneeStatus: ChoreAssigneeStatus) {
+        switch assigneeStatus {
+        case .awaitingApproval:
+            self = .awaitingApproval
+        case .completed, .skipped, .cancelled:
+            self = .completed
+        case .assigned, .inProgress, .needsRedo:
+            self = .notStarted
+        }
+    }
+
+    init(occurrenceStatus: ChoreOccurrenceStatus) {
+        switch occurrenceStatus {
+        case .awaitingApproval:
+            self = .awaitingApproval
+        case .completed, .skipped, .cancelled:
+            self = .completed
+        case .notStarted, .inProgress, .needsRedo:
+            self = .notStarted
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .notStarted:
+            return "Not Started"
+        case .awaitingApproval:
+            return "Awaiting Approval"
+        case .completed:
+            return "Completed"
+        }
+    }
+}
