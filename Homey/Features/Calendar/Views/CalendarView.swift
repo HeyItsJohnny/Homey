@@ -33,7 +33,9 @@ struct CalendarView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
-                    header
+                    if viewModel.eventFilter != .meals {
+                        header
+                    }
 
                     if let successMessage {
                         CalendarStatusBanner(message: successMessage)
@@ -339,8 +341,19 @@ struct CalendarView: View {
         VStack(alignment: .leading, spacing: 18) {
             calendarFilterButtons
 
-            primaryCalendarCard
-            selectedDayDetailsCard
+            if viewModel.eventFilter == .meals {
+                HomeCalendarMealsView(
+                    homeId: selectedHome?.id,
+                    weekStartsOn: selectedHome?.weekStartsOn,
+                    timezone: selectedHome?.timezone,
+                    onOpenMeal: { plannedMeal in
+                        mealPresentation = MealCalendarPresentation(plannedMeal: plannedMeal)
+                    }
+                )
+            } else {
+                primaryCalendarCard
+                selectedDayDetailsCard
+            }
         }
         .overlay(alignment: .top) {
             if viewModel.isLoading || resolvingChoreCalendarEventId != nil {
