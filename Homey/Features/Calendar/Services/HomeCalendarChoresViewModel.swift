@@ -7,6 +7,7 @@ final class HomeCalendarChoresViewModel: ObservableObject {
     @Published private(set) var assigneesByOccurrenceId: [UUID: [ChoreOccurrenceAssignee]] = [:]
     @Published private(set) var visibleWeekAnchor: Date
     @Published private(set) var isLoading = false
+    @Published private(set) var isSubmitting = false
     @Published var errorMessage: String?
     @Published var selectedAssignee: HomeChoreAssigneeFilter = .all
 
@@ -157,6 +158,29 @@ final class HomeCalendarChoresViewModel: ObservableObject {
         Set(weekDays().flatMap { day in
             choreItems(on: day, members: members).map(\.id)
         }).count
+    }
+
+    func submitFromHomeBoard(item: HomeChoreChecklistItemModel, assigneeUserId: UUID, note: String?) async -> Bool {
+        guard !isSubmitting else { return false }
+
+        isSubmitting = true
+        errorMessage = nil
+        defer { isSubmitting = false }
+
+        do {
+            _ = try await repository.submitChoreFromHomeBoard(
+                occurrenceId: item.occurrence.id,
+                assigneeUserId: assigneeUserId,
+                note: note,
+                photoPath: nil
+            )
+            await reload()
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
 
     private func checklistItems(
@@ -334,6 +358,7 @@ extension HomeChoreChecklistItemModel: Comparable {
 
 enum HomeChoreChecklistStatus: Hashable {
     case notStarted
+    case needsRedo
     case awaitingApproval
     case completed
 
@@ -343,7 +368,9 @@ enum HomeChoreChecklistStatus: Hashable {
             self = .awaitingApproval
         case .completed, .skipped, .cancelled:
             self = .completed
-        case .assigned, .inProgress, .needsRedo:
+        case .needsRedo:
+            self = .needsRedo
+        case .assigned, .inProgress:
             self = .notStarted
         }
     }
@@ -354,7 +381,9 @@ enum HomeChoreChecklistStatus: Hashable {
             self = .awaitingApproval
         case .completed, .skipped, .cancelled:
             self = .completed
-        case .notStarted, .inProgress, .needsRedo:
+        case .needsRedo:
+            self = .needsRedo
+        case .notStarted, .inProgress:
             self = .notStarted
         }
     }
@@ -363,10 +392,30 @@ enum HomeChoreChecklistStatus: Hashable {
         switch self {
         case .notStarted:
             return "Not Started"
+        case .needsRedo:
+            return "Needs Redo"
         case .awaitingApproval:
             return "Awaiting Approval"
         case .completed:
             return "Completed"
+        }
+    }
+
+    var canSubmitFromHomeBoard: Bool {
+        switch self {
+        case .notStarted, .needsRedo:
+            return true
+        case .awaitingApproval, .completed:
+            return false
+        }
+    }
+
+    var requiresStatusCaption: Bool {
+        switch self {
+        case .notStarted:
+            return false
+        case .needsRedo, .awaitingApproval, .completed:
+            return true
         }
     }
 }

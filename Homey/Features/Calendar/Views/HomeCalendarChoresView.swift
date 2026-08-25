@@ -2,13 +2,13 @@ import SwiftUI
 
 struct HomeCalendarChoresView: View {
     @StateObject private var viewModel = HomeCalendarChoresViewModel()
+    @State private var selectedItem: HomeChoreChecklistItemModel?
 
     let homeId: UUID?
     let role: HomeMemberRole?
     let weekStartsOn: Int?
     let timezone: String?
     let members: [HomeMemberDisplay]
-    let onOpenChore: (ChoreOccurrence) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -43,7 +43,9 @@ struct HomeCalendarChoresView: View {
                     choreItems: { day in
                         viewModel.choreItems(on: day, members: members)
                     },
-                    onOpenChore: onOpenChore
+                    onSelectItem: { item in
+                        selectedItem = item
+                    }
                 )
 
                 HomeCalendarChoresFooter(choreCount: viewModel.choreCount(members: members))
@@ -61,6 +63,29 @@ struct HomeCalendarChoresView: View {
                     .shadow(color: HomeyDashboardTheme.shadow, radius: 10, x: 0, y: 6)
                     .accessibilityLabel("Loading chores")
             }
+        }
+        .sheet(item: $selectedItem) { item in
+            HomeChoreSubmissionView(
+                item: item,
+                members: members,
+                isSubmitting: viewModel.isSubmitting,
+                errorMessage: viewModel.errorMessage,
+                onCancel: { selectedItem = nil },
+                onSubmit: { assigneeUserId in
+                    Task {
+                        let didSubmit = await viewModel.submitFromHomeBoard(
+                            item: item,
+                            assigneeUserId: assigneeUserId,
+                            note: nil
+                        )
+                        if didSubmit {
+                            selectedItem = nil
+                        }
+                    }
+                }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
         }
     }
 
@@ -266,7 +291,7 @@ private struct HomeCalendarChoresWeekBoard: View {
     let members: [HomeMemberDisplay]
     let selectedAssignee: HomeChoreAssigneeFilter
     let choreItems: (Date) -> [HomeChoreChecklistItemModel]
-    let onOpenChore: (ChoreOccurrence) -> Void
+    let onSelectItem: (HomeChoreChecklistItemModel) -> Void
 
     private let dayColumnWidth: CGFloat = 184
     private let dayColumnMinHeight: CGFloat = 520
@@ -279,7 +304,7 @@ private struct HomeCalendarChoresWeekBoard: View {
                     HomeCalendarChoresDayColumn(
                         date: day,
                         items: choreItems(day),
-                        onOpenChore: onOpenChore
+                        onSelectItem: onSelectItem
                     )
                     .frame(width: dayColumnWidth, alignment: .top)
                     .frame(minHeight: dayColumnMinHeight, alignment: .top)
@@ -295,7 +320,7 @@ private struct HomeCalendarChoresWeekBoard: View {
 private struct HomeCalendarChoresDayColumn: View {
     let date: Date
     let items: [HomeChoreChecklistItemModel]
-    let onOpenChore: (ChoreOccurrence) -> Void
+    let onSelectItem: (HomeChoreChecklistItemModel) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -314,7 +339,7 @@ private struct HomeCalendarChoresDayColumn: View {
                 .background(HomeyDashboardTheme.appBackground.opacity(0.34), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
             } else {
                 ForEach(sections) { section in
-                    HomeCalendarChoreAssigneeSection(section: section, onOpenChore: onOpenChore)
+                    HomeCalendarChoreAssigneeSection(section: section, onSelectItem: onSelectItem)
                 }
             }
 
@@ -399,7 +424,7 @@ private struct HomeCalendarChoreAssigneeSectionModel: Identifiable {
 
 private struct HomeCalendarChoreAssigneeSection: View {
     let section: HomeCalendarChoreAssigneeSectionModel
-    let onOpenChore: (ChoreOccurrence) -> Void
+    let onSelectItem: (HomeChoreChecklistItemModel) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -411,7 +436,7 @@ private struct HomeCalendarChoreAssigneeSection: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(section.items) { item in
                     HomeCalendarChoreChecklistItem(item: item) {
-                        onOpenChore(item.occurrence)
+                        onSelectItem(item)
                     }
                 }
             }
@@ -436,10 +461,10 @@ private struct HomeCalendarChoreChecklistItem: View {
                         .truncationMode(.tail)
                         .fixedSize(horizontal: false, vertical: false)
 
-                    if item.status == .awaitingApproval {
-                        Text("Awaiting Approval")
+                    if item.status.requiresStatusCaption {
+                        Text(item.status.title)
                             .font(.caption2.weight(.bold))
-                            .foregroundStyle(HomeyDashboardTheme.orangeAccent)
+                            .foregroundStyle(statusColor)
                             .lineLimit(1)
                     }
                 }
@@ -464,6 +489,9 @@ private struct HomeCalendarChoreChecklistItem: View {
         case .notStarted:
             Image(systemName: "circle")
                 .foregroundStyle(statusColor)
+        case .needsRedo:
+            Image(systemName: "arrow.counterclockwise.circle.fill")
+                .foregroundStyle(statusColor)
         case .awaitingApproval:
             Image(systemName: "clock.fill")
                 .foregroundStyle(statusColor)
@@ -475,7 +503,7 @@ private struct HomeCalendarChoreChecklistItem: View {
 
     private var statusColor: Color {
         switch item.status {
-        case .notStarted:
+        case .notStarted, .needsRedo:
             return HomeyDashboardTheme.softRed
         case .awaitingApproval:
             return HomeyDashboardTheme.orangeAccent
@@ -525,6 +553,245 @@ private struct HomeCalendarChoreLegendItem: View {
         }
         .lineLimit(1)
     }
+}
+
+private struct HomeChoreSubmissionView: View {
+    let item: HomeChoreChecklistItemModel
+    let members: [HomeMemberDisplay]
+    let isSubmitting: Bool
+    let errorMessage: String?
+    let onCancel: () -> Void
+    let onSubmit: (UUID) -> Void
+
+    @State private var selectedOpenAssigneeUserId: UUID?
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                HomeyDashboardTheme.appBackground.ignoresSafeArea()
+
+                ScrollView {
+                    VStack(alignment: .center, spacing: 18) {
+                        header
+
+                        if item.assigneeUserId == nil {
+                            openAssigneePicker
+                        }
+
+                        if item.status.canSubmitFromHomeBoard {
+                            submissionForm
+                        } else {
+                            readOnlyStatus
+                        }
+
+                        if let errorMessage, !errorMessage.isEmpty {
+                            Text(errorMessage)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(HomeyDashboardTheme.destructiveRed)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(22)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
+            .navigationTitle(navigationTitle)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close", action: onCancel)
+                }
+            }
+            .onAppear {
+                if selectedOpenAssigneeUserId == nil {
+                    selectedOpenAssigneeUserId = members.first?.userId
+                }
+            }
+        }
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                statusIcon
+                    .font(.title2.weight(.semibold))
+                    .frame(width: 34, height: 34)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(item.occurrence.titleSnapshot)
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text("Assigned to \(assigneeName)")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+
+                    Text(Self.dueFormatter.string(from: item.occurrence.dueAt))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                }
+            }
+
+            if item.occurrence.pointsValue > 0 {
+                Label("\(item.occurrence.pointsValue) \(item.occurrence.pointsValue == 1 ? "point" : "points")", systemImage: "star.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            }
+        }
+        .padding(18)
+        .dashboardCard(cornerRadius: 22)
+        .frame(maxWidth: 430)
+    }
+
+    private var submissionForm: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Completed?")
+                .font(.title3.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .accessibilityAddTraits(.isHeader)
+
+            HStack(spacing: 12) {
+                Button {
+                    guard let assigneeUserId = resolvedAssigneeUserId else {
+                        return
+                    }
+                    onSubmit(assigneeUserId)
+                } label: {
+                    HStack(spacing: 8) {
+                        if isSubmitting {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                        } else {
+                            Image(systemName: "checkmark.circle.fill")
+                        }
+                        Text("Yes")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(DashboardPrimaryButtonStyle())
+                .disabled(isSubmitting || resolvedAssigneeUserId == nil)
+                .accessibilityLabel("Yes, submit chore as completed")
+
+                Button("No", action: onCancel)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSubmitting)
+                    .accessibilityLabel("No, close")
+            }
+        }
+        .padding(18)
+        .dashboardCard(cornerRadius: 22)
+        .frame(maxWidth: 430)
+    }
+
+    private var openAssigneePicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Who completed this?")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+            Picker("Household member", selection: Binding(
+                get: { selectedOpenAssigneeUserId ?? members.first?.userId },
+                set: { selectedOpenAssigneeUserId = $0 }
+            )) {
+                ForEach(members) { member in
+                    Text(member.displayName).tag(Optional(member.userId))
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(members.isEmpty)
+        }
+        .padding(18)
+        .dashboardCard(cornerRadius: 22)
+        .frame(maxWidth: 430)
+    }
+
+    private var readOnlyStatus: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(item.status.title)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(statusColor)
+
+            Text(readOnlyMessage)
+                .font(.subheadline)
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(18)
+        .dashboardCard(cornerRadius: 22)
+        .frame(maxWidth: 430)
+    }
+
+    @ViewBuilder
+    private var statusIcon: some View {
+        switch item.status {
+        case .notStarted:
+            Image(systemName: "circle")
+                .foregroundStyle(statusColor)
+        case .needsRedo:
+            Image(systemName: "arrow.counterclockwise.circle.fill")
+                .foregroundStyle(statusColor)
+        case .awaitingApproval:
+            Image(systemName: "clock.fill")
+                .foregroundStyle(statusColor)
+        case .completed:
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(statusColor)
+        }
+    }
+
+    private var resolvedAssigneeUserId: UUID? {
+        item.assigneeUserId ?? selectedOpenAssigneeUserId
+    }
+
+    private var assigneeName: String {
+        if let assigneeUserId = resolvedAssigneeUserId,
+           let member = members.first(where: { $0.userId == assigneeUserId }) {
+            return member.displayName
+        }
+        return item.assigneeName
+    }
+
+    private var navigationTitle: String {
+        item.status.canSubmitFromHomeBoard ? "Complete Chore" : "Chore Details"
+    }
+
+    private var readOnlyMessage: String {
+        switch item.status {
+        case .notStarted, .needsRedo:
+            return ""
+        case .awaitingApproval:
+            return "This chore is waiting for approval. Approvals are handled in the Chores module."
+        case .completed:
+            return "This chore has already been completed."
+        }
+    }
+
+    private var statusColor: Color {
+        switch item.status {
+        case .notStarted, .needsRedo:
+            return HomeyDashboardTheme.softRed
+        case .awaitingApproval:
+            return HomeyDashboardTheme.orangeAccent
+        case .completed:
+            return HomeyDashboardTheme.sageAccent
+        }
+    }
+
+    private static let dueFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEE MMM d, h:mm a")
+        return formatter
+    }()
 }
 
 private struct HomeCalendarChoresMessage: View {

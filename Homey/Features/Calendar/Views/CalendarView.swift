@@ -356,10 +356,7 @@ struct CalendarView: View {
                     role: homeService.currentMembershipForSelectedHome()?.role ?? selectedHome?.role,
                     weekStartsOn: selectedHome?.weekStartsOn,
                     timezone: selectedHome?.timezone,
-                    members: homeService.membersForSelectedHome(),
-                    onOpenChore: { occurrence in
-                        chorePresentation = ChoreCalendarPresentation(occurrence: occurrence)
-                    }
+                    members: homeService.membersForSelectedHome()
                 )
             } else {
                 primaryCalendarCard

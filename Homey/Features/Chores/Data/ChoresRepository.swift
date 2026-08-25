@@ -1133,6 +1133,28 @@ final class ChoresRepository {
         }
     }
 
+    func submitChoreFromHomeBoard(occurrenceId: UUID, assigneeUserId: UUID, note: String?, photoPath: String?) async throws -> UUID {
+        do {
+            try await requireAuthenticatedSession()
+            let submissionId: UUID = try await client
+                .rpc(
+                    "submit_chore_from_home_board",
+                    params: SubmitChoreFromHomeBoardRPCParameters(
+                        requestedOccurrenceId: occurrenceId,
+                        requestedAssigneeUserId: assigneeUserId,
+                        requestedCompletionNote: normalizedOptionalString(note),
+                        requestedPhotoPath: normalizedOptionalString(photoPath)
+                    )
+                )
+                .execute()
+                .value
+            return submissionId
+        } catch {
+            logChoreError(error, operation: "submit_chore_from_home_board", categoryId: occurrenceId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
     func reviewSubmission(submissionId: UUID, decision: ChoreApprovalDecision, adminNote: String?, pointsAwarded: Int?) async throws {
         do {
             try await requireAuthenticatedSession()
@@ -2178,6 +2200,28 @@ private struct SubmitChoreRPCParameters: Encodable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(requestedOccurrenceId, forKey: .requestedOccurrenceId)
+        try encodeOptional(requestedCompletionNote, forKey: .requestedCompletionNote, into: &container)
+        try encodeOptional(requestedPhotoPath, forKey: .requestedPhotoPath, into: &container)
+    }
+}
+
+private struct SubmitChoreFromHomeBoardRPCParameters: Encodable {
+    let requestedOccurrenceId: UUID
+    let requestedAssigneeUserId: UUID
+    let requestedCompletionNote: String?
+    let requestedPhotoPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case requestedOccurrenceId = "requested_occurrence_id"
+        case requestedAssigneeUserId = "requested_assignee_user_id"
+        case requestedCompletionNote = "requested_completion_note"
+        case requestedPhotoPath = "requested_photo_path"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(requestedOccurrenceId, forKey: .requestedOccurrenceId)
+        try container.encode(requestedAssigneeUserId, forKey: .requestedAssigneeUserId)
         try encodeOptional(requestedCompletionNote, forKey: .requestedCompletionNote, into: &container)
         try encodeOptional(requestedPhotoPath, forKey: .requestedPhotoPath, into: &container)
     }
