@@ -220,6 +220,29 @@ final class CalendarService: ObservableObject {
         }
     }
 
+    func clearHomeCalendar(homeId: UUID, currentRole: HomeMemberRole?) async throws -> ClearHomeCalendarResult {
+        guard currentRole == .owner else {
+            throw CalendarServiceError.permissionDenied
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let results: [ClearHomeCalendarResult] = try await client
+                .rpc("clear_home_calendar", params: ClearHomeCalendarParameters(homeId: homeId))
+                .execute()
+                .value
+            guard let result = results.first else {
+                throw CalendarServiceError.deleteEventFailed
+            }
+            return result
+        } catch let error as CalendarServiceError {
+            throw error
+        } catch {
+            logCalendarError(error, rpcName: "clear_home_calendar", homeId: homeId)
+            throw CalendarServiceError.deleteEventFailed
+        }
+    }
+
     func updateOccurrence(
         eventId: UUID,
         occurrenceStartsAt: Date,
@@ -1264,6 +1287,22 @@ private struct CalendarEventIdParameters: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case targetEventId = "target_event_id"
+    }
+}
+
+struct ClearHomeCalendarResult: Codable, Hashable, Sendable {
+    let calendarEventsDeleted: Int
+
+    enum CodingKeys: String, CodingKey {
+        case calendarEventsDeleted = "calendar_events_deleted"
+    }
+}
+
+private struct ClearHomeCalendarParameters: Encodable {
+    let homeId: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case homeId = "requested_home_id"
     }
 }
 

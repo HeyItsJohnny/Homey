@@ -37,6 +37,32 @@ protocol MealServicing: AnyObject {
     func subscribeToMealChanges(homeId: UUID, onChange: @escaping @MainActor () -> Void) async throws -> MealRealtimeSubscription
 }
 
+struct ClearHomeMealsResult: Codable, Hashable, Sendable {
+    let mealsDeleted: Int
+    let mealRecipesDeleted: Int
+    let recipeIngredientsDeleted: Int
+    let recipeStepsDeleted: Int
+    let mealPhotosDeleted: Int
+    let mealFavoritesDeleted: Int
+    let mealCollectionsDeleted: Int
+    let mealCollectionItemsDeleted: Int
+    let mealEventDetailsDeleted: Int
+    let calendarEventsDeleted: Int
+
+    enum CodingKeys: String, CodingKey {
+        case mealsDeleted = "meals_deleted"
+        case mealRecipesDeleted = "meal_recipes_deleted"
+        case recipeIngredientsDeleted = "recipe_ingredients_deleted"
+        case recipeStepsDeleted = "recipe_steps_deleted"
+        case mealPhotosDeleted = "meal_photos_deleted"
+        case mealFavoritesDeleted = "meal_favorites_deleted"
+        case mealCollectionsDeleted = "meal_collections_deleted"
+        case mealCollectionItemsDeleted = "meal_collection_items_deleted"
+        case mealEventDetailsDeleted = "meal_event_details_deleted"
+        case calendarEventsDeleted = "calendar_events_deleted"
+    }
+}
+
 @MainActor
 final class MealService: ObservableObject, MealServicing {
     private let client = SupabaseManager.shared.client
@@ -181,6 +207,29 @@ final class MealService: ObservableObject, MealServicing {
             if let mealServiceError = error as? MealServiceError {
                 throw mealServiceError
             }
+            throw MealServiceError.deleteMealFailed
+        }
+    }
+
+    func clearHomeMeals(homeId: UUID, currentRole: HomeMemberRole?) async throws -> ClearHomeMealsResult {
+        guard currentRole == .owner else {
+            throw MealServiceError.permissionDenied
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let results: [ClearHomeMealsResult] = try await client
+                .rpc("clear_home_meals", params: MealHomeIdParameters(homeId: homeId))
+                .execute()
+                .value
+            guard let result = results.first else {
+                throw MealServiceError.deleteMealFailed
+            }
+            return result
+        } catch let error as MealServiceError {
+            throw error
+        } catch {
+            logMealError(error, operation: "clear_home_meals", homeId: homeId)
             throw MealServiceError.deleteMealFailed
         }
     }
@@ -1525,6 +1574,14 @@ private struct MealDeleteCalendarEvent: Decodable {
 private struct MealDeleteHomeReference: Decodable {
     let id: UUID
     let timezone: String?
+}
+
+private struct MealHomeIdParameters: Encodable {
+    let homeId: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case homeId = "requested_home_id"
+    }
 }
 
 enum MealServiceError: LocalizedError, Equatable {

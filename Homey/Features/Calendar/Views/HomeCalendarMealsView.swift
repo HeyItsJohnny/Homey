@@ -241,7 +241,7 @@ private struct HomeCalendarMealsWeekGrid: View {
 
     private let labelColumnWidth: CGFloat = 132
     private let dayColumnWidth: CGFloat = 232
-    private let dayHeaderHeight: CGFloat = 52
+    private let dayHeaderHeight: CGFloat = 76
     private let mealRowHeight: CGFloat = 108
     private let columnSpacing: CGFloat = 8
 
@@ -338,7 +338,7 @@ private struct HomeCalendarMealsDayHeader: View {
                 .foregroundStyle(HomeyDashboardTheme.warmBrown)
                 .lineLimit(1)
         }
-        .frame(maxWidth: .infinity, minHeight: 52)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 6)
         .padding(.vertical, 7)
         .background(isToday ? HomeyDashboardTheme.selectedSidebarBackground : HomeyDashboardTheme.appBackground.opacity(0.42), in: RoundedRectangle(cornerRadius: 14, style: .continuous))

@@ -259,19 +259,27 @@ struct CalendarView: View {
     }
 
     private var header: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 14) {
-                calendarPeriodControls
+        VStack(alignment: .leading, spacing: 12) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .center, spacing: 14) {
+                    calendarPeriodControls
 
-                Spacer(minLength: 18)
+                    Spacer(minLength: 18)
 
-                calendarHeaderActions
+                    calendarHeaderActions
+                }
+
+                VStack(alignment: .leading, spacing: 14) {
+                    calendarPeriodControls
+                    calendarHeaderActions
+                }
             }
 
-            VStack(alignment: .leading, spacing: 14) {
-                calendarPeriodControls
-                calendarHeaderActions
+            HStack {
+                Spacer(minLength: 0)
+                addEventButton
             }
+            .padding(.trailing, 70)
         }
     }
 
@@ -321,20 +329,22 @@ struct CalendarView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Go to today")
-
-            Button {
-                presentCreateEditor()
-            } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: "plus")
-                    Text("Add Event")
-                }
-            }
-            .buttonStyle(DashboardPrimaryButtonStyle())
-            .frame(width: 150)
-            .disabled(selectedHome == nil)
-            .accessibilityLabel("Add Event")
         }
+    }
+
+    private var addEventButton: some View {
+        Button {
+            presentCreateEditor()
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "plus")
+                Text("Add Event")
+            }
+        }
+        .buttonStyle(DashboardPrimaryButtonStyle())
+        .frame(width: 150)
+        .disabled(selectedHome == nil)
+        .accessibilityLabel("Add Event")
     }
 
     private var calendarContent: some View {

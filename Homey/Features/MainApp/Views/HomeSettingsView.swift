@@ -22,8 +22,22 @@ struct HomeSettingsView: View {
     @State private var clearChoresConfirmationText = ""
     @State private var clearChoresErrorMessage: String?
     @State private var isClearingChores = false
+    @State private var isShowingClearMealsDialog = false
+    @State private var isShowingClearMealsConfirmation = false
+    @State private var isShowingClearMealsError = false
+    @State private var clearMealsConfirmationText = ""
+    @State private var clearMealsErrorMessage: String?
+    @State private var isClearingMeals = false
+    @State private var isShowingClearCalendarDialog = false
+    @State private var isShowingClearCalendarConfirmation = false
+    @State private var isShowingClearCalendarError = false
+    @State private var clearCalendarConfirmationText = ""
+    @State private var clearCalendarErrorMessage: String?
+    @State private var isClearingCalendar = false
 
     private let choresRepository = ChoresRepository()
+    private let mealService = MealService()
+    private let calendarService = CalendarService()
 
     private var selectedHome: HomeSummary? {
         homeService.selectedHome()
@@ -117,8 +131,12 @@ struct HomeSettingsView: View {
             Text("This will permanently delete all chore data for this Home, including recurring schedules, future and past chore occurrences, approvals, chore point activity, and chore calendar events. Other Homey data will not be affected.")
         }
         .sheet(isPresented: $isShowingClearChoresConfirmation) {
-            ClearChoresConfirmationSheet(
+            ClearHomeDataConfirmationSheet(
+                title: "Clear All Chores?",
                 homeName: selectedHome?.name ?? "this Home",
+                message: "This will permanently delete all chore data for this Home, including recurring schedules, future and past chore occurrences, approvals, chore point activity, and chore calendar events. Other Homey data will not be affected.",
+                confirmButtonTitle: "Clear Chores",
+                loadingAccessibilityLabel: "Clearing chores",
                 confirmationText: $clearChoresConfirmationText,
                 isClearing: isClearingChores,
                 onCancel: {
@@ -136,6 +154,82 @@ struct HomeSettingsView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(clearChoresErrorMessage ?? "Please try again.")
+        }
+        .confirmationDialog(
+            "Clear Meals?",
+            isPresented: $isShowingClearMealsDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear Meals", role: .destructive) {
+                clearMealsConfirmationText = ""
+                isShowingClearMealsConfirmation = true
+            }
+        } message: {
+            Text("This will permanently delete this Home's recipes, meal plans, and meal calendar entries. Global Recipes will not be deleted.")
+        }
+        .sheet(isPresented: $isShowingClearMealsConfirmation) {
+            ClearHomeDataConfirmationSheet(
+                title: "Clear Meals?",
+                homeName: selectedHome?.name ?? "this Home",
+                message: "This will permanently delete this Home's recipes, meal plans, and meal calendar entries. Global Recipes will not be deleted. This cannot be undone.",
+                confirmButtonTitle: "Clear Meals",
+                loadingAccessibilityLabel: "Clearing meals",
+                confirmationText: $clearMealsConfirmationText,
+                isClearing: isClearingMeals,
+                onCancel: {
+                    guard !isClearingMeals else { return }
+                    isShowingClearMealsConfirmation = false
+                },
+                onConfirm: {
+                    Task {
+                        await clearMeals()
+                    }
+                }
+            )
+        }
+        .alert("Unable to Clear Meals", isPresented: $isShowingClearMealsError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(clearMealsErrorMessage ?? "Please try again.")
+        }
+        .confirmationDialog(
+            "Clear Calendar?",
+            isPresented: $isShowingClearCalendarDialog,
+            titleVisibility: .visible
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear Calendar", role: .destructive) {
+                clearCalendarConfirmationText = ""
+                isShowingClearCalendarConfirmation = true
+            }
+        } message: {
+            Text("This will permanently delete this Home's calendar events. Meal plans, recipes, chores, rewards, and Global Recipes will not be deleted.")
+        }
+        .sheet(isPresented: $isShowingClearCalendarConfirmation) {
+            ClearHomeDataConfirmationSheet(
+                title: "Clear Calendar?",
+                homeName: selectedHome?.name ?? "this Home",
+                message: "This will permanently delete this Home's calendar events. Meal plans, recipes, chores, rewards, and Global Recipes will not be deleted. This cannot be undone.",
+                confirmButtonTitle: "Clear Calendar",
+                loadingAccessibilityLabel: "Clearing calendar",
+                confirmationText: $clearCalendarConfirmationText,
+                isClearing: isClearingCalendar,
+                onCancel: {
+                    guard !isClearingCalendar else { return }
+                    isShowingClearCalendarConfirmation = false
+                },
+                onConfirm: {
+                    Task {
+                        await clearCalendar()
+                    }
+                }
+            )
+        }
+        .alert("Unable to Clear Calendar", isPresented: $isShowingClearCalendarError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(clearCalendarErrorMessage ?? "Please try again.")
         }
     }
 
@@ -260,37 +354,50 @@ struct HomeSettingsView: View {
     }
 
     private var dangerZoneCard: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 22) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Danger Zone")
                     .font(.headline.weight(.bold))
                     .foregroundStyle(HomeyDashboardTheme.destructiveRed)
 
-                Text("Deletes all chores, schedules, approvals, points activity, and chore calendar events for this Home. This cannot be undone.")
+                Text("These actions permanently clear data for this Home. Each action has its own confirmation.")
                     .font(.subheadline)
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Button {
-                isShowingClearChoresDialog = true
-            } label: {
-                HStack(spacing: 10) {
-                    if isClearingChores {
-                        ProgressView()
-                            .tint(.white)
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "trash.fill")
-                            .accessibilityHidden(true)
-                    }
+            dangerZoneAction(
+                title: "Clear Chores",
+                description: "Deletes all chores, schedules, approvals, points activity, and chore calendar events for this Home.",
+                systemImage: "trash.fill",
+                isLoading: isClearingChores,
+                loadingTitle: "Clearing Chores...",
+                action: { isShowingClearChoresDialog = true }
+            )
 
-                    Text(isClearingChores ? "Clearing Chores..." : "Clear Chores")
-                }
-            }
-            .buttonStyle(DashboardDestructiveButtonStyle())
-            .disabled(isClearingChores)
-            .accessibilityLabel("Clear Chores")
+            Divider()
+                .overlay(HomeyDashboardTheme.destructiveRed.opacity(0.18))
+
+            dangerZoneAction(
+                title: "Clear Meals",
+                description: "Deletes this Home's meal plans, Home Recipes, and Home-specific meal data. Global Recipes are not deleted.",
+                systemImage: "fork.knife",
+                isLoading: isClearingMeals,
+                loadingTitle: "Clearing Meals...",
+                action: { isShowingClearMealsDialog = true }
+            )
+
+            Divider()
+                .overlay(HomeyDashboardTheme.destructiveRed.opacity(0.18))
+
+            dangerZoneAction(
+                title: "Clear Calendar",
+                description: "Deletes regular calendar events belonging to this Home. Meal plans and chores are not deleted.",
+                systemImage: "calendar.badge.minus",
+                isLoading: isClearingCalendar,
+                loadingTitle: "Clearing Calendar...",
+                action: { isShowingClearCalendarDialog = true }
+            )
         }
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -298,6 +405,46 @@ struct HomeSettingsView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .stroke(HomeyDashboardTheme.destructiveRed.opacity(0.28), lineWidth: 1)
+        }
+    }
+
+    private func dangerZoneAction(
+        title: String,
+        description: String,
+        systemImage: String,
+        isLoading: Bool,
+        loadingTitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title)
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                Text(description)
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button(action: action) {
+                HStack(spacing: 10) {
+                    if isLoading {
+                        ProgressView()
+                            .tint(.white)
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: systemImage)
+                            .accessibilityHidden(true)
+                    }
+
+                    Text(isLoading ? loadingTitle : title)
+                }
+            }
+            .buttonStyle(DashboardDestructiveButtonStyle())
+            .disabled(isLoading)
+            .accessibilityLabel(title)
         }
     }
 
@@ -398,6 +545,83 @@ struct HomeSettingsView: View {
         } catch {
             clearChoresErrorMessage = error.localizedDescription
             isShowingClearChoresError = true
+        }
+    }
+
+    private func clearMeals() async {
+        guard !isClearingMeals else {
+            return
+        }
+
+        guard clearMealsConfirmationText == "CLEAR" else {
+            return
+        }
+
+        guard let selectedHome else {
+            clearMealsErrorMessage = "Unable to load Home Settings. Please choose a Home and try again."
+            isShowingClearMealsError = true
+            return
+        }
+
+        isClearingMeals = true
+        clearMealsErrorMessage = nil
+        successMessage = nil
+        defer { isClearingMeals = false }
+
+        do {
+            _ = try await mealService.clearHomeMeals(
+                homeId: selectedHome.id,
+                currentRole: homeService.selectedHomeRole(currentUserID: authenticationService.currentUser?.id)
+            )
+            clearMealsConfirmationText = ""
+            isShowingClearMealsConfirmation = false
+            NotificationCenter.default.post(name: .homeyMealsDidChange, object: nil)
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+
+            withAnimation(.easeInOut(duration: 0.2)) {
+                successMessage = "Meals have been cleared for this Home."
+            }
+        } catch {
+            clearMealsErrorMessage = error.localizedDescription
+            isShowingClearMealsError = true
+        }
+    }
+
+    private func clearCalendar() async {
+        guard !isClearingCalendar else {
+            return
+        }
+
+        guard clearCalendarConfirmationText == "CLEAR" else {
+            return
+        }
+
+        guard let selectedHome else {
+            clearCalendarErrorMessage = "Unable to load Home Settings. Please choose a Home and try again."
+            isShowingClearCalendarError = true
+            return
+        }
+
+        isClearingCalendar = true
+        clearCalendarErrorMessage = nil
+        successMessage = nil
+        defer { isClearingCalendar = false }
+
+        do {
+            _ = try await calendarService.clearHomeCalendar(
+                homeId: selectedHome.id,
+                currentRole: homeService.selectedHomeRole(currentUserID: authenticationService.currentUser?.id)
+            )
+            clearCalendarConfirmationText = ""
+            isShowingClearCalendarConfirmation = false
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+
+            withAnimation(.easeInOut(duration: 0.2)) {
+                successMessage = "Calendar events have been cleared for this Home."
+            }
+        } catch {
+            clearCalendarErrorMessage = error.localizedDescription
+            isShowingClearCalendarError = true
         }
     }
 
@@ -676,8 +900,12 @@ private struct DashboardDestructiveButtonStyle: ButtonStyle {
     }
 }
 
-private struct ClearChoresConfirmationSheet: View {
+private struct ClearHomeDataConfirmationSheet: View {
+    let title: String
     let homeName: String
+    let message: String
+    let confirmButtonTitle: String
+    let loadingAccessibilityLabel: String
     @Binding var confirmationText: String
     let isClearing: Bool
     let onCancel: () -> Void
@@ -698,7 +926,7 @@ private struct ClearChoresConfirmationSheet: View {
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Clear All Chores?")
+                    Text(title)
                         .font(.title2.weight(.bold))
                         .foregroundStyle(HomeyDashboardTheme.primaryText)
 
@@ -708,7 +936,7 @@ private struct ClearChoresConfirmationSheet: View {
                 }
             }
 
-            Text("This will permanently delete all chore data for this Home, including recurring schedules, future and past chore occurrences, approvals, chore point activity, and chore calendar events. Other Homey data will not be affected.")
+            Text(message)
                 .font(.body)
                 .foregroundStyle(HomeyDashboardTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -748,9 +976,9 @@ private struct ClearChoresConfirmationSheet: View {
                     if isClearing {
                         ProgressView()
                             .tint(.white)
-                            .accessibilityLabel("Clearing chores")
+                            .accessibilityLabel(loadingAccessibilityLabel)
                     } else {
-                        Text("Clear Chores")
+                        Text(confirmButtonTitle)
                     }
                 }
                 .buttonStyle(DashboardDestructiveButtonStyle())
