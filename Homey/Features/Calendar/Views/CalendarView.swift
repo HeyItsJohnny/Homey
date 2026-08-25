@@ -263,14 +263,11 @@ struct CalendarView: View {
             HStack(alignment: .center, spacing: 14) {
                 calendarPeriodControls
 
-                Spacer(minLength: 18)
-
-                calendarHeaderActions
+                Spacer(minLength: 0)
             }
 
             VStack(alignment: .leading, spacing: 14) {
                 calendarPeriodControls
-                calendarHeaderActions
             }
         }
     }
@@ -294,7 +291,7 @@ struct CalendarView: View {
         }
     }
 
-    private var calendarHeaderActions: some View {
+    private var calendarDisplayControls: some View {
         HStack(spacing: 10) {
             Picker("Calendar View", selection: displayModeBinding) {
                 ForEach(CalendarDisplayMode.allCases) { mode in
@@ -321,19 +318,41 @@ struct CalendarView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Go to today")
+        }
+    }
 
-            Button {
-                presentCreateEditor()
-            } label: {
-                HStack(spacing: 9) {
-                    Image(systemName: "plus")
-                    Text("Add Event")
+    private var addEventButton: some View {
+        Button {
+            presentCreateEditor()
+        } label: {
+            HStack(spacing: 9) {
+                Image(systemName: "plus")
+                Text("Add Event")
+            }
+        }
+        .buttonStyle(DashboardPrimaryButtonStyle())
+        .frame(width: 150)
+        .disabled(selectedHome == nil)
+        .accessibilityLabel("Add Event")
+    }
+
+    private var calendarControlsBelowFilters: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 14) {
+                calendarDisplayControls
+
+                Spacer(minLength: 18)
+
+                addEventButton
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                calendarDisplayControls
+                HStack {
+                    Spacer(minLength: 0)
+                    addEventButton
                 }
             }
-            .buttonStyle(DashboardPrimaryButtonStyle())
-            .frame(width: 150)
-            .disabled(selectedHome == nil)
-            .accessibilityLabel("Add Event")
         }
     }
 
@@ -359,6 +378,7 @@ struct CalendarView: View {
                     members: homeService.membersForSelectedHome()
                 )
             } else {
+                calendarControlsBelowFilters
                 primaryCalendarCard
                 selectedDayDetailsCard
             }
