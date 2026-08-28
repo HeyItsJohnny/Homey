@@ -33,10 +33,6 @@ struct CalendarView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 26) {
-                    if viewModel.eventFilter != .meals && viewModel.eventFilter != .chores {
-                        header
-                    }
-
                     if let successMessage {
                         CalendarStatusBanner(message: successMessage)
                             .transition(.opacity)
@@ -258,20 +254,6 @@ struct CalendarView: View {
         }
     }
 
-    private var header: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .center, spacing: 14) {
-                calendarPeriodControls
-
-                Spacer(minLength: 0)
-            }
-
-            VStack(alignment: .leading, spacing: 14) {
-                calendarPeriodControls
-            }
-        }
-    }
-
     private var calendarPeriodControls: some View {
         HStack(spacing: 10) {
             iconButton(systemImage: "chevron.left", label: previousPeriodAccessibilityLabel) {
@@ -360,7 +342,29 @@ struct CalendarView: View {
         VStack(alignment: .leading, spacing: 18) {
             calendarFilterButtons
 
-            if viewModel.eventFilter == .meals {
+            if viewModel.eventFilter == .all {
+                HomeCalendarAllView(
+                    homeId: selectedHome?.id,
+                    role: homeService.currentMembershipForSelectedHome()?.role ?? selectedHome?.role,
+                    weekStartsOn: selectedHome?.weekStartsOn,
+                    timezone: selectedHome?.timezone,
+                    members: homeService.membersForSelectedHome(),
+                    currentUserId: authenticationService.currentUser?.id,
+                    onOpenMeals: {
+                        viewModel.setEventFilter(.meals)
+                    },
+                    onOpenChores: {
+                        viewModel.setEventFilter(.chores)
+                    },
+                    onOpenCalendar: {
+                        viewModel.setEventFilter(.calendar)
+                        Task { await viewModel.moveToToday() }
+                    },
+                    onOpenMeal: { plannedMeal in
+                        mealPresentation = MealCalendarPresentation(plannedMeal: plannedMeal)
+                    }
+                )
+            } else if viewModel.eventFilter == .meals {
                 HomeCalendarMealsView(
                     homeId: selectedHome?.id,
                     weekStartsOn: selectedHome?.weekStartsOn,
@@ -378,6 +382,7 @@ struct CalendarView: View {
                     members: homeService.membersForSelectedHome()
                 )
             } else {
+                calendarPeriodControls
                 calendarControlsBelowFilters
                 primaryCalendarCard
                 selectedDayDetailsCard

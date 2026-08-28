@@ -3,6 +3,7 @@ import SwiftUI
 struct HomeCalendarChoresView: View {
     @StateObject private var viewModel = HomeCalendarChoresViewModel()
     @State private var selectedItem: HomeChoreChecklistItemModel?
+    @State private var scrollToTodayRequest = 0
 
     let homeId: UUID?
     let role: HomeMemberRole?
@@ -19,7 +20,10 @@ struct HomeCalendarChoresView: View {
                 isLoading: viewModel.isLoading,
                 onPreviousWeek: viewModel.moveToPreviousWeek,
                 onNextWeek: viewModel.moveToNextWeek,
-                onToday: viewModel.moveToToday,
+                onToday: {
+                    viewModel.moveToToday()
+                    scrollToTodayRequest += 1
+                },
                 onSelectAssignee: viewModel.selectAssignee
             )
 
@@ -40,6 +44,7 @@ struct HomeCalendarChoresView: View {
                     days: viewModel.weekDays(),
                     members: members,
                     selectedAssignee: viewModel.selectedAssignee,
+                    scrollToTodayRequest: scrollToTodayRequest,
                     choreItems: { day in
                         viewModel.choreItems(on: day, members: members)
                     },
@@ -290,6 +295,7 @@ private struct HomeCalendarChoresWeekBoard: View {
     let days: [Date]
     let members: [HomeMemberDisplay]
     let selectedAssignee: HomeChoreAssigneeFilter
+    let scrollToTodayRequest: Int
     let choreItems: (Date) -> [HomeChoreChecklistItemModel]
     let onSelectItem: (HomeChoreChecklistItemModel) -> Void
 
@@ -298,23 +304,90 @@ private struct HomeCalendarChoresWeekBoard: View {
     private let columnSpacing: CGFloat = 10
 
     var body: some View {
-        ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: columnSpacing) {
-                ForEach(days, id: \.self) { day in
-                    HomeCalendarChoresDayColumn(
-                        date: day,
-                        items: choreItems(day),
-                        onSelectItem: onSelectItem
-                    )
-                    .frame(width: dayColumnWidth, alignment: .top)
-                    .frame(minHeight: dayColumnMinHeight, alignment: .top)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: columnSpacing) {
+                    ForEach(days, id: \.self) { day in
+                        HomeCalendarChoresDayColumn(
+                            date: day,
+                            items: choreItems(day),
+                            onSelectItem: onSelectItem
+                        )
+                        .frame(width: dayColumnWidth, alignment: .top)
+                        .frame(minHeight: dayColumnMinHeight, alignment: .top)
+                        .id(day)
+                    }
                 }
+                .padding(18)
             }
-            .padding(18)
+            .scrollIndicators(.hidden)
+            .onAppear {
+                positionWeeklyBoard(proxy: proxy)
+            }
+            .onChange(of: daysKey) { _, _ in
+                positionWeeklyBoard(proxy: proxy)
+            }
+            .onChange(of: scrollToTodayRequest) { _, _ in
+                scrollToToday(proxy: proxy, animated: true)
+            }
         }
-        .scrollIndicators(.hidden)
         .dashboardCard(cornerRadius: 26)
     }
+
+    private var daysKey: String {
+        days
+            .map { Self.dayIdFormatter.string(from: $0) }
+            .joined(separator: "|")
+    }
+
+    private func positionWeeklyBoard(proxy: ScrollViewProxy) {
+        guard let firstDay = days.first else { return }
+
+        if let target = todayInDisplayedWeek {
+            proxy.scrollTo(target.date, anchor: scrollAnchor(forTodayAt: target.index))
+        } else {
+            proxy.scrollTo(firstDay, anchor: .leading)
+        }
+    }
+
+    private func scrollToToday(proxy: ScrollViewProxy, animated: Bool) {
+        guard let target = todayInDisplayedWeek else { return }
+
+        if animated {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                proxy.scrollTo(target.date, anchor: scrollAnchor(forTodayAt: target.index))
+            }
+        } else {
+            proxy.scrollTo(target.date, anchor: scrollAnchor(forTodayAt: target.index))
+        }
+    }
+
+    private var todayInDisplayedWeek: (date: Date, index: Int)? {
+        guard let match = days.enumerated().first(where: { _, day in
+            Calendar.autoupdatingCurrent.isDateInToday(day)
+        }) else {
+            return nil
+        }
+
+        return (date: match.element, index: match.offset)
+    }
+
+    private func scrollAnchor(forTodayAt index: Int) -> UnitPoint {
+        switch index {
+        case 0...1:
+            return .leading
+        case 5...6:
+            return .trailing
+        default:
+            return .center
+        }
+    }
+
+    private static let dayIdFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 }
 
 private struct HomeCalendarChoresDayColumn: View {
@@ -555,7 +628,7 @@ private struct HomeCalendarChoreLegendItem: View {
     }
 }
 
-private struct HomeChoreSubmissionView: View {
+struct HomeChoreSubmissionView: View {
     let item: HomeChoreChecklistItemModel
     let members: [HomeMemberDisplay]
     let isSubmitting: Bool

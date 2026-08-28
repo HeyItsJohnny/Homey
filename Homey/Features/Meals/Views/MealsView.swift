@@ -543,8 +543,8 @@ struct MealsView: View {
                 title: "Build your family recipe library",
                 message: "Save favorite meals, recipes, cooking notes, and family traditions in one shared place.",
                 systemImage: "fork.knife.circle.fill",
-                buttonTitle: mealPermissions.canCreate ? "Add Your First Recipe" : nil,
-                action: mealPermissions.canCreate ? { isAddRecipeOptionsPresented = true } : nil
+                buttonTitle: "Explore Recipes",
+                action: { selectedTab = .explore }
             )
 
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 14)], spacing: 14) {

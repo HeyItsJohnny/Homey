@@ -5,6 +5,7 @@ struct HomeCalendarMealsView: View {
     @StateObject private var viewModel = HomeCalendarMealsViewModel()
     @State private var addSlot: HomeCalendarMealSlot?
     @State private var moveTarget: HomeCalendarMealMoveTarget?
+    @State private var scrollToTodayRequest = 0
 
     let homeId: UUID?
     let weekStartsOn: Int?
@@ -21,7 +22,10 @@ struct HomeCalendarMealsView: View {
                 isSaving: viewModel.isSaving,
                 onPreviousWeek: viewModel.moveToPreviousWeek,
                 onNextWeek: viewModel.moveToNextWeek,
-                onToday: viewModel.moveToToday
+                onToday: {
+                    viewModel.moveToToday()
+                    scrollToTodayRequest += 1
+                }
             )
 
             if homeId == nil {
@@ -47,6 +51,7 @@ struct HomeCalendarMealsView: View {
                     days: viewModel.weekDays(),
                     mealTypes: mealTypes,
                     categories: viewModel.categories,
+                    scrollToTodayRequest: scrollToTodayRequest,
                     plannedMeals: { day, mealType in
                         viewModel.plannedMeals(on: day, mealType: mealType)
                     },
@@ -233,6 +238,7 @@ private struct HomeCalendarMealsWeekGrid: View {
     let days: [Date]
     let mealTypes: [MealType]
     let categories: [CalendarCategory]
+    let scrollToTodayRequest: Int
     let plannedMeals: (Date, MealType) -> [PlannedMeal]
     let onAdd: (Date, MealType) -> Void
     let onOpen: (PlannedMeal) -> Void
@@ -244,6 +250,7 @@ private struct HomeCalendarMealsWeekGrid: View {
     private let dayHeaderHeight: CGFloat = 76
     private let mealRowHeight: CGFloat = 108
     private let columnSpacing: CGFloat = 8
+    @State private var positionedDaysKey: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -274,36 +281,107 @@ private struct HomeCalendarMealsWeekGrid: View {
     }
 
     private var dayColumns: some View {
-        ScrollView(.horizontal) {
-            VStack(alignment: .leading, spacing: columnSpacing) {
-                HStack(spacing: columnSpacing) {
-                    ForEach(days, id: \.self) { day in
-                        HomeCalendarMealsDayHeader(date: day)
-                            .frame(width: dayColumnWidth, height: dayHeaderHeight)
-                    }
-                }
-
-                ForEach(mealTypes) { mealType in
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                VStack(alignment: .leading, spacing: columnSpacing) {
                     HStack(spacing: columnSpacing) {
                         ForEach(days, id: \.self) { day in
-                            HomeCalendarMealsSlot(
-                                date: day,
-                                mealType: mealType,
-                                plannedMeals: plannedMeals(day, mealType),
-                                categories: categories,
-                                onAdd: { onAdd(day, mealType) },
-                                onOpen: onOpen,
-                                onMove: onMove,
-                                onRemove: onRemove
-                            )
-                            .frame(width: dayColumnWidth, height: mealRowHeight)
+                            HomeCalendarMealsDayHeader(date: day)
+                                .frame(width: dayColumnWidth, height: dayHeaderHeight)
+                                .id(day)
+                        }
+                    }
+
+                    ForEach(mealTypes) { mealType in
+                        HStack(spacing: columnSpacing) {
+                            ForEach(days, id: \.self) { day in
+                                HomeCalendarMealsSlot(
+                                    date: day,
+                                    mealType: mealType,
+                                    plannedMeals: plannedMeals(day, mealType),
+                                    categories: categories,
+                                    onAdd: { onAdd(day, mealType) },
+                                    onOpen: onOpen,
+                                    onMove: onMove,
+                                    onRemove: onRemove
+                                )
+                                .frame(width: dayColumnWidth, height: mealRowHeight)
+                            }
                         }
                     }
                 }
             }
+            .scrollIndicators(.hidden)
+            .onAppear {
+                positionInitialScrollIfNeeded(proxy: proxy)
+            }
+            .onChange(of: daysKey) { _, _ in
+                positionInitialScrollIfNeeded(proxy: proxy)
+            }
+            .onChange(of: scrollToTodayRequest) { _, _ in
+                scrollToToday(proxy: proxy, animated: true)
+            }
         }
-        .scrollIndicators(.hidden)
     }
+
+    private var daysKey: String {
+        days
+            .map { Self.dayIdFormatter.string(from: $0) }
+            .joined(separator: "|")
+    }
+
+    private func positionInitialScrollIfNeeded(proxy: ScrollViewProxy) {
+        guard positionedDaysKey != daysKey else { return }
+        positionedDaysKey = daysKey
+
+        guard let target = todayInDisplayedWeek else {
+            if let firstDay = days.first {
+                proxy.scrollTo(firstDay, anchor: .leading)
+            }
+            return
+        }
+
+        proxy.scrollTo(target.date, anchor: scrollAnchor(forTodayAt: target.index))
+    }
+
+    private func scrollToToday(proxy: ScrollViewProxy, animated: Bool) {
+        guard let target = todayInDisplayedWeek else { return }
+
+        if animated {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                proxy.scrollTo(target.date, anchor: scrollAnchor(forTodayAt: target.index))
+            }
+        } else {
+            proxy.scrollTo(target.date, anchor: scrollAnchor(forTodayAt: target.index))
+        }
+    }
+
+    private var todayInDisplayedWeek: (date: Date, index: Int)? {
+        guard let match = days.enumerated().first(where: { _, day in
+            Calendar.autoupdatingCurrent.isDateInToday(day)
+        }) else {
+            return nil
+        }
+
+        return (date: match.element, index: match.offset)
+    }
+
+    private func scrollAnchor(forTodayAt index: Int) -> UnitPoint {
+        switch index {
+        case 0...1:
+            return .leading
+        case 5...6:
+            return .trailing
+        default:
+            return .center
+        }
+    }
+
+    private static let dayIdFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 
     private var plannedMealCount: Int {
         Set(days.flatMap { day in

@@ -6,6 +6,7 @@ struct MyChoresView: View {
     @EnvironmentObject private var authenticationService: AuthenticationService
     @StateObject private var viewModel = MyChoresViewModel()
     @State private var selectedOccurrence: ChoreOccurrence?
+    @State private var scrollToTodayRequest = 0
 
     var body: some View {
         ChoreShellCard(title: "My Chores", systemImage: "checklist") {
@@ -116,7 +117,10 @@ struct MyChoresView: View {
                 .foregroundStyle(HomeyDashboardTheme.secondaryText)
                 .lineLimit(1)
 
-            Button("Today") { viewModel.moveToToday() }
+            Button("Today") {
+                viewModel.moveToToday()
+                scrollToTodayRequest += 1
+            }
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(HomeyDashboardTheme.warmBrown)
                 .padding(.horizontal, 16)
@@ -129,23 +133,94 @@ struct MyChoresView: View {
     }
 
     private var weeklyPlanner: some View {
-        ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: 10) {
-                ForEach(viewModel.daySections) { section in
-                    MyChoresDayColumn(
-                        section: section,
-                        isToday: viewModel.isToday(section.date),
-                        isSelected: viewModel.isSelectedDay(section.date),
-                        onSelectDay: { viewModel.selectDay(section.date) },
-                        onSelectOccurrence: { selectedOccurrence = $0 }
-                    )
-                    .frame(width: 210, alignment: .top)
+        let sections = viewModel.daySections
+
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 10) {
+                    ForEach(sections) { section in
+                        MyChoresDayColumn(
+                            section: section,
+                            isToday: viewModel.isToday(section.date),
+                            isSelected: viewModel.isSelectedDay(section.date),
+                            onSelectDay: { viewModel.selectDay(section.date) },
+                            onSelectOccurrence: { selectedOccurrence = $0 }
+                        )
+                        .frame(width: 210, alignment: .top)
+                        .id(section.date)
+                    }
                 }
             }
+            .scrollIndicators(.hidden)
+            .accessibilityLabel("Weekly chore planner")
+            .onAppear {
+                positionWeeklyPlanner(proxy: proxy, sections: sections)
+            }
+            .onChange(of: weekSectionsKey(sections)) { _, _ in
+                positionWeeklyPlanner(proxy: proxy, sections: sections)
+            }
+            .onChange(of: scrollToTodayRequest) { _, _ in
+                scrollWeeklyPlannerToToday(proxy: proxy, sections: sections, animated: true)
+            }
         }
-        .scrollIndicators(.hidden)
-        .accessibilityLabel("Weekly chore planner")
     }
+
+    private func positionWeeklyPlanner(proxy: ScrollViewProxy, sections: [MyChoresDaySectionModel]) {
+        guard let firstDay = sections.first?.date else { return }
+
+        if let target = todayInWeek(sections) {
+            proxy.scrollTo(target.date, anchor: weeklyPlannerAnchor(forTodayAt: target.index))
+        } else {
+            proxy.scrollTo(firstDay, anchor: .leading)
+        }
+    }
+
+    private func scrollWeeklyPlannerToToday(proxy: ScrollViewProxy, sections: [MyChoresDaySectionModel], animated: Bool) {
+        guard let target = todayInWeek(sections) else {
+            return
+        }
+
+        if animated {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                proxy.scrollTo(target.date, anchor: weeklyPlannerAnchor(forTodayAt: target.index))
+            }
+        } else {
+            proxy.scrollTo(target.date, anchor: weeklyPlannerAnchor(forTodayAt: target.index))
+        }
+    }
+
+    private func todayInWeek(_ sections: [MyChoresDaySectionModel]) -> (date: Date, index: Int)? {
+        guard let match = sections.enumerated().first(where: { _, section in
+            Calendar.autoupdatingCurrent.isDateInToday(section.date)
+        }) else {
+            return nil
+        }
+
+        return (date: match.element.date, index: match.offset)
+    }
+
+    private func weeklyPlannerAnchor(forTodayAt index: Int) -> UnitPoint {
+        switch index {
+        case 0...1:
+            return .leading
+        case 5...6:
+            return .trailing
+        default:
+            return .center
+        }
+    }
+
+    private func weekSectionsKey(_ sections: [MyChoresDaySectionModel]) -> String {
+        sections
+            .map { Self.weekDayIdFormatter.string(from: $0.date) }
+            .joined(separator: "|")
+    }
+
+    private static let weekDayIdFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 }
 
 @MainActor

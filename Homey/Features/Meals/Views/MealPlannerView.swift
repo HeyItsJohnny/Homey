@@ -19,6 +19,7 @@ struct MealPlannerView: View {
     @State private var moveTarget: MealPlannerMoveTarget?
     @State private var isAutoPlanPresented = false
     @State private var isResetPlanConfirmationPresented = false
+    @State private var scrollToTodayRequest = 0
 
     private let defaultSlotTypes: [MealType] = [.breakfast, .lunch, .dinner, .snack]
 
@@ -162,7 +163,10 @@ struct MealPlannerView: View {
                 .foregroundStyle(HomeyDashboardTheme.secondaryText)
                 .lineLimit(1)
 
-            Button("Today") { viewModel.moveToToday() }
+            Button("Today") {
+                viewModel.moveToToday()
+                scrollToTodayRequest += 1
+            }
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(HomeyDashboardTheme.warmBrown)
                 .padding(.horizontal, 16)
@@ -250,30 +254,93 @@ struct MealPlannerView: View {
     }
 
     private var weeklyGrid: some View {
-        ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: 10) {
-                ForEach(viewModel.weekDays(), id: \.self) { day in
-                    MealPlannerDayColumn(
-                        date: day,
-                        isToday: Calendar.autoupdatingCurrent.isDateInToday(day),
-                        isSelected: Calendar.autoupdatingCurrent.isDate(day, inSameDayAs: viewModel.selectedDate),
-                        slotTypes: defaultSlotTypes,
-                        plannedMeals: { mealType in viewModel.plannedMeals(on: day, mealType: mealType) },
-                        onSelectDay: { viewModel.selectDate(day) },
-                        onAdd: { mealType in activeAddSlot = MealPlannerSlot(date: day, mealType: mealType) },
-                        onOpen: { plannedMeal in onSelectMeal(plannedMeal.meal) },
-                        onMove: { plannedMeal in moveTarget = MealPlannerMoveTarget(plannedMeal: plannedMeal, date: day, mealType: plannedMeal.mealType) },
-                        onRemove: { plannedMeal in Task { await viewModel.removeMeal(plannedMeal, permissions: permissions) } },
-                        onDropMeal: { plannedMeal, mealType in Task { await viewModel.moveMeal(plannedMeal, to: day, mealType: mealType, permissions: permissions) } },
-                        draggedMeal: draggedMeal(with:),
-                        categories: viewModel.categories
-                    )
-                    .frame(width: 210, alignment: .top)
+        let days = viewModel.weekDays()
+
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: 10) {
+                    ForEach(days, id: \.self) { day in
+                        MealPlannerDayColumn(
+                            date: day,
+                            isToday: Calendar.autoupdatingCurrent.isDateInToday(day),
+                            isSelected: Calendar.autoupdatingCurrent.isDate(day, inSameDayAs: viewModel.selectedDate),
+                            slotTypes: defaultSlotTypes,
+                            plannedMeals: { mealType in viewModel.plannedMeals(on: day, mealType: mealType) },
+                            onSelectDay: { viewModel.selectDate(day) },
+                            onAdd: { mealType in activeAddSlot = MealPlannerSlot(date: day, mealType: mealType) },
+                            onOpen: { plannedMeal in onSelectMeal(plannedMeal.meal) },
+                            onMove: { plannedMeal in moveTarget = MealPlannerMoveTarget(plannedMeal: plannedMeal, date: day, mealType: plannedMeal.mealType) },
+                            onRemove: { plannedMeal in Task { await viewModel.removeMeal(plannedMeal, permissions: permissions) } },
+                            onDropMeal: { plannedMeal, mealType in Task { await viewModel.moveMeal(plannedMeal, to: day, mealType: mealType, permissions: permissions) } },
+                            draggedMeal: draggedMeal(with:),
+                            categories: viewModel.categories
+                        )
+                        .frame(width: 210, alignment: .top)
+                        .id(day)
+                    }
                 }
             }
+            .scrollIndicators(.hidden)
+            .accessibilityLabel("Weekly meal planner")
+            .onAppear {
+                positionWeeklyGridIfNeeded(proxy: proxy, days: days)
+            }
+            .onChange(of: weekDaysKey(days)) { _, _ in
+                positionWeeklyGridIfNeeded(proxy: proxy, days: days)
+            }
+            .onChange(of: scrollToTodayRequest) { _, _ in
+                scrollWeeklyGridToToday(proxy: proxy, days: days, animated: true)
+            }
         }
-        .scrollIndicators(.hidden)
-        .accessibilityLabel("Weekly meal planner")
+    }
+
+    private func positionWeeklyGridIfNeeded(proxy: ScrollViewProxy, days: [Date]) {
+        if todayInWeek(days) != nil {
+            scrollWeeklyGridToToday(proxy: proxy, days: days, animated: false)
+        } else if let firstDay = days.first {
+            proxy.scrollTo(firstDay, anchor: .leading)
+        }
+    }
+
+    private func scrollWeeklyGridToToday(proxy: ScrollViewProxy, days: [Date], animated: Bool) {
+        guard let target = todayInWeek(days) else {
+            return
+        }
+
+        if animated {
+            withAnimation(.easeInOut(duration: 0.22)) {
+                proxy.scrollTo(target.date, anchor: weeklyGridAnchor(forTodayAt: target.index))
+            }
+        } else {
+            proxy.scrollTo(target.date, anchor: weeklyGridAnchor(forTodayAt: target.index))
+        }
+    }
+
+    private func todayInWeek(_ days: [Date]) -> (date: Date, index: Int)? {
+        guard let match = days.enumerated().first(where: { _, day in
+            Calendar.autoupdatingCurrent.isDateInToday(day)
+        }) else {
+            return nil
+        }
+
+        return (date: match.element, index: match.offset)
+    }
+
+    private func weeklyGridAnchor(forTodayAt index: Int) -> UnitPoint {
+        switch index {
+        case 0...1:
+            return .leading
+        case 5...6:
+            return .trailing
+        default:
+            return .center
+        }
+    }
+
+    private func weekDaysKey(_ days: [Date]) -> String {
+        days
+            .map { Self.weekDayIdFormatter.string(from: $0) }
+            .joined(separator: "|")
     }
 
     private var monthlyView: some View {
@@ -352,6 +419,12 @@ struct MealPlannerView: View {
     private static let dayHeaderFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.setLocalizedDateFormatFromTemplate("EEE d")
+        return formatter
+    }()
+
+    private static let weekDayIdFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
 

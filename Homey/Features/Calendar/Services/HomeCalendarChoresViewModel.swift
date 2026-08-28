@@ -410,6 +410,15 @@ enum HomeChoreChecklistStatus: Hashable {
         }
     }
 
+    var requiresHouseholdAction: Bool {
+        switch self {
+        case .notStarted, .needsRedo:
+            return true
+        case .awaitingApproval, .completed:
+            return false
+        }
+    }
+
     var requiresStatusCaption: Bool {
         switch self {
         case .notStarted:
