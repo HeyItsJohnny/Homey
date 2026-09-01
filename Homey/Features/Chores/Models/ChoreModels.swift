@@ -112,21 +112,54 @@ struct ChoreRoom: Codable, Identifiable, Hashable, Sendable {
     let id: UUID
     let homeId: UUID
     let name: String
+    let roomType: ChoreRoomType?
+    let preferredCleaningWeekday: ChorePreferredCleaningWeekday?
+    let preferredCleaningFrequency: ChoreRoomCleaningFrequency?
+    let lastCleanedAt: Date?
     let sortOrder: Int
     let archivedAt: Date?
     let createdBy: UUID?
     let createdAt: Date
     let updatedAt: Date
 
+    var displayRoomType: ChoreRoomType {
+        roomType ?? .other
+    }
+
+    var preferredCleaningDescription: String {
+        let cadence = preferredCleaningFrequency?.displayName ?? "Not Set"
+        guard let weekday = preferredCleaningWeekday else {
+            return cadence
+        }
+
+        return "\(cadence) · \(weekday.displayName)"
+    }
+
     enum CodingKeys: String, CodingKey {
         case id
         case homeId = "home_id"
         case name
+        case roomType = "room_type"
+        case preferredCleaningWeekday = "preferred_cleaning_weekday"
+        case preferredCleaningFrequency = "preferred_cleaning_frequency"
+        case lastCleanedAt = "last_cleaned_at"
         case sortOrder = "sort_order"
         case archivedAt = "archived_at"
         case createdBy = "created_by"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
+    }
+}
+
+struct RoomCleaningSummary: Identifiable, Hashable, Sendable {
+    let room: ChoreRoom
+    let lastCleanedAt: Date?
+    let completedChoreCount: Int
+
+    var id: UUID { room.id }
+
+    var preferredCleaningText: String {
+        room.preferredCleaningDescription
     }
 }
 
@@ -209,12 +242,17 @@ struct ChoreTemplate: Codable, Identifiable, Hashable, Sendable {
     let pointsValue: Int
     let requiresApproval: Bool
     let requiresPhoto: Bool
+    let contributesToRoomCleaning: Bool?
     let isActive: Bool
     let archivedAt: Date?
     let createdBy: UUID?
     let updatedBy: UUID?
     let createdAt: Date
     let updatedAt: Date
+
+    var isRegularRoomCleaning: Bool {
+        contributesToRoomCleaning ?? false
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -229,6 +267,7 @@ struct ChoreTemplate: Codable, Identifiable, Hashable, Sendable {
         case pointsValue = "points_value"
         case requiresApproval = "requires_approval"
         case requiresPhoto = "requires_photo"
+        case contributesToRoomCleaning = "contributes_to_room_cleaning"
         case isActive = "is_active"
         case archivedAt = "archived_at"
         case createdBy = "created_by"
@@ -335,6 +374,7 @@ struct ChoreOccurrence: Codable, Identifiable, Hashable, Sendable {
     let pointsValueSnapshot: Int
     let requiresApprovalSnapshot: Bool
     let requiresPhotoSnapshot: Bool
+    let contributesToRoomCleaningSnapshot: Bool?
     let dueAt: Date
     let endAt: Date
     let dueLocalDate: Date
@@ -367,6 +407,7 @@ struct ChoreOccurrence: Codable, Identifiable, Hashable, Sendable {
     var pointsValue: Int { pointsValueSnapshot }
     var requiresApproval: Bool { requiresApprovalSnapshot }
     var requiresPhoto: Bool { requiresPhotoSnapshot }
+    var contributesToRoomCleaning: Bool { contributesToRoomCleaningSnapshot ?? false }
     var dueTime: ChoreLocalTime? { nil }
     var timezone: String { TimeZone.autoupdatingCurrent.identifier }
 
@@ -385,6 +426,7 @@ struct ChoreOccurrence: Codable, Identifiable, Hashable, Sendable {
         case pointsValueSnapshot = "points_value_snapshot"
         case requiresApprovalSnapshot = "requires_approval_snapshot"
         case requiresPhotoSnapshot = "requires_photo_snapshot"
+        case contributesToRoomCleaningSnapshot = "contributes_to_room_cleaning_snapshot"
         case dueAt = "due_at"
         case endAt = "end_at"
         case dueLocalDate = "due_local_date"
@@ -418,6 +460,7 @@ struct ChoreOccurrence: Codable, Identifiable, Hashable, Sendable {
         pointsValueSnapshot = try container.decode(Int.self, forKey: .pointsValueSnapshot)
         requiresApprovalSnapshot = try container.decode(Bool.self, forKey: .requiresApprovalSnapshot)
         requiresPhotoSnapshot = try container.decode(Bool.self, forKey: .requiresPhotoSnapshot)
+        contributesToRoomCleaningSnapshot = try container.decodeIfPresent(Bool.self, forKey: .contributesToRoomCleaningSnapshot)
         dueAt = try container.decode(Date.self, forKey: .dueAt)
         endAt = try container.decode(Date.self, forKey: .endAt)
         dueLocalDate = try container.decodeDateOnly(forKey: .dueLocalDate)

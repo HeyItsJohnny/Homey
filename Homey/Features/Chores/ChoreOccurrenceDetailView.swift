@@ -9,9 +9,11 @@ struct ChoreOccurrenceDetailView: View {
     @State private var isPresentingManageChore = false
 
     private let homeTimezone: String
+    private let targetAssigneeUserId: UUID?
 
-    init(initialOccurrence: ChoreOccurrence, homeTimezone: String) {
+    init(initialOccurrence: ChoreOccurrence, homeTimezone: String, targetAssigneeUserId: UUID? = nil) {
         self.homeTimezone = homeTimezone
+        self.targetAssigneeUserId = targetAssigneeUserId
         _viewModel = StateObject(wrappedValue: ChoreOccurrenceDetailViewModel(initialOccurrence: initialOccurrence))
     }
 
@@ -65,7 +67,7 @@ struct ChoreOccurrenceDetailView: View {
         }
         .task(id: viewModel.occurrence?.id) {
             await loadMembersIfNeeded()
-            await viewModel.load(homeId: homeService.selectedHomeID, currentUserId: currentUserId)
+            await viewModel.load(homeId: homeService.selectedHomeID, currentUserId: currentUserId, currentRole: currentRole)
         }
         .sheet(isPresented: $isPresentingManageChore) {
             if let occurrence = viewModel.occurrence {
@@ -185,10 +187,10 @@ struct ChoreOccurrenceDetailView: View {
                 Text("This chore is read-only.")
                     .font(.subheadline)
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
-            } else if canManageChores, viewModel.pendingSubmission != nil {
+            } else if canManageChores, shouldShowReviewActions(for: occurrence) {
                 reviewActions(for: occurrence)
             } else if personalStatus(for: occurrence) == .completed {
-                completedSummary(for: occurrence, assignee: currentUserAssignee(for: occurrence))
+                completedSummary(for: occurrence, assignee: activeAssignee(for: occurrence))
             } else {
                 availableMemberActions(for: occurrence)
             }
@@ -228,7 +230,7 @@ struct ChoreOccurrenceDetailView: View {
                     .accessibilityLabel("Completion note")
 
                 Button {
-                    Task { await viewModel.submitChore() }
+                    Task { await viewModel.submitChore(targetAssigneeUserId: targetAssigneeUserId) }
                 } label: {
                     actionLabel("Submit Chore", systemImage: "checkmark.circle.fill")
                 }
@@ -240,7 +242,7 @@ struct ChoreOccurrenceDetailView: View {
                     .font(.subheadline)
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
             } else if personalStatus == .completed {
-                completedSummary(for: occurrence, assignee: currentUserAssignee(for: occurrence))
+                completedSummary(for: occurrence, assignee: activeAssignee(for: occurrence))
             }
         } else {
             Text("You can view this chore, but there are no actions available for your account.")
@@ -410,19 +412,43 @@ struct ChoreOccurrenceDetailView: View {
             return occurrence.claimedBy == currentUserId
         }
 
+        if canManageChores,
+           let targetAssigneeUserId,
+           viewModel.assignees.contains(where: { $0.userId == targetAssigneeUserId }) {
+            return true
+        }
+
         return viewModel.assignees.contains { $0.userId == currentUserId }
     }
 
-    private func currentUserAssignee(for occurrence: ChoreOccurrence) -> ChoreOccurrenceAssignee? {
+    private func shouldShowReviewActions(for occurrence: ChoreOccurrence) -> Bool {
+        guard viewModel.pendingSubmission != nil else {
+            return false
+        }
+
+        guard targetAssigneeUserId != nil else {
+            return true
+        }
+
+        return activeAssignee(for: occurrence)?.status == .awaitingApproval
+    }
+
+    private func activeAssignee(for occurrence: ChoreOccurrence) -> ChoreOccurrenceAssignee? {
         guard occurrence.assignmentMode != .open, let currentUserId else {
             return nil
+        }
+
+        if canManageChores,
+           let targetAssigneeUserId,
+           let targetAssignee = viewModel.assignees.first(where: { $0.userId == targetAssigneeUserId }) {
+            return targetAssignee
         }
 
         return viewModel.assignees.first { $0.userId == currentUserId }
     }
 
     private func personalStatus(for occurrence: ChoreOccurrence) -> ChoreOccurrenceStatus {
-        currentUserAssignee(for: occurrence)?.status.personalOccurrenceStatus ?? occurrence.status
+        activeAssignee(for: occurrence)?.status.personalOccurrenceStatus ?? occurrence.status
     }
 
     private func personalDisplayStatus(for occurrence: ChoreOccurrence) -> ChoreOccurrenceDisplayStatus {
@@ -482,6 +508,7 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
     private let occurrenceId: UUID
     private var activeHomeId: UUID?
     private var activeCurrentUserId: UUID?
+    private var activeCurrentRole: HomeMemberRole?
 
     init(initialOccurrence: ChoreOccurrence, repository: ChoresRepository? = nil) {
         self.occurrence = initialOccurrence
@@ -538,9 +565,10 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
         }
     }
 
-    func load(homeId: UUID?, currentUserId: UUID?) async {
+    func load(homeId: UUID?, currentUserId: UUID?, currentRole: HomeMemberRole?) async {
         activeHomeId = homeId
         activeCurrentUserId = currentUserId
+        activeCurrentRole = currentRole
         await reload()
     }
 
@@ -592,9 +620,20 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
         }
     }
 
-    func submitChore() async {
+    func submitChore(targetAssigneeUserId: UUID?) async {
         await performAction(failureMessage: "Unable to submit chore.") {
-            _ = try await repository.submitChore(occurrenceId: occurrenceId, note: completionNote, photoPath: nil)
+            if let targetAssigneeUserId,
+               targetAssigneeUserId != activeCurrentUserId,
+               (activeCurrentRole == .owner || activeCurrentRole == .admin) {
+                _ = try await repository.submitChoreAsAdmin(
+                    occurrenceId: occurrenceId,
+                    forUserId: targetAssigneeUserId,
+                    note: completionNote,
+                    photoPath: nil
+                )
+            } else {
+                _ = try await repository.submitChore(occurrenceId: occurrenceId, note: completionNote, photoPath: nil)
+            }
             completionNote = ""
         }
     }

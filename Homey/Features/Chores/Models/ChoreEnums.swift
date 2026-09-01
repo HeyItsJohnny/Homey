@@ -60,6 +60,105 @@ enum ChoreFrequency: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum ChoreRoomType: String, Codable, CaseIterable, Identifiable, Sendable {
+    case bedroom
+    case kitchen
+    case bathroom
+    case livingRoom = "living_room"
+    case diningRoom = "dining_room"
+    case laundryRoom = "laundry_room"
+    case office
+    case garage
+    case outdoor
+    case other
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .bedroom:
+            return "Bedroom"
+        case .kitchen:
+            return "Kitchen"
+        case .bathroom:
+            return "Bathroom"
+        case .livingRoom:
+            return "Living Room"
+        case .diningRoom:
+            return "Dining Room"
+        case .laundryRoom:
+            return "Laundry Room"
+        case .office:
+            return "Office"
+        case .garage:
+            return "Garage"
+        case .outdoor:
+            return "Outdoor"
+        case .other:
+            return "Other"
+        }
+    }
+}
+
+enum ChorePreferredCleaningWeekday: Int, Codable, CaseIterable, Identifiable, Sendable {
+    case sunday = 1
+    case monday = 2
+    case tuesday = 3
+    case wednesday = 4
+    case thursday = 5
+    case friday = 6
+    case saturday = 7
+
+    var id: Int { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .sunday:
+            return "Sunday"
+        case .monday:
+            return "Monday"
+        case .tuesday:
+            return "Tuesday"
+        case .wednesday:
+            return "Wednesday"
+        case .thursday:
+            return "Thursday"
+        case .friday:
+            return "Friday"
+        case .saturday:
+            return "Saturday"
+        }
+    }
+}
+
+enum ChoreRoomCleaningFrequency: String, Codable, CaseIterable, Identifiable, Sendable {
+    case daily
+    case multipleTimesWeek = "multiple_times_week"
+    case weekly
+    case everyTwoWeeks = "every_two_weeks"
+    case monthly
+    case custom
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .daily:
+            return "Daily"
+        case .multipleTimesWeek:
+            return "Multiple Times a Week"
+        case .weekly:
+            return "Weekly"
+        case .everyTwoWeeks:
+            return "Every Two Weeks"
+        case .monthly:
+            return "Monthly"
+        case .custom:
+            return "Custom"
+        }
+    }
+}
+
 enum ChoreRecurrenceEndType: String, Codable, CaseIterable, Identifiable, Sendable {
     case never
     case onDate = "on_date"

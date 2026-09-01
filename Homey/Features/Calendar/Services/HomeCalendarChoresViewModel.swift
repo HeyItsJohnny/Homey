@@ -16,6 +16,7 @@ final class HomeCalendarChoresViewModel: ObservableObject {
     private var activeHomeId: UUID?
     private var activeRole: HomeMemberRole?
     private var activeTimezone: String?
+    private var roomsById: [UUID: ChoreRoom] = [:]
     private var notificationTask: Task<Void, Never>?
 
     init(repository: ChoresRepository? = nil, calendar: Calendar = .autoupdatingCurrent) {
@@ -57,6 +58,7 @@ final class HomeCalendarChoresViewModel: ObservableObject {
         guard let activeHomeId else {
             occurrences = []
             assigneesByOccurrenceId = [:]
+            roomsById = [:]
             errorMessage = "Choose a Home before viewing chores."
             return
         }
@@ -79,7 +81,9 @@ final class HomeCalendarChoresViewModel: ObservableObject {
                 currentRole: activeRole,
                 calendarSyncService: syncService
             )
-            let loadedAssignees = try await repository.fetchOccurrenceAssignees(occurrenceIds: loadedOccurrences.map(\.id))
+            async let loadedAssignees = repository.fetchOccurrenceAssignees(occurrenceIds: loadedOccurrences.map(\.id))
+            async let loadedRooms = repository.fetchRooms(homeId: activeHomeId)
+            let (assignees, rooms) = try await (loadedAssignees, loadedRooms)
 
             occurrences = loadedOccurrences.sorted { first, second in
                 if first.dueAt != second.dueAt {
@@ -87,7 +91,8 @@ final class HomeCalendarChoresViewModel: ObservableObject {
                 }
                 return first.titleSnapshot.localizedCaseInsensitiveCompare(second.titleSnapshot) == .orderedAscending
             }
-            assigneesByOccurrenceId = Dictionary(grouping: loadedAssignees, by: \.occurrenceId)
+            assigneesByOccurrenceId = Dictionary(grouping: assignees, by: \.occurrenceId)
+            roomsById = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0) })
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -194,7 +199,8 @@ final class HomeCalendarChoresViewModel: ObservableObject {
                 HomeChoreChecklistItemModel(
                     occurrence: occurrence,
                     assignee: assignee,
-                    member: memberByUserId[assignee.userId]
+                    member: memberByUserId[assignee.userId],
+                    roomName: roomName(for: occurrence)
                 )
             }
         }
@@ -205,7 +211,8 @@ final class HomeCalendarChoresViewModel: ObservableObject {
                     occurrence: occurrence,
                     assignee: nil,
                     member: memberByUserId[claimedBy],
-                    fallbackAssigneeUserId: claimedBy
+                    fallbackAssigneeUserId: claimedBy,
+                    roomName: roomName(for: occurrence)
                 )
             ]
         }
@@ -215,9 +222,19 @@ final class HomeCalendarChoresViewModel: ObservableObject {
                 occurrence: occurrence,
                 assignee: nil,
                 member: nil,
-                fallbackAssigneeUserId: nil
+                fallbackAssigneeUserId: nil,
+                roomName: roomName(for: occurrence)
             )
         ]
+    }
+
+    private func roomName(for occurrence: ChoreOccurrence) -> String {
+        guard let roomId = occurrence.roomIdSnapshot,
+              let room = roomsById[roomId] else {
+            return "No Room"
+        }
+
+        return room.name
     }
 
     private func moveWeek(by value: Int) {
@@ -308,6 +325,7 @@ struct HomeChoreChecklistItemModel: Identifiable, Hashable {
     let assignee: ChoreOccurrenceAssignee?
     let member: HomeMemberDisplay?
     var fallbackAssigneeUserId: UUID? = nil
+    var roomName: String = "No Room"
 
     var id: String {
         if let assignee {

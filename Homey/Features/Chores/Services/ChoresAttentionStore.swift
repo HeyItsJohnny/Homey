@@ -98,12 +98,6 @@ final class ChoresAttentionStore: ObservableObject {
                 myPendingRewardCount = counts.myPendingRewardCount
                 pendingChoreApprovalCount = counts.pendingChoreApprovalCount
                 pendingRewardRedemptionCount = counts.pendingRewardRedemptionCount
-                logChoresBadge(
-                    homeId: activeHomeId,
-                    currentUserId: activeCurrentUserId,
-                    weekRange: weekRange,
-                    result: counts.dashboardChoresBadge
-                )
             } catch {
                 #if DEBUG
                 print("========== CHORES ATTENTION LOAD FAILED ==========")
@@ -122,27 +116,6 @@ final class ChoresAttentionStore: ObservableObject {
         myPendingRewardCount = nil
         pendingChoreApprovalCount = nil
         pendingRewardRedemptionCount = nil
-    }
-
-    private func logChoresBadge(
-        homeId: UUID,
-        currentUserId: UUID,
-        weekRange: (start: Date, end: Date),
-        result: ChoresBadgeCountResult
-    ) {
-        #if DEBUG
-        print("========== CHORES BADGE ==========")
-        print("home_id: \(homeId.uuidString)")
-        print("current_user_id: \(currentUserId.uuidString)")
-        print("week_start: \(ChoreTimestampFormatter.string(from: weekRange.start))")
-        print("next_week_start: \(ChoreTimestampFormatter.string(from: weekRange.end))")
-        print("not_started_occurrence_count: \(result.count)")
-        print("occurrence_ids:")
-        result.occurrenceIds.forEach { occurrenceId in
-            print("- \(occurrenceId.uuidString)")
-        }
-        print("==================================")
-        #endif
     }
 }
 

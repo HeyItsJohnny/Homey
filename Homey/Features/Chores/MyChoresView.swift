@@ -5,15 +5,37 @@ struct MyChoresView: View {
     @EnvironmentObject private var homeService: HomeService
     @EnvironmentObject private var authenticationService: AuthenticationService
     @StateObject private var viewModel = MyChoresViewModel()
-    @State private var selectedOccurrence: ChoreOccurrence?
+    @State private var selectedOccurrence: MyChoresOccurrenceSelection?
     @State private var scrollToTodayRequest = 0
 
+    private var currentRole: HomeMemberRole? {
+        homeService.selectedHomeRole(currentUserID: authenticationService.currentUser?.id)
+    }
+
+    private var canViewAllChores: Bool {
+        currentRole == .owner || currentRole == .admin
+    }
+
+    private var moduleTitle: String {
+        canViewAllChores ? "All Chores" : "My Chores"
+    }
+
+    private var sectionDescription: String {
+        canViewAllChores
+        ? "View household chores, filter by member, and stay on top of what needs to be completed."
+        : "View your assigned chores, track your progress, and stay on top of what needs to be completed."
+    }
+
+    private var homeMembers: [HomeMemberDisplay] {
+        homeService.membersForSelectedHome()
+    }
+
     var body: some View {
-        ChoreShellCard(title: "My Chores", systemImage: "checklist") {
+        ChoreShellCard(title: moduleTitle, systemImage: "checklist") {
             VStack(alignment: .leading, spacing: 18) {
                 ChoreSectionDescriptionHeader(
-                    title: "My Chores",
-                    description: "View your assigned chores, track your progress, and stay on top of what needs to be completed."
+                    title: moduleTitle,
+                    description: sectionDescription
                 )
 
                 VStack(alignment: .leading, spacing: 14) {
@@ -31,11 +53,22 @@ struct MyChoresView: View {
                             viewModel.reload()
                         }
                     } else {
+                        if canViewAllChores {
+                            MyChoresAssigneeFilterStrip(
+                                selectedAssignee: viewModel.selectedAssignee,
+                                members: homeMembers,
+                                onSelectAssignee: viewModel.selectAssignee
+                            )
+                        }
+
                         weeklyPlanner
                         MyChoresWeekSummaryCard(summary: viewModel.summary)
                     }
                 }
             }
+        }
+        .onAppear {
+            viewModel.resetAssigneeFilter()
         }
         .gesture(
             DragGesture(minimumDistance: 36)
@@ -52,6 +85,7 @@ struct MyChoresView: View {
             await viewModel.configure(
                 homeId: homeService.selectedHomeID,
                 currentUserId: authenticationService.currentUser?.id,
+                currentRole: currentRole,
                 weekStartsOn: selectedHome?.weekStartsOn,
                 timezone: selectedHome?.timezone
             )
@@ -61,17 +95,18 @@ struct MyChoresView: View {
                 viewModel.reload()
             }
         }
-        .sheet(item: $selectedOccurrence) { occurrence in
+        .sheet(item: $selectedOccurrence) { selection in
             ChoreOccurrenceDetailView(
-                initialOccurrence: occurrence,
-                homeTimezone: homeService.selectedHome()?.timezone ?? TimeZone.autoupdatingCurrent.identifier
+                initialOccurrence: selection.occurrence,
+                homeTimezone: homeService.selectedHome()?.timezone ?? TimeZone.autoupdatingCurrent.identifier,
+                targetAssigneeUserId: selection.assigneeUserId
             )
         }
     }
 
     private var loadTaskID: String {
         let selectedHome = homeService.selectedHome()
-        return "\(homeService.selectedHomeID?.uuidString ?? "no-home")-\(authenticationService.currentUser?.id.uuidString ?? "no-user")-\(selectedHome?.weekStartsOn ?? -1)-\(selectedHome?.timezone ?? "")"
+        return "\(homeService.selectedHomeID?.uuidString ?? "no-home")-\(authenticationService.currentUser?.id.uuidString ?? "no-user")-\(currentRole?.rawValue ?? "no-role")-\(selectedHome?.weekStartsOn ?? -1)-\(selectedHome?.timezone ?? "")"
     }
 
     private var weeklyHeader: some View {
@@ -133,7 +168,7 @@ struct MyChoresView: View {
     }
 
     private var weeklyPlanner: some View {
-        let sections = viewModel.daySections
+        let sections = viewModel.daySections(members: homeMembers)
 
         return ScrollViewReader { proxy in
             ScrollView(.horizontal) {
@@ -223,6 +258,77 @@ struct MyChoresView: View {
     }()
 }
 
+private struct MyChoresAssigneeFilterStrip: View {
+    let selectedAssignee: HomeChoreAssigneeFilter
+    let members: [HomeMemberDisplay]
+    let onSelectAssignee: (HomeChoreAssigneeFilter) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 12) {
+                MyChoresAssigneeChip(
+                    title: "All",
+                    initials: "A",
+                    avatarURL: nil,
+                    isSelected: selectedAssignee == .all
+                ) {
+                    onSelectAssignee(.all)
+                }
+
+                ForEach(members) { member in
+                    MyChoresAssigneeChip(
+                        title: member.displayName,
+                        initials: member.initials,
+                        avatarURL: member.avatarURL,
+                        isSelected: selectedAssignee == .member(member.userId)
+                    ) {
+                        onSelectAssignee(.member(member.userId))
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .scrollIndicators(.hidden)
+    }
+}
+
+private struct MyChoresAssigneeChip: View {
+    let title: String
+    let initials: String
+    let avatarURL: URL?
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                AvatarView(
+                    imageURL: avatarURL,
+                    initials: initials,
+                    size: 42,
+                    accentColor: isSelected ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.secondaryText,
+                    borderColor: isSelected ? HomeyDashboardTheme.warmBrown.opacity(0.42) : HomeyDashboardTheme.cardBackground,
+                    borderWidth: isSelected ? 2 : 1,
+                    showsShadow: false,
+                    accessibilityLabel: "\(title) avatar"
+                )
+
+                Text(title)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(isSelected ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.secondaryText)
+                    .lineLimit(1)
+                    .frame(width: 62)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 8)
+            .background(isSelected ? HomeyDashboardTheme.selectedSidebarBackground : Color.clear, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Filter chores by \(title)")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
 @MainActor
 private final class MyChoresViewModel: ObservableObject {
     @Published private(set) var occurrences: [ChoreOccurrence] = []
@@ -230,16 +336,18 @@ private final class MyChoresViewModel: ObservableObject {
     @Published private(set) var selectedDate: Date?
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var selectedAssignee: HomeChoreAssigneeFilter = .all
 
     private let repository: ChoresRepository
     private var activeHomeId: UUID?
     private var activeCurrentUserId: UUID?
+    private var activeCurrentRole: HomeMemberRole?
     private var timezone = TimeZone.autoupdatingCurrent.identifier
     private var calendar = Calendar.autoupdatingCurrent
     private var visibleWeekAnchor = Date()
     private var categoriesById: [UUID: ChoreCategory] = [:]
     private var roomsById: [UUID: ChoreRoom] = [:]
-    private var assigneeStatusByOccurrenceId: [UUID: ChoreAssigneeStatus] = [:]
+    private var assigneesByOccurrenceId: [UUID: [ChoreOccurrenceAssignee]] = [:]
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -304,7 +412,7 @@ private final class MyChoresViewModel: ObservableObject {
     }
 
     var summary: MyChoresWeekSummary {
-        let eligibleOccurrences = displayOccurrences.filter { !$0.isExcludedFromWeeklySummary }
+        let eligibleOccurrences = summaryDisplayOccurrences.filter { !$0.isExcludedFromWeeklySummary }
         let approved = eligibleOccurrences.filter { $0.personalStatus == .completed }.count
         let pendingApproval = eligibleOccurrences.filter { $0.personalStatus == .awaitingApproval }.count
         let toDo = eligibleOccurrences.filter(\.isPersonalToDo).count
@@ -312,11 +420,12 @@ private final class MyChoresViewModel: ObservableObject {
     }
 
     var plannedChoreCount: Int {
-        occurrences.count
+        filteredOccurrences.count
     }
 
-    var daySections: [MyChoresDaySectionModel] {
-        weekDays.map { day in
+    func daySections(members: [HomeMemberDisplay]) -> [MyChoresDaySectionModel] {
+        let displayOccurrences = displayOccurrences(members: members)
+        return weekDays.map { day in
             let dayOccurrences = displayOccurrences
                 .filter { calendar.isDate($0.dueAt, inSameDayAs: day) }
                 .sortedForMyChoresWeek()
@@ -330,26 +439,97 @@ private final class MyChoresViewModel: ObservableObject {
         }
     }
 
-    private var displayOccurrences: [MyChoresOccurrenceDisplay] {
-        occurrences.map { occurrence in
+    private var summaryDisplayOccurrences: [MyChoresOccurrenceDisplay] {
+        filteredOccurrences.map { occurrence in
             MyChoresOccurrenceDisplay(
+                id: occurrence.id.uuidString,
                 occurrence: occurrence,
-                assigneeStatus: assigneeStatusByOccurrenceId[occurrence.id]
+                assigneeStatus: displayAssigneeStatus(for: occurrence),
+                roomName: roomName(for: occurrence) ?? "No Room",
+                assigneeName: "All",
+                assigneeUserId: nil
             )
         }
     }
 
-    func configure(homeId: UUID?, currentUserId: UUID?, weekStartsOn: Int?, timezone: String?) async {
+    private func displayOccurrences(members: [HomeMemberDisplay]) -> [MyChoresOccurrenceDisplay] {
+        let memberByUserId = Dictionary(uniqueKeysWithValues: members.map { ($0.userId, $0) })
+
+        return filteredOccurrences.flatMap { occurrence -> [MyChoresOccurrenceDisplay] in
+            let roomName = roomName(for: occurrence) ?? "No Room"
+            let assignees = assigneesByOccurrenceId[occurrence.id, default: []]
+
+            if !assignees.isEmpty {
+                let visibleAssignees = assignees.filter { assignee in
+                    guard canViewAllChores else {
+                        return assignee.userId == activeCurrentUserId
+                    }
+
+                    return selectedAssignee.includes(assignee.userId)
+                }
+
+                return visibleAssignees.map { assignee in
+                    MyChoresOccurrenceDisplay(
+                        id: "\(occurrence.id.uuidString)-\(assignee.userId.uuidString)",
+                        occurrence: occurrence,
+                        assigneeStatus: assignee.status,
+                        roomName: roomName,
+                        assigneeName: memberName(for: assignee.userId, memberByUserId: memberByUserId),
+                        assigneeUserId: assignee.userId
+                    )
+                }
+            }
+
+            if occurrence.assignmentMode == .open, let claimedBy = occurrence.claimedBy {
+                return [
+                    MyChoresOccurrenceDisplay(
+                        id: "\(occurrence.id.uuidString)-\(claimedBy.uuidString)",
+                        occurrence: occurrence,
+                        assigneeStatus: nil,
+                        roomName: roomName,
+                        assigneeName: memberName(for: claimedBy, memberByUserId: memberByUserId),
+                        assigneeUserId: claimedBy
+                    )
+                ]
+            }
+
+            return [
+                MyChoresOccurrenceDisplay(
+                    id: "\(occurrence.id.uuidString)-anyone",
+                    occurrence: occurrence,
+                    assigneeStatus: nil,
+                    roomName: roomName,
+                    assigneeName: "Anyone",
+                    assigneeUserId: nil
+                )
+            ]
+        }
+    }
+
+    private var canViewAllChores: Bool {
+        activeCurrentRole == .owner || activeCurrentRole == .admin
+    }
+
+    private var filteredOccurrences: [ChoreOccurrence] {
+        occurrences.filter { occurrence in
+            selectedAssigneeIncludes(occurrence)
+        }
+    }
+
+    func configure(homeId: UUID?, currentUserId: UUID?, currentRole: HomeMemberRole?, weekStartsOn: Int?, timezone: String?) async {
         let previousHomeId = activeHomeId
         let previousCurrentUserId = activeCurrentUserId
+        let previousCurrentRole = activeCurrentRole
         let previousWeekStart = calendar.firstWeekday
         let previousTimezone = self.timezone
         activeHomeId = homeId
         activeCurrentUserId = currentUserId
+        activeCurrentRole = currentRole
         configureCalendar(weekStartsOn: weekStartsOn, timezone: timezone)
-        if previousHomeId != homeId || previousCurrentUserId != currentUserId || previousWeekStart != calendar.firstWeekday || previousTimezone != self.timezone {
+        if previousHomeId != homeId || previousCurrentUserId != currentUserId || previousCurrentRole != currentRole || previousWeekStart != calendar.firstWeekday || previousTimezone != self.timezone {
             selectedDate = nil
             visibleWeekAnchor = calendar.startOfDay(for: Date())
+            selectedAssignee = .all
         }
         updateWeekDays()
         await load()
@@ -359,7 +539,7 @@ private final class MyChoresViewModel: ObservableObject {
         guard let homeId = activeHomeId else {
             activeHomeId = nil
             occurrences = []
-            assigneeStatusByOccurrenceId = [:]
+            assigneesByOccurrenceId = [:]
             errorMessage = nil
             isLoading = false
             return
@@ -376,21 +556,18 @@ private final class MyChoresViewModel: ObservableObject {
         errorMessage = nil
 
         do {
-            async let loadedOccurrences = repository.fetchMyOccurrences(
-                homeId: homeId,
-                from: range.start,
-                through: range.end
-            )
+            async let loadedOccurrences = loadOccurrences(homeId: homeId, from: range.start, through: range.end)
             async let loadedCategories = repository.fetchCategories(homeId: homeId)
             async let loadedRooms = repository.fetchRooms(homeId: homeId)
-            let (loadedMyOccurrences, categories, rooms) = try await (loadedOccurrences, loadedCategories, loadedRooms)
-            let visibleOccurrences = loadedMyOccurrences.filter { occurrence in
+            let (loadedChoreOccurrences, categories, rooms) = try await (loadedOccurrences, loadedCategories, loadedRooms)
+            let visibleOccurrences = loadedChoreOccurrences.filter { occurrence in
                 occurrence.dueAt >= range.start &&
                 occurrence.dueAt < range.end &&
                 occurrence.status != .cancelled
             }
+            let loadedAssigneesByOccurrenceId = try await loadAssignees(for: visibleOccurrences)
+            assigneesByOccurrenceId = loadedAssigneesByOccurrenceId
             self.occurrences = visibleOccurrences
-            assigneeStatusByOccurrenceId = try await loadCurrentUserAssigneeStatuses(for: visibleOccurrences)
             categoriesById = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
             roomsById = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0) })
             #if DEBUG
@@ -398,7 +575,7 @@ private final class MyChoresViewModel: ObservableObject {
             #endif
         } catch {
             occurrences = []
-            assigneeStatusByOccurrenceId = [:]
+            assigneesByOccurrenceId = [:]
             errorMessage = error.localizedDescription
         }
 
@@ -409,6 +586,19 @@ private final class MyChoresViewModel: ObservableObject {
         Task {
             await load()
         }
+    }
+
+    func selectAssignee(_ filter: HomeChoreAssigneeFilter) {
+        guard canViewAllChores else {
+            selectedAssignee = .all
+            return
+        }
+
+        selectedAssignee = filter
+    }
+
+    func resetAssigneeFilter() {
+        selectedAssignee = .all
     }
 
     func moveToPreviousWeek() {
@@ -492,26 +682,66 @@ private final class MyChoresViewModel: ObservableObject {
         }
     }
 
-    private func loadCurrentUserAssigneeStatuses(for occurrences: [ChoreOccurrence]) async throws -> [UUID: ChoreAssigneeStatus] {
-        guard let activeCurrentUserId else {
-            return [:]
+    private func loadOccurrences(homeId: UUID, from startDate: Date, through endDate: Date) async throws -> [ChoreOccurrence] {
+        if canViewAllChores {
+            return try await repository.fetchHouseChoreOccurrences(homeId: homeId, from: startDate, through: endDate)
         }
 
-        var statuses: [UUID: ChoreAssigneeStatus] = [:]
-        for occurrence in occurrences where occurrence.assignmentMode != .open {
-            let assignees = try await repository.fetchOccurrenceAssignees(occurrenceId: occurrence.id)
-            let currentUserAssignee = assignees.first { $0.userId == activeCurrentUserId }
-            if let currentUserAssignee {
-                statuses[occurrence.id] = currentUserAssignee.status
+        return try await repository.fetchMyOccurrences(homeId: homeId, from: startDate, through: endDate)
+    }
+
+    private func loadAssignees(for occurrences: [ChoreOccurrence]) async throws -> [UUID: [ChoreOccurrenceAssignee]] {
+        let loadedAssignees = try await repository.fetchOccurrenceAssignees(occurrenceIds: occurrences.map(\.id))
+        let groupedAssignees = Dictionary(grouping: loadedAssignees, by: \.occurrenceId)
+
+        if let activeCurrentUserId {
+            for occurrence in occurrences {
+                let currentUserAssignee = groupedAssignees[occurrence.id, default: []].first { $0.userId == activeCurrentUserId }
+                logChoreMemberState(
+                    occurrence: occurrence,
+                    currentUserId: activeCurrentUserId,
+                    assigneeStatus: currentUserAssignee?.status
+                )
             }
-            logChoreMemberState(
-                occurrence: occurrence,
-                currentUserId: activeCurrentUserId,
-                assigneeStatus: currentUserAssignee?.status
-            )
         }
 
-        return statuses
+        return groupedAssignees
+    }
+
+    private func selectedAssigneeIncludes(_ occurrence: ChoreOccurrence) -> Bool {
+        guard canViewAllChores else {
+            return true
+        }
+
+        switch selectedAssignee {
+        case .all:
+            return true
+        case .member(let userId):
+            if occurrence.assignmentMode == .open {
+                return occurrence.claimedBy == userId
+            }
+
+            return assigneesByOccurrenceId[occurrence.id, default: []].contains { $0.userId == userId }
+        case .anyone:
+            return occurrence.assignmentMode == .open && occurrence.claimedBy == nil
+        }
+    }
+
+    private func displayAssigneeStatus(for occurrence: ChoreOccurrence) -> ChoreAssigneeStatus? {
+        switch selectedAssignee {
+        case .member(let userId):
+            return assigneesByOccurrenceId[occurrence.id, default: []].first { $0.userId == userId }?.status
+        case .all, .anyone:
+            guard !canViewAllChores, let activeCurrentUserId else {
+                return nil
+            }
+
+            return assigneesByOccurrenceId[occurrence.id, default: []].first { $0.userId == activeCurrentUserId }?.status
+        }
+    }
+
+    private func memberName(for userId: UUID, memberByUserId: [UUID: HomeMemberDisplay]) -> String {
+        memberByUserId[userId]?.displayName ?? "Assigned Member"
     }
 
     private func logChoreMemberState(occurrence: ChoreOccurrence, currentUserId: UUID, assigneeStatus: ChoreAssigneeStatus?) {
@@ -526,10 +756,9 @@ private final class MyChoresViewModel: ObservableObject {
         print("========================================")
         #endif
     }
-
     #if DEBUG
     private func logMyChoresWeekBoundary(range: (start: Date, end: Date)) {
-        let groupedCardCount = daySections.reduce(0) { $0 + $1.occurrences.count }
+        let groupedCardCount = summaryDisplayOccurrences.count
         print("========== MY CHORES WEEK BOUNDARY ==========")
         print("week_start: \(ISO8601DateFormatter().string(from: range.start))")
         print("next_week_start: \(ISO8601DateFormatter().string(from: range.end))")
@@ -570,10 +799,13 @@ private struct MyChoresDaySectionModel: Identifiable {
 }
 
 private struct MyChoresOccurrenceDisplay: Identifiable {
+    let id: String
     let occurrence: ChoreOccurrence
     let assigneeStatus: ChoreAssigneeStatus?
+    let roomName: String
+    let assigneeName: String
+    let assigneeUserId: UUID?
 
-    var id: UUID { occurrence.id }
     var dueAt: Date { occurrence.dueAt }
     var isAllDay: Bool { occurrence.isAllDay }
     var titleSnapshot: String { occurrence.titleSnapshot }
@@ -664,7 +896,7 @@ private struct MyChoresDayColumn: View {
     let isToday: Bool
     let isSelected: Bool
     let onSelectDay: () -> Void
-    let onSelectOccurrence: (ChoreOccurrence) -> Void
+    let onSelectOccurrence: (MyChoresOccurrenceSelection) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -709,12 +941,26 @@ private struct MyChoresDayColumn: View {
                         .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                         .accessibilityLabel("No chores")
                 } else {
-                    ForEach(section.occurrences) { occurrence in
-                        MyChoresOccurrenceCard(
-                            displayOccurrence: occurrence,
-                            dateTitle: section.accessibilityDateTitle,
-                            onTap: { onSelectOccurrence(occurrence.occurrence) }
-                        )
+                    ForEach(assigneeSections) { assigneeSection in
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text(assigneeSection.name)
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                                .lineLimit(1)
+
+                            ForEach(assigneeSection.occurrences) { occurrence in
+                                MyChoresOccurrenceCard(
+                                    displayOccurrence: occurrence,
+                                    dateTitle: section.accessibilityDateTitle,
+                                    onTap: {
+                                        onSelectOccurrence(MyChoresOccurrenceSelection(
+                                            occurrence: occurrence.occurrence,
+                                            assigneeUserId: occurrence.assigneeUserId
+                                        ))
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -728,6 +974,35 @@ private struct MyChoresDayColumn: View {
         .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: 20, style: .continuous).stroke(HomeyDashboardTheme.softBorder.opacity(0.82), lineWidth: 1) }
         .shadow(color: HomeyDashboardTheme.shadow.opacity(0.08), radius: 7, x: 0, y: 4)
+    }
+
+    private var assigneeSections: [MyChoresAssigneeSectionModel] {
+        let grouped = Dictionary(grouping: section.occurrences, by: \.assigneeName)
+        return grouped
+            .map { name, occurrences in
+                MyChoresAssigneeSectionModel(name: name, occurrences: occurrences.sortedForMyChoresWeek())
+            }
+            .sorted { first, second in
+                if first.name == "Anyone" { return false }
+                if second.name == "Anyone" { return true }
+                return first.name.localizedCaseInsensitiveCompare(second.name) == .orderedAscending
+            }
+    }
+}
+
+private struct MyChoresAssigneeSectionModel: Identifiable {
+    let name: String
+    let occurrences: [MyChoresOccurrenceDisplay]
+
+    var id: String { name }
+}
+
+private struct MyChoresOccurrenceSelection: Identifiable {
+    let occurrence: ChoreOccurrence
+    let assigneeUserId: UUID?
+
+    var id: String {
+        "\(occurrence.id.uuidString)-\(assigneeUserId?.uuidString ?? "anyone")"
     }
 }
 
@@ -781,10 +1056,7 @@ private struct MyChoresOccurrenceCard: View {
     }
 
     private var scheduleText: String {
-        if displayOccurrence.isAllDay {
-            return "All Day"
-        }
-        return displayOccurrence.dueAt.formatted(date: .omitted, time: .shortened)
+        displayOccurrence.roomName
     }
 
     private var pointsText: String {

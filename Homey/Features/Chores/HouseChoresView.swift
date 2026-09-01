@@ -58,8 +58,8 @@ struct HouseChoresView: View {
             HouseChoresActiveView()
         case .approvals:
             HouseChoresApprovalsView()
-        case .categoriesRooms:
-            HouseChoresCategoriesRoomsView()
+        case .rooms:
+            HouseChoresRoomsView()
         case .settings:
             HouseChoresSettingsView()
         }
@@ -69,7 +69,7 @@ struct HouseChoresView: View {
         switch section {
         case .approvals:
             return attentionStore.pendingChoreApprovalCount
-        case .activeChores, .categoriesRooms, .settings:
+        case .activeChores, .rooms, .settings:
             return nil
         }
     }
@@ -78,7 +78,7 @@ struct HouseChoresView: View {
 private enum HouseChoresSection: String, CaseIterable, Identifiable {
     case activeChores
     case approvals
-    case categoriesRooms
+    case rooms
     case settings
 
     var id: String { rawValue }
@@ -89,8 +89,8 @@ private enum HouseChoresSection: String, CaseIterable, Identifiable {
             return "Active Chores"
         case .approvals:
             return "Approvals"
-        case .categoriesRooms:
-            return "Categories & Rooms"
+        case .rooms:
+            return "Rooms"
         case .settings:
             return "Settings"
         }
@@ -102,8 +102,8 @@ private enum HouseChoresSection: String, CaseIterable, Identifiable {
             return "checklist"
         case .approvals:
             return "checkmark.seal"
-        case .categoriesRooms:
-            return "square.grid.2x2"
+        case .rooms:
+            return "house.lodge"
         case .settings:
             return "gearshape"
         }
@@ -260,17 +260,26 @@ struct HouseChoresApprovalsView: View {
     }
 }
 
-struct HouseChoresCategoriesRoomsView: View {
+struct HouseChoresRoomsView: View {
     @EnvironmentObject private var homeService: HomeService
-    @StateObject private var viewModel = HouseChoresCategoriesRoomsViewModel()
+    @StateObject private var viewModel = HouseChoresRoomsViewModel()
+
+    private var canManageRooms: Bool {
+        switch homeService.selectedHomeRole {
+        case .owner, .admin:
+            return true
+        case .member, nil:
+            return false
+        }
+    }
 
     var body: some View {
-        HouseChoresSectionCard(title: "Categories & Rooms") {
-            if viewModel.isLoading && viewModel.categories.isEmpty && viewModel.rooms.isEmpty {
-                ChoreLoadingState(message: "Loading categories and rooms...")
+        HouseChoresSectionCard(title: "Rooms") {
+            if viewModel.isLoading && viewModel.rooms.isEmpty {
+                ChoreLoadingState(message: "Loading rooms...")
             } else if let errorMessage = viewModel.errorMessage {
                 ChoreMessageState(
-                    title: "Unable to Load Categories & Rooms",
+                    title: "Unable to Load Rooms",
                     message: errorMessage,
                     systemImage: "exclamationmark.triangle.fill",
                     buttonTitle: "Try Again"
@@ -278,10 +287,19 @@ struct HouseChoresCategoriesRoomsView: View {
                     viewModel.reload()
                 }
             } else {
-                HStack(alignment: .top, spacing: 18) {
-                    ChoreNameList(title: "Categories", names: viewModel.categories.map(\.name), emptyMessage: "No categories yet.")
-                    ChoreNameList(title: "Rooms", names: viewModel.rooms.map(\.name), emptyMessage: "No rooms yet.")
-                }
+                ChoreRoomMetadataList(
+                    rooms: viewModel.rooms,
+                    canEdit: canManageRooms,
+                    savingRoomId: viewModel.savingRoomId,
+                    onSave: { room, roomType, preferredWeekday, preferredFrequency in
+                        await viewModel.updateRoomMetadata(
+                            room: room,
+                            roomType: roomType,
+                            preferredCleaningWeekday: preferredWeekday,
+                            preferredCleaningFrequency: preferredFrequency
+                        )
+                    }
+                )
             }
         }
         .task(id: homeService.selectedHomeID) {
@@ -330,31 +348,140 @@ private struct HouseChoresSectionCard<Content: View>: View {
     }
 }
 
-private struct ChoreNameList: View {
-    let title: String
-    let names: [String]
-    let emptyMessage: String
+private struct ChoreRoomMetadataList: View {
+    let rooms: [ChoreRoom]
+    let canEdit: Bool
+    let savingRoomId: UUID?
+    let onSave: (ChoreRoom, ChoreRoomType?, ChorePreferredCleaningWeekday?, ChoreRoomCleaningFrequency?) async -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
+            Text("Rooms")
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
 
-            if names.isEmpty {
-                Text(emptyMessage)
+            if rooms.isEmpty {
+                Text("No rooms yet.")
                     .font(.subheadline)
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
             } else {
-                ForEach(names, id: \.self) { name in
-                    Text(name)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(HomeyDashboardTheme.primaryText)
-                        .padding(.vertical, 3)
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], alignment: .leading, spacing: 14) {
+                    ForEach(rooms) { room in
+                        ChoreRoomMetadataRow(
+                            room: room,
+                            canEdit: canEdit,
+                            isSaving: savingRoomId == room.id,
+                            onSave: onSave
+                        )
+                    }
                 }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct ChoreRoomMetadataRow: View {
+    let room: ChoreRoom
+    let canEdit: Bool
+    let isSaving: Bool
+    let onSave: (ChoreRoom, ChoreRoomType?, ChorePreferredCleaningWeekday?, ChoreRoomCleaningFrequency?) async -> Void
+
+    @State private var roomType: ChoreRoomType?
+    @State private var preferredWeekday: ChorePreferredCleaningWeekday?
+    @State private var preferredFrequency: ChoreRoomCleaningFrequency?
+
+    init(
+        room: ChoreRoom,
+        canEdit: Bool,
+        isSaving: Bool,
+        onSave: @escaping (ChoreRoom, ChoreRoomType?, ChorePreferredCleaningWeekday?, ChoreRoomCleaningFrequency?) async -> Void
+    ) {
+        self.room = room
+        self.canEdit = canEdit
+        self.isSaving = isSaving
+        self.onSave = onSave
+        _roomType = State(initialValue: room.roomType)
+        _preferredWeekday = State(initialValue: room.preferredCleaningWeekday)
+        _preferredFrequency = State(initialValue: room.preferredCleaningFrequency)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            RoomCleaningSummaryView(
+                summary: RoomCleaningSummary(
+                    room: room,
+                    lastCleanedAt: room.lastCleanedAt,
+                    completedChoreCount: 0
+                )
+            )
+
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("Room Type", selection: $roomType) {
+                    Text("Other").tag(nil as ChoreRoomType?)
+                    ForEach(ChoreRoomType.allCases) { type in
+                        Text(type.displayName).tag(Optional(type))
+                    }
+                }
+
+                Picker("Preferred Cleaning Day", selection: $preferredWeekday) {
+                    Text("No Preference").tag(nil as ChorePreferredCleaningWeekday?)
+                    ForEach(ChorePreferredCleaningWeekday.allCases) { weekday in
+                        Text(weekday.displayName).tag(Optional(weekday))
+                    }
+                }
+
+                Picker("General Cleaning", selection: $preferredFrequency) {
+                    Text("Not Set").tag(nil as ChoreRoomCleaningFrequency?)
+                    ForEach(ChoreRoomCleaningFrequency.allCases) { frequency in
+                        Text(frequency.displayName).tag(Optional(frequency))
+                    }
+                }
+            }
+            .pickerStyle(.menu)
+            .font(.subheadline.weight(.semibold))
+            .disabled(!canEdit || isSaving)
+
+            if canEdit {
+                Button {
+                    Task {
+                        await onSave(room, roomType, preferredWeekday, preferredFrequency)
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        if isSaving {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(.white)
+                        } else {
+                            Image(systemName: "checkmark")
+                        }
+                        Text("Save")
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(DashboardPrimaryButtonStyle())
+                .disabled(isSaving || !hasChanges)
+            }
+        }
+        .padding(12)
+        .background(HomeyDashboardTheme.appBackground.opacity(0.52), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder.opacity(0.82), lineWidth: 1)
+        }
+        .onChange(of: room.id) { _, _ in
+            roomType = room.roomType
+            preferredWeekday = room.preferredCleaningWeekday
+            preferredFrequency = room.preferredCleaningFrequency
+        }
+    }
+
+    private var hasChanges: Bool {
+        roomType != room.roomType
+            || preferredWeekday != room.preferredCleaningWeekday
+            || preferredFrequency != room.preferredCleaningFrequency
     }
 }
 
@@ -450,6 +577,13 @@ private struct ChoreSummaryCard: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(HomeyDashboardTheme.secondaryText)
                         .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    Text(summary.roomName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                         .multilineTextAlignment(.leading)
                 }
 
@@ -566,7 +700,7 @@ private struct ChoreSummaryCard: View {
     }
 
     private var accessibilityLabel: String {
-        "\(summary.chore.title). \(recurrenceText). \(assignmentText). \(pointsText). \(nextDueText)."
+        "\(summary.chore.title). \(recurrenceText). \(summary.roomName). \(assignmentText). \(pointsText). \(nextDueText)."
     }
 
     private func weekdaySummary(_ weekdays: [Int]) -> String {
@@ -613,6 +747,7 @@ private struct HouseChoreSummary: Identifiable, Hashable {
     let recurrenceRule: ChoreRecurrenceRule?
     let assignees: [ChoreTemplateAssignee]
     let nextOccurrence: ChoreOccurrence?
+    let roomName: String
 
     var id: UUID {
         chore.id
@@ -646,8 +781,14 @@ private final class HouseChoresActiveViewModel: ObservableObject {
             let range = ChoreDateRange.upcoming()
             async let loadedChores = repository.fetchTemplates(homeId: homeId, includeArchived: false)
             async let loadedOccurrences = repository.fetchHouseChoreOccurrences(homeId: homeId, from: range.start, through: range.end)
+            async let loadedRooms = repository.fetchRooms(homeId: homeId)
             let chores = try await loadedChores.filter { $0.isActive && $0.archivedAt == nil }
             let occurrences = try await loadedOccurrences
+            let rooms = try await loadedRooms
+            let roomsById = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0) })
+            let otherRoomName = rooms.first { $0.archivedAt == nil && $0.roomType == .other }?.name
+                ?? rooms.first { $0.archivedAt == nil && $0.name.caseInsensitiveCompare("Other") == .orderedSame }?.name
+                ?? "Other"
             var loadedSummaries: [HouseChoreSummary] = []
 
             for chore in chores {
@@ -663,7 +804,8 @@ private final class HouseChoresActiveViewModel: ObservableObject {
                         chore: chore,
                         recurrenceRule: recurrenceRule,
                         assignees: assignees,
-                        nextOccurrence: nextOccurrence
+                        nextOccurrence: nextOccurrence,
+                        roomName: chore.roomId.flatMap { roomsById[$0]?.name } ?? otherRoomName
                     )
                 )
             }
@@ -804,10 +946,10 @@ private struct ChoreApprovalItem: Identifiable, Hashable {
 }
 
 @MainActor
-private final class HouseChoresCategoriesRoomsViewModel: ObservableObject {
-    @Published private(set) var categories: [ChoreCategory] = []
+private final class HouseChoresRoomsViewModel: ObservableObject {
     @Published private(set) var rooms: [ChoreRoom] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var savingRoomId: UUID?
     @Published private(set) var errorMessage: String?
 
     private let repository: ChoresRepository
@@ -828,12 +970,8 @@ private final class HouseChoresCategoriesRoomsViewModel: ObservableObject {
         errorMessage = nil
 
         do {
-            async let loadedCategories = repository.fetchCategories(homeId: homeId)
-            async let loadedRooms = repository.fetchRooms(homeId: homeId)
-            categories = try await loadedCategories
-            rooms = try await loadedRooms
+            rooms = try await repository.fetchRooms(homeId: homeId)
         } catch {
-            categories = []
             rooms = []
             errorMessage = error.localizedDescription
         }
@@ -847,11 +985,38 @@ private final class HouseChoresCategoriesRoomsViewModel: ObservableObject {
         }
     }
 
+    func updateRoomMetadata(
+        room: ChoreRoom,
+        roomType: ChoreRoomType?,
+        preferredCleaningWeekday: ChorePreferredCleaningWeekday?,
+        preferredCleaningFrequency: ChoreRoomCleaningFrequency?
+    ) async {
+        guard savingRoomId == nil else { return }
+
+        savingRoomId = room.id
+        errorMessage = nil
+        defer { savingRoomId = nil }
+
+        do {
+            try await repository.updateRoom(
+                roomId: room.id,
+                name: room.name,
+                sortOrder: room.sortOrder,
+                roomType: roomType,
+                preferredCleaningWeekday: preferredCleaningWeekday,
+                preferredCleaningFrequency: preferredCleaningFrequency
+            )
+            reload()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func reset() {
         activeHomeId = nil
-        categories = []
         rooms = []
         errorMessage = nil
         isLoading = false
+        savingRoomId = nil
     }
 }

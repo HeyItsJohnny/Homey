@@ -534,6 +534,12 @@ private struct HomeCalendarChoreChecklistItem: View {
                         .truncationMode(.tail)
                         .fixedSize(horizontal: false, vertical: false)
 
+                    Text(item.roomName)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
                     if item.status.requiresStatusCaption {
                         Text(item.status.title)
                             .font(.caption2.weight(.bold))
@@ -553,7 +559,7 @@ private struct HomeCalendarChoreChecklistItem: View {
         }
         .buttonStyle(.plain)
         .opacity(item.status == .completed ? 0.72 : 1)
-        .accessibilityLabel("\(item.assigneeName), \(item.occurrence.titleSnapshot), \(item.status.title)")
+        .accessibilityLabel("\(item.assigneeName), \(item.occurrence.titleSnapshot), \(item.roomName), \(item.status.title)")
     }
 
     @ViewBuilder

@@ -221,6 +221,29 @@ struct ChoreEditorView: View {
                 axis: .vertical,
                 characterLimit: ChoreEditorViewModel.instructionsLimit
             )
+
+            roomPicker
+        }
+    }
+
+    private var roomPicker: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel("Room", supportingText: "Required")
+
+            Picker("Room", selection: $viewModel.selectedRoomId) {
+                Text("Choose a Room").tag(UUID?.none)
+                ForEach(viewModel.activeRooms) { room in
+                    Text(room.name).tag(Optional(room.id))
+                }
+            }
+            .pickerStyle(.menu)
+            .font(.body.weight(.medium))
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(fieldBackground)
+            .accessibilityLabel("Room")
+
+            helperText("Use Other for chores that do not belong to a specific room.")
         }
     }
 
@@ -814,7 +837,11 @@ final class ChoreEditorViewModel: ObservableObject {
     @Published var occurrenceCount = 10
     @Published var requiresApproval = true
     @Published var pointsValue = 0 { didSet { if pointsValue < 0 { pointsValue = 0 } } }
+    @Published var selectedRoomId: UUID? = nil {
+        didSet { updateSaveErrorForValidation() }
+    }
     @Published private(set) var members: [HomeMemberDisplay] = []
+    @Published private(set) var rooms: [ChoreRoom] = []
     @Published private(set) var isLoadingChore = false
     @Published private(set) var isSaving = false
     @Published private(set) var isDeleting = false
@@ -853,6 +880,10 @@ final class ChoreEditorViewModel: ObservableObject {
 
     var canSave: Bool {
         validationMessage == nil && !isSaving && !isDeleting
+    }
+
+    var activeRooms: [ChoreRoom] {
+        rooms.filter { $0.archivedAt == nil }
     }
 
     var calendarSummary: String {
@@ -899,6 +930,10 @@ final class ChoreEditorViewModel: ObservableObject {
             return "Choose at least one assignee or make this an open chore."
         }
 
+        if selectedRoomId == nil {
+            return "Choose a Room."
+        }
+
         if assignmentMode == .open && !assigneeIds.isEmpty {
             return "Open chores cannot have selected assignees."
         }
@@ -927,7 +962,10 @@ final class ChoreEditorViewModel: ObservableObject {
         self.timezone = TimeZone(identifier: timezone) == nil ? TimeZone.autoupdatingCurrent.identifier : timezone
         endsOn = Calendar.current.date(byAdding: .month, value: 3, to: startDate) ?? startDate
         updateDateDefaults()
-        updateSaveErrorForValidation()
+
+        if let homeId {
+            await loadRooms(homeId: homeId, defaultLegacyRoomToOther: mode.isEdit)
+        }
 
         if case .edit(let templateId) = mode {
             isEditingExistingChore = true
@@ -935,6 +973,21 @@ final class ChoreEditorViewModel: ObservableObject {
         } else {
             isEditingExistingChore = false
             savedTemplateId = nil
+            updateSaveErrorForValidation()
+        }
+    }
+
+    func loadRooms(homeId: UUID, defaultLegacyRoomToOther: Bool) async {
+        do {
+            let loadedRooms = try await repository.fetchRoomsEnsuringOther(homeId: homeId)
+            rooms = loadedRooms
+            if defaultLegacyRoomToOther, selectedRoomId == nil {
+                selectedRoomId = otherRoomId(in: loadedRooms)
+            }
+            updateSaveErrorForValidation()
+        } catch {
+            rooms = []
+            saveErrorMessage = "Unable to load rooms."
         }
     }
 
@@ -1131,7 +1184,7 @@ final class ChoreEditorViewModel: ObservableObject {
             description: choreDescription,
             instructions: instructions,
             categoryId: nil,
-            roomId: nil,
+            roomId: selectedRoomId,
             assignmentMode: assignmentMode,
             completionMode: derivedCompletionMode,
             pointsValue: pointsValue,
@@ -1352,6 +1405,7 @@ final class ChoreEditorViewModel: ObservableObject {
         assigneeIds = Set(assignees.map(\.userId))
         pointsValue = chore.pointsValue
         requiresApproval = chore.requiresApproval
+        selectedRoomId = chore.roomId ?? otherRoomId(in: rooms)
 
         if let recurrenceRule {
             startDate = recurrenceRule.startDate
@@ -1404,6 +1458,11 @@ final class ChoreEditorViewModel: ObservableObject {
         components.minute = parts[1]
         components.second = parts.count > 2 ? parts[2] : 0
         return Calendar.current.date(from: components) ?? date
+    }
+
+    private func otherRoomId(in rooms: [ChoreRoom]) -> UUID? {
+        rooms.first { $0.archivedAt == nil && $0.roomType == .other }?.id
+            ?? rooms.first { $0.archivedAt == nil && $0.name.caseInsensitiveCompare("Other") == .orderedSame }?.id
     }
 }
 

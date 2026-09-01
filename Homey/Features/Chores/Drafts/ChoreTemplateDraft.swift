@@ -13,6 +13,7 @@ struct ChoreTemplateDraft: Equatable, Sendable {
     var pointsValue: Int
     var requiresApproval: Bool
     var requiresPhoto: Bool
+    var contributesToRoomCleaning: Bool
     var frequency: ChoreFrequency
     var intervalValue: Int
     var startDate: Date
@@ -41,6 +42,7 @@ struct ChoreTemplateDraft: Equatable, Sendable {
         pointsValue: Int = 0,
         requiresApproval: Bool = false,
         requiresPhoto: Bool = false,
+        contributesToRoomCleaning: Bool = false,
         frequency: ChoreFrequency = .none,
         intervalValue: Int = 1,
         startDate: Date,
@@ -68,6 +70,7 @@ struct ChoreTemplateDraft: Equatable, Sendable {
         self.pointsValue = pointsValue
         self.requiresApproval = requiresApproval
         self.requiresPhoto = requiresPhoto
+        self.contributesToRoomCleaning = contributesToRoomCleaning
         self.frequency = frequency
         self.intervalValue = intervalValue
         self.startDate = startDate
@@ -92,7 +95,6 @@ struct ChoreTemplateDraft: Equatable, Sendable {
         draft.timezone = timezone.trimmingCharacters(in: .whitespacesAndNewlines)
         draft.assigneeIds = Array(Set(assigneeIds)).sorted { $0.uuidString < $1.uuidString }
         draft.categoryId = nil
-        draft.roomId = nil
         draft.requiresPhoto = false
 
         if draft.frequency == .none {
@@ -136,6 +138,10 @@ struct ChoreTemplateDraft: Equatable, Sendable {
 
         guard draft.durationMinutes > 0 else {
             throw ChoreValidationError.durationMustBePositive
+        }
+
+        guard draft.roomId != nil else {
+            throw ChoreValidationError.roomRequired
         }
 
         guard !draft.timezone.isEmpty, TimeZone(identifier: draft.timezone) != nil else {
@@ -225,6 +231,7 @@ enum ChoreValidationError: LocalizedError, Equatable {
     case timedChoreRequiresDueTime
     case intervalMustBePositive
     case durationMustBePositive
+    case roomRequired
     case invalidTimezone
     case endDateRequired
     case occurrenceCountRequired
@@ -259,6 +266,8 @@ enum ChoreValidationError: LocalizedError, Equatable {
             return "Interval must be positive."
         case .durationMustBePositive:
             return "Duration must be positive."
+        case .roomRequired:
+            return "Choose a Room."
         case .invalidTimezone:
             return "Choose a valid timezone."
         case .endDateRequired:

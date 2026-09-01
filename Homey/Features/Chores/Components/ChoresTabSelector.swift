@@ -3,6 +3,7 @@ import SwiftUI
 struct ChoresTabSelector: View {
     let tabs: [ChoresTab]
     @Binding var selectedTab: ChoresTab
+    var title: (ChoresTab) -> String = { $0.title }
     var badgeCount: (ChoresTab) -> Int? = { _ in nil }
 
     var body: some View {
@@ -10,28 +11,29 @@ struct ChoresTabSelector: View {
             tabs: tabs,
             selectedTab: $selectedTab,
             accessibilityLabel: "Chores section",
-            title: { $0.title },
+            title: title,
             badgeCount: badgeCount,
             accessibilityLabelForTab: accessibilityLabel(for:badgeCount:)
         )
     }
 
     private func accessibilityLabel(for tab: ChoresTab, badgeCount: Int?) -> String {
+        let tabTitle = title(tab)
         guard let badgeCount, badgeCount > 0 else {
-            return tab.title
+            return tabTitle
         }
 
         switch tab {
         case .myChores:
-            return "\(tab.title), \(badgeCount) items need attention"
+            return "\(tabTitle), \(badgeCount) items need attention"
         case .myRewards:
-            return "\(tab.title), \(badgeCount) rewards pending"
+            return "\(tabTitle), \(badgeCount) rewards pending"
         case .houseChores:
-            return "\(tab.title), \(badgeCount) approvals pending"
+            return "\(tabTitle), \(badgeCount) approvals pending"
         case .rewardCenter:
-            return "\(tab.title), \(badgeCount) redemptions pending"
+            return "\(tabTitle), \(badgeCount) redemptions pending"
         case .choreHistory:
-            return tab.title
+            return tabTitle
         }
     }
 }

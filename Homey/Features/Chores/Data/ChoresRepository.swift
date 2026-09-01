@@ -58,6 +58,23 @@ final class ChoresRepository {
         }
     }
 
+    func fetchRoomsEnsuringOther(homeId: UUID) async throws -> [ChoreRoom] {
+        var rooms = try await fetchRooms(homeId: homeId)
+        if rooms.contains(where: { $0.archivedAt == nil && ($0.roomType == .other || $0.name.caseInsensitiveCompare("Other") == .orderedSame) }) {
+            return rooms
+        }
+
+        let nextSortOrder = (rooms.map(\.sortOrder).max() ?? -1) + 1
+        _ = try await createRoom(
+            homeId: homeId,
+            name: "Other",
+            sortOrder: nextSortOrder,
+            roomType: .other
+        )
+        rooms = try await fetchRooms(homeId: homeId)
+        return rooms
+    }
+
     func createCategory(homeId: UUID, name: String, colorHex: String? = nil, iconName: String? = nil, sortOrder: Int = 0) async throws -> UUID {
         let payload = ChoreCategoryMutationPayload(
             homeId: homeId,
@@ -121,12 +138,28 @@ final class ChoresRepository {
         }
     }
 
-    func createRoom(homeId: UUID, name: String, sortOrder: Int = 0) async throws -> UUID {
-        let payload = ChoreRoomMutationPayload(homeId: homeId, name: normalizedRequiredString(name), sortOrder: sortOrder, archivedAt: nil)
+    func createRoom(
+        homeId: UUID,
+        name: String,
+        sortOrder: Int = 0,
+        roomType: ChoreRoomType? = nil,
+        preferredCleaningWeekday: ChorePreferredCleaningWeekday? = nil,
+        preferredCleaningFrequency: ChoreRoomCleaningFrequency? = nil
+    ) async throws -> UUID {
+        let userId = try await authenticatedUserId()
+        let payload = ChoreRoomMutationPayload(
+            homeId: homeId,
+            name: normalizedRequiredString(name),
+            roomType: roomType,
+            preferredCleaningWeekday: preferredCleaningWeekday,
+            preferredCleaningFrequency: preferredCleaningFrequency,
+            sortOrder: sortOrder,
+            archivedAt: nil,
+            createdBy: userId
+        )
         guard !payload.name.isEmpty else { throw ChoreRepositoryError.saveFailed }
 
         do {
-            try await requireAuthenticatedSession()
             let created: ChoreMutationIdResponse = try await client
                 .from("chore_rooms")
                 .insert(payload)
@@ -141,8 +174,21 @@ final class ChoresRepository {
         }
     }
 
-    func updateRoom(roomId: UUID, name: String, sortOrder: Int) async throws {
-        let payload = ChoreRoomUpdatePayload(name: normalizedRequiredString(name), sortOrder: sortOrder)
+    func updateRoom(
+        roomId: UUID,
+        name: String,
+        sortOrder: Int,
+        roomType: ChoreRoomType? = nil,
+        preferredCleaningWeekday: ChorePreferredCleaningWeekday? = nil,
+        preferredCleaningFrequency: ChoreRoomCleaningFrequency? = nil
+    ) async throws {
+        let payload = ChoreRoomUpdatePayload(
+            name: normalizedRequiredString(name),
+            roomType: roomType,
+            preferredCleaningWeekday: preferredCleaningWeekday,
+            preferredCleaningFrequency: preferredCleaningFrequency,
+            sortOrder: sortOrder
+        )
         guard !payload.name.isEmpty else { throw ChoreRepositoryError.saveFailed }
 
         do {
@@ -600,6 +646,27 @@ final class ChoresRepository {
         }
     }
 
+    func updateTemplateRoomCleaningMetadata(
+        templateId: UUID,
+        roomId: UUID?,
+        contributesToRoomCleaning: Bool
+    ) async throws {
+        do {
+            try await requireAuthenticatedSession()
+            try await client
+                .from("chore_templates")
+                .update(ChoreTemplateRoomCleaningMetadataPayload(
+                    roomId: roomId,
+                    contributesToRoomCleaning: contributesToRoomCleaning
+                ))
+                .eq("id", value: templateId.uuidString)
+                .execute()
+        } catch {
+            logChoreError(error, operation: "chore_templates.room_cleaning_metadata.update", categoryId: templateId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
     func retireChore(templateId: UUID, effectiveFrom: Date) async throws -> RetiredChoreResult {
         do {
             try await requireAuthenticatedSession()
@@ -985,7 +1052,6 @@ final class ChoresRepository {
                 .order("assigned_at", ascending: true)
                 .execute()
                 .value
-            logFetchedOccurrenceAssignees(assignees, occurrenceId: occurrenceId)
             return assignees
         } catch {
             logChoreError(error, operation: "chore_occurrence_assignees.select", categoryId: occurrenceId)
@@ -1013,19 +1079,6 @@ final class ChoresRepository {
             logChoreError(error, operation: "chore_occurrence_assignees.select_occurrences")
             throw ChoreRepositoryError.map(error)
         }
-    }
-
-    private func logFetchedOccurrenceAssignees(_ assignees: [ChoreOccurrenceAssignee], occurrenceId: UUID) {
-        #if DEBUG
-        print("========== CHORE ASSIGNEES LOADED ==========")
-        print("occurrence_id: \(occurrenceId.uuidString)")
-        print("assignee_count: \(assignees.count)")
-        if let firstAssignee = assignees.first {
-            print("first_assignee_user_id: \(firstAssignee.userId.uuidString)")
-            print("first_assignee_status: \(firstAssignee.status.rawValue)")
-        }
-        print("=============================================")
-        #endif
     }
 
     func linkCalendarEvent(occurrenceId: UUID, calendarEventId: UUID) async throws {
@@ -1129,6 +1182,28 @@ final class ChoresRepository {
             return submissionId
         } catch {
             logChoreError(error, operation: "submit_chore", categoryId: occurrenceId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func submitChoreAsAdmin(occurrenceId: UUID, forUserId: UUID, note: String?, photoPath: String?) async throws -> UUID {
+        do {
+            try await requireAuthenticatedSession()
+            let submissionId: UUID = try await client
+                .rpc(
+                    "submit_chore_as_admin",
+                    params: SubmitChoreAsAdminRPCParameters(
+                        requestedOccurrenceId: occurrenceId,
+                        requestedUserId: forUserId,
+                        requestedCompletionNote: normalizedOptionalString(note),
+                        requestedPhotoPath: normalizedOptionalString(photoPath)
+                    )
+                )
+                .execute()
+                .value
+            return submissionId
+        } catch {
+            logChoreError(error, operation: "submit_chore_as_admin", categoryId: occurrenceId)
             throw ChoreRepositoryError.map(error)
         }
     }
@@ -1746,23 +1821,37 @@ private struct ChoreCategoryUpdatePayload: Encodable {
 private struct ChoreRoomMutationPayload: Encodable {
     let homeId: UUID
     let name: String
+    let roomType: ChoreRoomType?
+    let preferredCleaningWeekday: ChorePreferredCleaningWeekday?
+    let preferredCleaningFrequency: ChoreRoomCleaningFrequency?
     let sortOrder: Int
     let archivedAt: Date?
+    let createdBy: UUID
 
     enum CodingKeys: String, CodingKey {
         case homeId = "home_id"
         case name
+        case roomType = "room_type"
+        case preferredCleaningWeekday = "preferred_cleaning_weekday"
+        case preferredCleaningFrequency = "preferred_cleaning_frequency"
         case sortOrder = "sort_order"
         case archivedAt = "archived_at"
+        case createdBy = "created_by"
     }
 }
 
 private struct ChoreRoomUpdatePayload: Encodable {
     let name: String
+    let roomType: ChoreRoomType?
+    let preferredCleaningWeekday: ChorePreferredCleaningWeekday?
+    let preferredCleaningFrequency: ChoreRoomCleaningFrequency?
     let sortOrder: Int
 
     enum CodingKeys: String, CodingKey {
         case name
+        case roomType = "room_type"
+        case preferredCleaningWeekday = "preferred_cleaning_weekday"
+        case preferredCleaningFrequency = "preferred_cleaning_frequency"
         case sortOrder = "sort_order"
     }
 }
@@ -1983,6 +2072,16 @@ private struct UpdateOccurrenceSchedulePayload: Encodable {
     }
 }
 
+private struct ChoreTemplateRoomCleaningMetadataPayload: Encodable {
+    let roomId: UUID?
+    let contributesToRoomCleaning: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case roomId = "room_id"
+        case contributesToRoomCleaning = "contributes_to_room_cleaning"
+    }
+}
+
 private struct SaveChoreTemplateRPCParameters: Encodable {
     let requestedHomeId: UUID
     let requestedChoreId: UUID?
@@ -2019,7 +2118,7 @@ private struct SaveChoreTemplateRPCParameters: Encodable {
         requestedDescription = normalizedDraft.description.isEmpty ? nil : normalizedDraft.description
         requestedInstructions = normalizedDraft.instructions.isEmpty ? nil : normalizedDraft.instructions
         requestedCategoryId = nil
-        requestedRoomId = nil
+        requestedRoomId = normalizedDraft.roomId
         requestedAssignmentMode = normalizedDraft.assignmentMode.rawValue
         requestedCompletionMode = Self.requestedCompletionMode(for: normalizedDraft).rawValue
         requestedPointsValue = normalizedDraft.pointsValue
@@ -2200,6 +2299,28 @@ private struct SubmitChoreRPCParameters: Encodable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(requestedOccurrenceId, forKey: .requestedOccurrenceId)
+        try encodeOptional(requestedCompletionNote, forKey: .requestedCompletionNote, into: &container)
+        try encodeOptional(requestedPhotoPath, forKey: .requestedPhotoPath, into: &container)
+    }
+}
+
+private struct SubmitChoreAsAdminRPCParameters: Encodable {
+    let requestedOccurrenceId: UUID
+    let requestedUserId: UUID
+    let requestedCompletionNote: String?
+    let requestedPhotoPath: String?
+
+    enum CodingKeys: String, CodingKey {
+        case requestedOccurrenceId = "requested_occurrence_id"
+        case requestedUserId = "requested_user_id"
+        case requestedCompletionNote = "requested_completion_note"
+        case requestedPhotoPath = "requested_photo_path"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(requestedOccurrenceId, forKey: .requestedOccurrenceId)
+        try container.encode(requestedUserId, forKey: .requestedUserId)
         try encodeOptional(requestedCompletionNote, forKey: .requestedCompletionNote, into: &container)
         try encodeOptional(requestedPhotoPath, forKey: .requestedPhotoPath, into: &container)
     }
