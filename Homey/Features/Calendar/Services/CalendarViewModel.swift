@@ -62,6 +62,7 @@ final class CalendarViewModel: ObservableObject {
     private var activeHomeId: UUID?
     private var realtimeSubscription: CalendarRealtimeSubscription?
     private var realtimeReloadTask: Task<Void, Never>?
+    private var loadGeneration = 0
 
     init(
         calendarService: CalendarService? = nil,
@@ -99,6 +100,7 @@ final class CalendarViewModel: ObservableObject {
             await stopRealtimeUpdates()
             activeHomeId = homeId
             loadedHomeId = nil
+            loadGeneration += 1
             events = []
             categories = []
             selectedDayEvents = []
@@ -121,7 +123,13 @@ final class CalendarViewModel: ObservableObject {
 
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        loadGeneration += 1
+        let generation = loadGeneration
+        defer {
+            if loadGeneration == generation {
+                isLoading = false
+            }
+        }
 
         do {
             let requestMode = displayMode
@@ -153,7 +161,9 @@ final class CalendarViewModel: ObservableObject {
                 homeId: requestHomeId
             )
 
-            guard activeHomeId == requestHomeId,
+            guard loadGeneration == generation,
+                  !Task.isCancelled,
+                  activeHomeId == requestHomeId,
                   displayMode == requestMode else {
                 return
             }
@@ -163,7 +173,13 @@ final class CalendarViewModel: ObservableObject {
             linkedEventPresentations = resolvedLinkedPresentations
             loadedHomeId = activeHomeId
             updateSelectedDayEvents()
+        } catch is CancellationError {
+            return
         } catch {
+            guard loadGeneration == generation, !Task.isCancelled else {
+                return
+            }
+
             errorMessage = error.localizedDescription
         }
     }

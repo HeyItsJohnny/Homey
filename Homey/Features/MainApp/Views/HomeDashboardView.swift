@@ -238,9 +238,6 @@ private struct DashboardContentView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .scrollIndicators(.hidden)
-        .onAppear {
-            calendarViewModel.load(homeId: homeService.selectedHomeID)
-        }
         .task(id: homeService.selectedHomeID) {
             calendarViewModel.load(homeId: homeService.selectedHomeID)
         }

@@ -7,6 +7,7 @@ struct ChoreOccurrenceDetailView: View {
     @EnvironmentObject private var homeService: HomeService
     @StateObject private var viewModel: ChoreOccurrenceDetailViewModel
     @State private var isPresentingManageChore = false
+    @State private var isConfirmingSkip = false
 
     private let homeTimezone: String
     private let targetAssigneeUserId: UUID?
@@ -78,6 +79,21 @@ struct ChoreOccurrenceDetailView: View {
                 )
             }
         }
+        .confirmationDialog(
+            skipConfirmationTitle,
+            isPresented: $isConfirmingSkip,
+            titleVisibility: .visible
+        ) {
+            Button("Skip Chore", role: .destructive) {
+                Task {
+                    await viewModel.skipChore(targetAssigneeUserId: targetAssigneeUserId)
+                }
+            }
+
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This chore will be marked as skipped and removed from your active chores. No points will be awarded.")
+        }
     }
 
     private var currentUserId: UUID? {
@@ -99,6 +115,15 @@ struct ChoreOccurrenceDetailView: View {
         case .member, nil:
             return false
         }
+    }
+
+    private var skipConfirmationTitle: String {
+        guard let title = viewModel.occurrence?.titleSnapshot.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else {
+            return "Skip this chore?"
+        }
+
+        return "Skip \"\(title)\"?"
     }
 
     private func header(for occurrence: ChoreOccurrence) -> some View {
@@ -237,12 +262,28 @@ struct ChoreOccurrenceDetailView: View {
                 .buttonStyle(DashboardPrimaryButtonStyle())
                 .disabled(viewModel.isPerformingAction)
                 .accessibilityLabel("Submit Chore")
+
+                if personalStatus == .notStarted {
+                    Button(role: .destructive) {
+                        isConfirmingSkip = true
+                    } label: {
+                        actionLabel("Skip Chore", systemImage: "forward.end.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(viewModel.isPerformingAction)
+                    .accessibilityLabel("Skip Chore")
+                }
             } else if personalStatus == .awaitingApproval {
                 Text("This chore is pending approval.")
                     .font(.subheadline)
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
             } else if personalStatus == .completed {
                 completedSummary(for: occurrence, assignee: activeAssignee(for: occurrence))
+            } else if personalStatus == .skipped {
+                Text("This chore was skipped.")
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
             }
         } else {
             Text("You can view this chore, but there are no actions available for your account.")
@@ -600,7 +641,6 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
             assignees = try await loadedAssignees
             recurrenceRule = try await loadedRule
             pendingSubmission = try await loadedPendingSubmission
-            logChoreMemberState(for: refreshedOccurrence)
         } catch {
             errorMessage = "Unable to open this chore."
         }
@@ -635,6 +675,21 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
                 _ = try await repository.submitChore(occurrenceId: occurrenceId, note: completionNote, photoPath: nil)
             }
             completionNote = ""
+        }
+    }
+
+    func skipChore(targetAssigneeUserId: UUID?) async {
+        await performAction(failureMessage: "Unable to skip chore.") {
+            if let targetAssigneeUserId,
+               targetAssigneeUserId != activeCurrentUserId,
+               (activeCurrentRole == .owner || activeCurrentRole == .admin) {
+                _ = try await repository.skipChoreAsAdmin(
+                    occurrenceId: occurrenceId,
+                    forUserId: targetAssigneeUserId
+                )
+            } else {
+                _ = try await repository.skipChore(occurrenceId: occurrenceId)
+            }
         }
     }
 
@@ -690,23 +745,6 @@ private final class ChoreOccurrenceDetailViewModel: ObservableObject {
         }
     }
 
-    private func logChoreMemberState(for occurrence: ChoreOccurrence) {
-        #if DEBUG
-        guard let activeCurrentUserId else {
-            return
-        }
-
-        let assigneeStatus = assignees.first { $0.userId == activeCurrentUserId }?.status
-        print("========== CHORE MEMBER STATE ==========")
-        print("occurrence_id: \(occurrence.id.uuidString)")
-        print("parent_status: \(occurrence.status.rawValue)")
-        print("current_user_id: \(activeCurrentUserId.uuidString)")
-        print("assignee_status: \(assigneeStatus?.rawValue ?? "nil")")
-        print("can_start: \(assigneeStatus?.canStartChore == true)")
-        print("can_submit: \(assigneeStatus?.canSubmitChore == true)")
-        print("========================================")
-        #endif
-    }
 }
 
 private enum ChoreOccurrenceDetailFormatters {

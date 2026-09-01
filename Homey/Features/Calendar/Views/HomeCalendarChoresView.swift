@@ -10,6 +10,7 @@ struct HomeCalendarChoresView: View {
     let weekStartsOn: Int?
     let timezone: String?
     let members: [HomeMemberDisplay]
+    let currentUserId: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -57,7 +58,13 @@ struct HomeCalendarChoresView: View {
             }
         }
         .task(id: loadTaskId) {
-            await viewModel.configure(homeId: homeId, role: role, weekStartsOn: weekStartsOn, timezone: timezone)
+            await viewModel.configure(
+                homeId: homeId,
+                role: role,
+                currentUserId: currentUserId,
+                weekStartsOn: weekStartsOn,
+                timezone: timezone
+            )
         }
         .overlay {
             if viewModel.isLoading && viewModel.occurrences.isEmpty {
@@ -87,15 +94,27 @@ struct HomeCalendarChoresView: View {
                             selectedItem = nil
                         }
                     }
-                }
+                },
+                onSkip: { assigneeUserId in
+                    Task {
+                        let didSkip = await viewModel.skipFromHomeBoard(
+                            item: item,
+                            assigneeUserId: assigneeUserId
+                        )
+                        if didSkip {
+                            selectedItem = nil
+                        }
+                    }
+                },
+                allowsSkip: true
             )
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.height(560), .large])
             .presentationDragIndicator(.visible)
         }
     }
 
     private var loadTaskId: String {
-        "\(homeId?.uuidString ?? "no-home")-\(role?.rawValue ?? "no-role")-\(weekStartsOn ?? -1)-\(timezone ?? "")"
+        "\(homeId?.uuidString ?? "no-home")-\(role?.rawValue ?? "no-role")-\(currentUserId?.uuidString ?? "no-user")-\(weekStartsOn ?? -1)-\(timezone ?? "")"
     }
 }
 
@@ -641,8 +660,11 @@ struct HomeChoreSubmissionView: View {
     let errorMessage: String?
     let onCancel: () -> Void
     let onSubmit: (UUID) -> Void
+    var onSkip: (UUID) -> Void = { _ in }
+    var allowsSkip = false
 
     @State private var selectedOpenAssigneeUserId: UUID?
+    @State private var isConfirmingSkip = false
 
     var body: some View {
         NavigationStack {
@@ -670,7 +692,9 @@ struct HomeChoreSubmissionView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    .padding(22)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 30)
+                    .padding(.bottom, 34)
                     .frame(maxWidth: .infinity, alignment: .center)
                 }
             }
@@ -680,6 +704,22 @@ struct HomeChoreSubmissionView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", action: onCancel)
                 }
+            }
+            .confirmationDialog(
+                skipConfirmationTitle,
+                isPresented: $isConfirmingSkip,
+                titleVisibility: .visible
+            ) {
+                Button("Skip Chore", role: .destructive) {
+                    guard let assigneeUserId = resolvedAssigneeUserId else {
+                        return
+                    }
+                    onSkip(assigneeUserId)
+                }
+
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This chore will be marked as skipped and removed from your active chores. No points will be awarded.")
             }
             .onAppear {
                 if selectedOpenAssigneeUserId == nil {
@@ -725,12 +765,12 @@ struct HomeChoreSubmissionView: View {
 
     private var submissionForm: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Completed?")
+            Text("What would you like to do?")
                 .font(.title3.weight(.bold))
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
                 .accessibilityAddTraits(.isHeader)
 
-            HStack(spacing: 12) {
+            VStack(spacing: 12) {
                 Button {
                     guard let assigneeUserId = resolvedAssigneeUserId else {
                         return
@@ -745,15 +785,43 @@ struct HomeChoreSubmissionView: View {
                         } else {
                             Image(systemName: "checkmark.circle.fill")
                         }
-                        Text("Yes")
+                        Text("Complete Chore")
                     }
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(DashboardPrimaryButtonStyle())
                 .disabled(isSubmitting || resolvedAssigneeUserId == nil)
-                .accessibilityLabel("Yes, submit chore as completed")
+                .accessibilityLabel("Complete Chore")
 
-                Button("No", action: onCancel)
+                if allowsSkip && item.canSkipFromHomeBoard {
+                    Button(role: .destructive) {
+                        isConfirmingSkip = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            if isSubmitting {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "forward.end.fill")
+                            }
+                            Text("Skip Chore")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.destructiveRed)
+                    .frame(minHeight: 44)
+                    .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(HomeyDashboardTheme.destructiveRed.opacity(0.35), lineWidth: 1)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isSubmitting || resolvedAssigneeUserId == nil)
+                    .accessibilityLabel("Skip Chore")
+                }
+
+                Button("Cancel", action: onCancel)
                     .font(.subheadline.weight(.bold))
                     .foregroundStyle(HomeyDashboardTheme.warmBrown)
                     .frame(maxWidth: .infinity, minHeight: 44)
@@ -764,7 +832,7 @@ struct HomeChoreSubmissionView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(isSubmitting)
-                    .accessibilityLabel("No, close")
+                    .accessibilityLabel("Cancel")
             }
         }
         .padding(18)
@@ -842,6 +910,11 @@ struct HomeChoreSubmissionView: View {
 
     private var navigationTitle: String {
         item.status.canSubmitFromHomeBoard ? "Complete Chore" : "Chore Details"
+    }
+
+    private var skipConfirmationTitle: String {
+        let title = item.occurrence.titleSnapshot.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? "Skip this chore?" : "Skip \"\(title)\"?"
     }
 
     private var readOnlyMessage: String {

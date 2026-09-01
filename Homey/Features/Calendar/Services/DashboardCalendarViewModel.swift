@@ -14,6 +14,7 @@ final class DashboardCalendarViewModel: ObservableObject {
     private var loadTask: Task<Void, Never>?
     private var realtimeReloadTask: Task<Void, Never>?
     private var realtimeSubscription: CalendarRealtimeSubscription?
+    private var loadGeneration = 0
     private let calendar: Calendar
 
     init(calendarService: CalendarService? = nil, calendar: Calendar = .autoupdatingCurrent) {
@@ -60,15 +61,21 @@ final class DashboardCalendarViewModel: ObservableObject {
 
     private func scheduleLoad(homeId: UUID) {
         loadTask?.cancel()
+        loadGeneration += 1
+        let generation = loadGeneration
         loadTask = Task { [weak self] in
-            await self?.loadCalendarData(homeId: homeId)
+            await self?.loadCalendarData(homeId: homeId, generation: generation)
         }
     }
 
-    private func loadCalendarData(homeId: UUID) async {
+    private func loadCalendarData(homeId: UUID, generation: Int) async {
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        defer {
+            if loadGeneration == generation {
+                isLoading = false
+            }
+        }
 
         do {
             let now = Date()
@@ -80,7 +87,7 @@ final class DashboardCalendarViewModel: ObservableObject {
             let loadedUpcomingEvents = try await upcoming
             let resolvedCategories = try await loadedCategories
 
-            guard !Task.isCancelled else {
+            guard !Task.isCancelled, loadGeneration == generation else {
                 return
             }
 
@@ -89,8 +96,10 @@ final class DashboardCalendarViewModel: ObservableObject {
                 .count
             upcomingEvents = loadedUpcomingEvents
             categories = resolvedCategories
+        } catch is CancellationError {
+            return
         } catch {
-            guard !Task.isCancelled else {
+            guard !Task.isCancelled, loadGeneration == generation else {
                 return
             }
 
@@ -134,10 +143,11 @@ final class DashboardCalendarViewModel: ObservableObject {
             return
         }
 
-        await loadCalendarData(homeId: activeHomeId)
+        scheduleLoad(homeId: activeHomeId)
     }
 
     private func clearCalendarData() {
+        loadGeneration += 1
         eventsTodayCount = 0
         upcomingEvents = []
         categories = []

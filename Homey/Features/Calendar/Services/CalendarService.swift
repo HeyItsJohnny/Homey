@@ -43,6 +43,10 @@ final class CalendarService: ObservableObject {
 
             return deduplicatedEvents(events, sourceOperation: sourceOperation).sortedForCalendarDisplay()
         } catch {
+            if isExpectedCancellation(error) {
+                throw CancellationError()
+            }
+
             logCalendarError(error, rpcName: "get_calendar_events", homeId: homeId)
             throw CalendarServiceError.loadEventsFailed
         }
@@ -338,6 +342,10 @@ final class CalendarService: ObservableObject {
 
             return sortedCategories(categories)
         } catch {
+            if isExpectedCancellation(error) {
+                throw CancellationError()
+            }
+
             logCalendarError(error, rpcName: "calendar_categories.select", homeId: homeId)
             throw CalendarServiceError.loadCategoriesFailed
         }
@@ -965,6 +973,27 @@ final class CalendarService: ObservableObject {
         }
         print("=========================================")
         #endif
+    }
+
+    private func isExpectedCancellation(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            return true
+        }
+
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return true
+        }
+
+        if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isExpectedCancellation(underlyingError)
+        }
+
+        return false
     }
 }
 

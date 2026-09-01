@@ -1208,6 +1208,40 @@ final class ChoresRepository {
         }
     }
 
+    func skipChore(occurrenceId: UUID) async throws -> UUID {
+        do {
+            try await requireAuthenticatedSession()
+            let skippedOccurrenceId: UUID = try await client
+                .rpc("skip_chore", params: RequestedOccurrenceRPCParameters(requestedOccurrenceId: occurrenceId))
+                .execute()
+                .value
+            return skippedOccurrenceId
+        } catch {
+            logChoreError(error, operation: "skip_chore", categoryId: occurrenceId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func skipChoreAsAdmin(occurrenceId: UUID, forUserId: UUID) async throws -> UUID {
+        do {
+            try await requireAuthenticatedSession()
+            let skippedOccurrenceId: UUID = try await client
+                .rpc(
+                    "skip_chore_as_admin",
+                    params: SkipChoreAsAdminRPCParameters(
+                        requestedOccurrenceId: occurrenceId,
+                        requestedUserId: forUserId
+                    )
+                )
+                .execute()
+                .value
+            return skippedOccurrenceId
+        } catch {
+            logChoreError(error, operation: "skip_chore_as_admin", categoryId: occurrenceId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
     func submitChoreFromHomeBoard(occurrenceId: UUID, assigneeUserId: UUID, note: String?, photoPath: String?) async throws -> UUID {
         do {
             try await requireAuthenticatedSession()
@@ -2323,6 +2357,16 @@ private struct SubmitChoreAsAdminRPCParameters: Encodable {
         try container.encode(requestedUserId, forKey: .requestedUserId)
         try encodeOptional(requestedCompletionNote, forKey: .requestedCompletionNote, into: &container)
         try encodeOptional(requestedPhotoPath, forKey: .requestedPhotoPath, into: &container)
+    }
+}
+
+private struct SkipChoreAsAdminRPCParameters: Encodable {
+    let requestedOccurrenceId: UUID
+    let requestedUserId: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case requestedOccurrenceId = "requested_occurrence_id"
+        case requestedUserId = "requested_user_id"
     }
 }
 

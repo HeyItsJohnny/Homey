@@ -15,6 +15,7 @@ final class HomeCalendarChoresViewModel: ObservableObject {
     private var calendar: Calendar
     private var activeHomeId: UUID?
     private var activeRole: HomeMemberRole?
+    private var activeCurrentUserId: UUID?
     private var activeTimezone: String?
     private var roomsById: [UUID: ChoreRoom] = [:]
     private var notificationTask: Task<Void, Never>?
@@ -36,11 +37,11 @@ final class HomeCalendarChoresViewModel: ObservableObject {
         notificationTask?.cancel()
     }
 
-    func configure(homeId: UUID?, role: HomeMemberRole?, weekStartsOn: Int?, timezone: String?) async {
+    func configure(homeId: UUID?, role: HomeMemberRole?, currentUserId: UUID?, weekStartsOn: Int?, timezone: String?) async {
         configureWeekStart(weekStartsOn)
         configureTimezone(timezone)
 
-        if activeHomeId != homeId {
+        if activeHomeId != homeId || activeCurrentUserId != currentUserId {
             visibleWeekAnchor = calendar.startOfDay(for: Date())
             occurrences = []
             assigneesByOccurrenceId = [:]
@@ -49,6 +50,7 @@ final class HomeCalendarChoresViewModel: ObservableObject {
 
         activeHomeId = homeId
         activeRole = role
+        activeCurrentUserId = currentUserId
         activeTimezone = timezone
 
         await reload()
@@ -85,7 +87,9 @@ final class HomeCalendarChoresViewModel: ObservableObject {
             async let loadedRooms = repository.fetchRooms(homeId: activeHomeId)
             let (assignees, rooms) = try await (loadedAssignees, loadedRooms)
 
-            occurrences = loadedOccurrences.sorted { first, second in
+            occurrences = loadedOccurrences
+                .filter { $0.status != .skipped && $0.status != .cancelled }
+                .sorted { first, second in
                 if first.dueAt != second.dueAt {
                     return first.dueAt < second.dueAt
                 }
@@ -188,6 +192,34 @@ final class HomeCalendarChoresViewModel: ObservableObject {
         }
     }
 
+    func skipFromHomeBoard(item: HomeChoreChecklistItemModel, assigneeUserId: UUID) async -> Bool {
+        guard !isSubmitting else { return false }
+
+        isSubmitting = true
+        errorMessage = nil
+        defer { isSubmitting = false }
+
+        do {
+            if (activeRole == .owner || activeRole == .admin),
+               assigneeUserId != activeCurrentUserId,
+               item.assignee != nil {
+                _ = try await repository.skipChoreAsAdmin(
+                    occurrenceId: item.occurrence.id,
+                    forUserId: assigneeUserId
+                )
+            } else {
+                _ = try await repository.skipChore(occurrenceId: item.occurrence.id)
+            }
+
+            await reload()
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
     private func checklistItems(
         for occurrence: ChoreOccurrence,
         memberByUserId: [UUID: HomeMemberDisplay]
@@ -195,7 +227,9 @@ final class HomeCalendarChoresViewModel: ObservableObject {
         let assignees = assigneesByOccurrenceId[occurrence.id, default: []]
 
         if !assignees.isEmpty {
-            return assignees.map { assignee in
+            return assignees
+                .filter { $0.status != .skipped && $0.status != .cancelled }
+                .map { assignee in
                 HomeChoreChecklistItemModel(
                     occurrence: occurrence,
                     assignee: assignee,
@@ -351,6 +385,14 @@ struct HomeChoreChecklistItemModel: Identifiable, Hashable {
             return HomeChoreChecklistStatus(assigneeStatus: assignee.status)
         }
         return HomeChoreChecklistStatus(occurrenceStatus: occurrence.status)
+    }
+
+    var canSkipFromHomeBoard: Bool {
+        guard let assignee else {
+            return false
+        }
+
+        return assignee.status == .assigned
     }
 
     var dueAt: Date {

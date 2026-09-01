@@ -263,6 +263,7 @@ struct HouseChoresApprovalsView: View {
 struct HouseChoresRoomsView: View {
     @EnvironmentObject private var homeService: HomeService
     @StateObject private var viewModel = HouseChoresRoomsViewModel()
+    @State private var selectedRoom: ChoreRoom?
 
     private var canManageRooms: Bool {
         switch homeService.selectedHomeRole {
@@ -288,17 +289,8 @@ struct HouseChoresRoomsView: View {
                 }
             } else {
                 ChoreRoomMetadataList(
-                    rooms: viewModel.rooms,
-                    canEdit: canManageRooms,
-                    savingRoomId: viewModel.savingRoomId,
-                    onSave: { room, roomType, preferredWeekday, preferredFrequency in
-                        await viewModel.updateRoomMetadata(
-                            room: room,
-                            roomType: roomType,
-                            preferredCleaningWeekday: preferredWeekday,
-                            preferredCleaningFrequency: preferredFrequency
-                        )
-                    }
+                    summaries: viewModel.roomSummaries,
+                    onSelect: { selectedRoom = $0.room }
                 )
             }
         }
@@ -309,6 +301,20 @@ struct HouseChoresRoomsView: View {
             for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
                 viewModel.reload()
             }
+        }
+        .sheet(item: $selectedRoom) { room in
+            ChoreRoomAssignmentSheet(
+                room: room,
+                summaries: viewModel.roomSummaries,
+                chores: viewModel.activeChores,
+                roomNamesById: viewModel.roomNamesById,
+                updatingChoreId: viewModel.updatingChoreId,
+                errorMessage: viewModel.actionErrorMessage,
+                canEdit: canManageRooms,
+                onMoveChore: { chore in
+                    await viewModel.move(chore: chore, to: room, timezone: homeService.selectedHome()?.timezone)
+                }
+            )
         }
     }
 
@@ -349,10 +355,8 @@ private struct HouseChoresSectionCard<Content: View>: View {
 }
 
 private struct ChoreRoomMetadataList: View {
-    let rooms: [ChoreRoom]
-    let canEdit: Bool
-    let savingRoomId: UUID?
-    let onSave: (ChoreRoom, ChoreRoomType?, ChorePreferredCleaningWeekday?, ChoreRoomCleaningFrequency?) async -> Void
+    let summaries: [ChoreRoomManagementSummary]
+    let onSelect: (ChoreRoomManagementSummary) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -360,19 +364,16 @@ private struct ChoreRoomMetadataList: View {
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
 
-            if rooms.isEmpty {
+            if summaries.isEmpty {
                 Text("No rooms yet.")
                     .font(.subheadline)
                     .foregroundStyle(HomeyDashboardTheme.secondaryText)
             } else {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 14)], alignment: .leading, spacing: 14) {
-                    ForEach(rooms) { room in
-                        ChoreRoomMetadataRow(
-                            room: room,
-                            canEdit: canEdit,
-                            isSaving: savingRoomId == room.id,
-                            onSave: onSave
-                        )
+                    ForEach(summaries) { summary in
+                        ChoreRoomSummaryCard(summary: summary) {
+                            onSelect(summary)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -382,106 +383,258 @@ private struct ChoreRoomMetadataList: View {
     }
 }
 
-private struct ChoreRoomMetadataRow: View {
-    let room: ChoreRoom
-    let canEdit: Bool
-    let isSaving: Bool
-    let onSave: (ChoreRoom, ChoreRoomType?, ChorePreferredCleaningWeekday?, ChoreRoomCleaningFrequency?) async -> Void
-
-    @State private var roomType: ChoreRoomType?
-    @State private var preferredWeekday: ChorePreferredCleaningWeekday?
-    @State private var preferredFrequency: ChoreRoomCleaningFrequency?
-
-    init(
-        room: ChoreRoom,
-        canEdit: Bool,
-        isSaving: Bool,
-        onSave: @escaping (ChoreRoom, ChoreRoomType?, ChorePreferredCleaningWeekday?, ChoreRoomCleaningFrequency?) async -> Void
-    ) {
-        self.room = room
-        self.canEdit = canEdit
-        self.isSaving = isSaving
-        self.onSave = onSave
-        _roomType = State(initialValue: room.roomType)
-        _preferredWeekday = State(initialValue: room.preferredCleaningWeekday)
-        _preferredFrequency = State(initialValue: room.preferredCleaningFrequency)
-    }
-
+private struct ChoreRoomSummaryCard: View {
+    let summary: ChoreRoomManagementSummary
+    let onSelect: () -> Void
+    
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            RoomCleaningSummaryView(
-                summary: RoomCleaningSummary(
-                    room: room,
-                    lastCleanedAt: room.lastCleanedAt,
-                    completedChoreCount: 0
-                )
-            )
-
-            VStack(alignment: .leading, spacing: 10) {
-                Picker("Room Type", selection: $roomType) {
-                    Text("Other").tag(nil as ChoreRoomType?)
-                    ForEach(ChoreRoomType.allCases) { type in
-                        Text(type.displayName).tag(Optional(type))
-                    }
+        Button(action: onSelect) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Image(systemName: "sparkles")
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                        .accessibilityHidden(true)
+                    
+                    Text(summary.room.name)
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    
+                    Spacer(minLength: 8)
+                    
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .accessibilityHidden(true)
                 }
-
-                Picker("Preferred Cleaning Day", selection: $preferredWeekday) {
-                    Text("No Preference").tag(nil as ChorePreferredCleaningWeekday?)
-                    ForEach(ChorePreferredCleaningWeekday.allCases) { weekday in
-                        Text(weekday.displayName).tag(Optional(weekday))
-                    }
+                
+                VStack(alignment: .leading, spacing: 9) {
+                    summaryRow("Last Cleaned", value: summary.lastCleanedText)
+                    Text(summary.choreCountText)
+                        .font(.subheadline.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(HomeyDashboardTheme.selectedSidebarBackground, in: Capsule())
                 }
-
-                Picker("General Cleaning", selection: $preferredFrequency) {
-                    Text("Not Set").tag(nil as ChoreRoomCleaningFrequency?)
-                    ForEach(ChoreRoomCleaningFrequency.allCases) { frequency in
-                        Text(frequency.displayName).tag(Optional(frequency))
-                    }
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .pickerStyle(.menu)
-            .font(.subheadline.weight(.semibold))
-            .disabled(!canEdit || isSaving)
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 132, alignment: .topLeading)
+            .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(HomeyDashboardTheme.softBorder.opacity(0.82), lineWidth: 1)
+            }
+            .shadow(color: HomeyDashboardTheme.shadow.opacity(0.08), radius: 7, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(summary.room.name), Last Cleaned \(summary.lastCleanedText), \(summary.choreCountText)")
+        .accessibilityHint("Opens room chore assignments")
+    }
+    
+    private func summaryRow(_ label: String, value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(label)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            Spacer(minLength: 8)
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+}
 
-            if canEdit {
-                Button {
-                    Task {
-                        await onSave(room, roomType, preferredWeekday, preferredFrequency)
-                    }
-                } label: {
-                    HStack(spacing: 8) {
-                        if isSaving {
-                            ProgressView()
-                                .controlSize(.small)
-                                .tint(.white)
-                        } else {
-                            Image(systemName: "checkmark")
+private struct ChoreRoomAssignmentSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    
+    let room: ChoreRoom
+    let summaries: [ChoreRoomManagementSummary]
+    let chores: [ChoreTemplate]
+    let roomNamesById: [UUID: String]
+    let updatingChoreId: UUID?
+    let errorMessage: String?
+    let canEdit: Bool
+    let onMoveChore: (ChoreTemplate) async -> Void
+    
+    private var summary: ChoreRoomManagementSummary? {
+        summaries.first { $0.room.id == room.id }
+    }
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                HomeyDashboardTheme.appBackground
+                    .ignoresSafeArea()
+                
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        header
+                        choreList
+                        
+                        if let errorMessage {
+                            Text(errorMessage)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(HomeyDashboardTheme.destructiveRed)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        Text("Save")
                     }
+                    .padding(22)
+                    .frame(maxWidth: 760)
                     .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(DashboardPrimaryButtonStyle())
-                .disabled(isSaving || !hasChanges)
+                .scrollIndicators(.hidden)
+            }
+            .navigationTitle(room.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .disabled(updatingChoreId != nil)
+                }
             }
         }
-        .padding(12)
-        .background(HomeyDashboardTheme.appBackground.opacity(0.52), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+    
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(room.name)
+                .font(.system(size: 32, weight: .bold, design: .rounded))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .accessibilityAddTraits(.isHeader)
+            
+            HStack(spacing: 12) {
+                metadataPill("Last Cleaned: \(summary?.lastCleanedText ?? "Never")")
+                metadataPill(summary?.choreCountText ?? "0 Chores")
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dashboardCard(cornerRadius: 24)
+    }
+    
+    private var choreList: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Chores")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+            
+            if chores.isEmpty {
+                Text("No active chores yet.")
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(chores) { chore in
+                        ChoreRoomAssignmentRow(
+                            chore: chore,
+                            currentRoomName: currentRoomName(for: chore),
+                            isAssignedToRoom: chore.roomId == room.id,
+                            isUpdating: updatingChoreId == chore.id,
+                            canEdit: canEdit,
+                            onTap: {
+                                await onMoveChore(chore)
+                            }
+                        )
+                        
+                        if chore.id != chores.last?.id {
+                            Divider()
+                                .overlay(HomeyDashboardTheme.softBorder)
+                        }
+                    }
+                }
+                .padding(.horizontal, 14)
+                .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(HomeyDashboardTheme.appBackground.opacity(0.52), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .stroke(HomeyDashboardTheme.softBorder.opacity(0.82), lineWidth: 1)
         }
-        .onChange(of: room.id) { _, _ in
-            roomType = room.roomType
-            preferredWeekday = room.preferredCleaningWeekday
-            preferredFrequency = room.preferredCleaningFrequency
-        }
     }
+    
+    private func currentRoomName(for chore: ChoreTemplate) -> String {
+        chore.roomId.flatMap { roomNamesById[$0] } ?? "Other"
+    }
+    
+    private func metadataPill(_ text: String) -> some View {
+        Text(text)
+            .font(.caption.weight(.bold))
+            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(HomeyDashboardTheme.selectedSidebarBackground, in: Capsule())
+    }
+}
 
-    private var hasChanges: Bool {
-        roomType != room.roomType
-            || preferredWeekday != room.preferredCleaningWeekday
-            || preferredFrequency != room.preferredCleaningFrequency
+private struct ChoreRoomAssignmentRow: View {
+    let chore: ChoreTemplate
+    let currentRoomName: String
+    let isAssignedToRoom: Bool
+    let isUpdating: Bool
+    let canEdit: Bool
+    let onTap: () async -> Void
+    
+    var body: some View {
+        Button {
+            guard canEdit, !isAssignedToRoom, !isUpdating else {
+                return
+            }
+            
+            Task {
+                await onTap()
+            }
+        } label: {
+            HStack(alignment: .top, spacing: 12) {
+                if isUpdating {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(HomeyDashboardTheme.warmBrown)
+                        .frame(width: 22, height: 22)
+                } else {
+                    Image(systemName: isAssignedToRoom ? "checkmark.circle.fill" : "circle")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(isAssignedToRoom ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.secondaryText)
+                        .frame(width: 22)
+                        .accessibilityHidden(true)
+                }
+                
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(chore.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                    
+                    Text(currentRoomName)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                
+                Spacer(minLength: 8)
+            }
+            .padding(.vertical, 12)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canEdit || isAssignedToRoom || isUpdating)
+        .opacity(canEdit ? 1 : 0.72)
+        .accessibilityLabel("\(chore.title), \(currentRoomName), \(isAssignedToRoom ? "assigned to this room" : "not assigned to this room")")
     }
 }
 
@@ -945,18 +1098,66 @@ private struct ChoreApprovalItem: Identifiable, Hashable {
     var id: UUID { submission.id }
 }
 
+private struct ChoreRoomManagementSummary: Identifiable, Hashable {
+    let room: ChoreRoom
+    let choreCount: Int
+
+    var id: UUID {
+        room.id
+    }
+
+    var choreCountText: String {
+        "\(choreCount) \(choreCount == 1 ? "Chore" : "Chores")"
+    }
+
+    var lastCleanedText: String {
+        guard let lastCleanedAt = room.lastCleanedAt else {
+            return "Never"
+        }
+
+        let calendar = Calendar.autoupdatingCurrent
+        if calendar.isDateInToday(lastCleanedAt) {
+            return "Today"
+        }
+
+        if calendar.isDateInYesterday(lastCleanedAt) {
+            return "Yesterday"
+        }
+
+        return lastCleanedAt.formatted(date: .abbreviated, time: .omitted)
+    }
+}
+
 @MainActor
 private final class HouseChoresRoomsViewModel: ObservableObject {
     @Published private(set) var rooms: [ChoreRoom] = []
+    @Published private(set) var activeChores: [ChoreTemplate] = []
     @Published private(set) var isLoading = false
-    @Published private(set) var savingRoomId: UUID?
+    @Published private(set) var updatingChoreId: UUID?
     @Published private(set) var errorMessage: String?
+    @Published var actionErrorMessage: String?
 
     private let repository: ChoresRepository
+    private let calendarService: CalendarService
+    private var calendarSyncService: ChoreCalendarSyncService?
     private var activeHomeId: UUID?
 
-    init(repository: ChoresRepository? = nil) {
+    init(repository: ChoresRepository? = nil, calendarService: CalendarService? = nil) {
         self.repository = repository ?? ChoresRepository()
+        self.calendarService = calendarService ?? CalendarService()
+    }
+
+    var roomNamesById: [UUID: String] {
+        Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0.name) })
+    }
+
+    var roomSummaries: [ChoreRoomManagementSummary] {
+        rooms.map { room in
+            ChoreRoomManagementSummary(
+                room: room,
+                choreCount: activeChores.filter { $0.roomId == room.id }.count
+            )
+        }
     }
 
     func load(homeId: UUID?) async {
@@ -968,11 +1169,19 @@ private final class HouseChoresRoomsViewModel: ObservableObject {
         activeHomeId = homeId
         isLoading = true
         errorMessage = nil
+        actionErrorMessage = nil
 
         do {
-            rooms = try await repository.fetchRooms(homeId: homeId)
+            async let loadedRooms = repository.fetchRooms(homeId: homeId)
+            async let loadedTemplates = repository.fetchTemplates(homeId: homeId, includeArchived: false)
+
+            rooms = try await loadedRooms
+            activeChores = try await loadedTemplates
+                .filter { $0.isActive && $0.archivedAt == nil }
+                .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         } catch {
             rooms = []
+            activeChores = []
             errorMessage = error.localizedDescription
         }
 
@@ -985,38 +1194,91 @@ private final class HouseChoresRoomsViewModel: ObservableObject {
         }
     }
 
-    func updateRoomMetadata(
-        room: ChoreRoom,
-        roomType: ChoreRoomType?,
-        preferredCleaningWeekday: ChorePreferredCleaningWeekday?,
-        preferredCleaningFrequency: ChoreRoomCleaningFrequency?
-    ) async {
-        guard savingRoomId == nil else { return }
+    func move(chore: ChoreTemplate, to room: ChoreRoom, timezone: String?) async {
+        guard updatingChoreId == nil else { return }
+        guard chore.roomId != room.id else { return }
+        guard let activeHomeId else {
+            actionErrorMessage = "Unable to update this chore."
+            return
+        }
 
-        savingRoomId = room.id
-        errorMessage = nil
-        defer { savingRoomId = nil }
+        updatingChoreId = chore.id
+        actionErrorMessage = nil
+        defer { updatingChoreId = nil }
+
+        let resolvedTimezone: String
+        if let timezone, TimeZone(identifier: timezone) != nil {
+            resolvedTimezone = timezone
+        } else {
+            resolvedTimezone = TimeZone.autoupdatingCurrent.identifier
+        }
 
         do {
-            try await repository.updateRoom(
+            try await repository.updateTemplateRoomCleaningMetadata(
+                templateId: chore.id,
                 roomId: room.id,
-                name: room.name,
-                sortOrder: room.sortOrder,
-                roomType: roomType,
-                preferredCleaningWeekday: preferredCleaningWeekday,
-                preferredCleaningFrequency: preferredCleaningFrequency
+                contributesToRoomCleaning: chore.isRegularRoomCleaning
             )
-            reload()
+
+            let through = generationEndDate()
+            let replacement = try await repository.replaceFutureOccurrences(
+                templateId: chore.id,
+                effectiveFrom: futureReplacementEffectiveDate(timezone: resolvedTimezone),
+                generateThrough: through,
+                timezone: resolvedTimezone
+            )
+            try await deleteCalendarEvents(replacement.calendarEventIds)
+
+            let generatedOccurrences = try await repository.generateOccurrences(
+                templateId: chore.id,
+                through: through,
+                timezone: resolvedTimezone
+            )
+            let syncService = calendarSyncService ?? ChoreCalendarSyncService(
+                choresRepository: repository,
+                calendarService: calendarService
+            )
+            calendarSyncService = syncService
+            _ = try await syncService.syncMissingCalendarEvents(
+                homeId: activeHomeId,
+                occurrences: generatedOccurrences
+            )
+
+            NotificationCenter.default.post(name: .homeyChoresDidChange, object: nil)
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+            await load(homeId: activeHomeId)
         } catch {
-            errorMessage = error.localizedDescription
+            actionErrorMessage = "Unable to move this chore."
         }
     }
 
     private func reset() {
         activeHomeId = nil
         rooms = []
+        activeChores = []
         errorMessage = nil
+        actionErrorMessage = nil
         isLoading = false
-        savingRoomId = nil
+        updatingChoreId = nil
+    }
+
+    private func generationEndDate() -> Date {
+        Calendar.current.date(
+            byAdding: .day,
+            value: ChoresRepository.defaultGenerationWindowDays,
+            to: Date()
+        ) ?? Date()
+    }
+
+    private func futureReplacementEffectiveDate(timezone: String) -> Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: timezone) ?? .autoupdatingCurrent
+        return calendar.startOfDay(for: Date())
+    }
+
+    private func deleteCalendarEvents(_ calendarEventIds: [UUID]) async throws {
+        for calendarEventId in calendarEventIds {
+            try await calendarService.deleteEvent(eventId: calendarEventId)
+        }
     }
 }

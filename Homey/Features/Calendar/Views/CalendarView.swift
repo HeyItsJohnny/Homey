@@ -379,7 +379,8 @@ struct CalendarView: View {
                     role: homeService.currentMembershipForSelectedHome()?.role ?? selectedHome?.role,
                     weekStartsOn: selectedHome?.weekStartsOn,
                     timezone: selectedHome?.timezone,
-                    members: homeService.membersForSelectedHome()
+                    members: homeService.membersForSelectedHome(),
+                    currentUserId: authenticationService.currentUser?.id
                 )
             } else {
                 calendarPeriodControls

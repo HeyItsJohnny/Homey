@@ -461,6 +461,10 @@ private final class MyChoresViewModel: ObservableObject {
 
             if !assignees.isEmpty {
                 let visibleAssignees = assignees.filter { assignee in
+                    guard assignee.status != .skipped && assignee.status != .cancelled else {
+                        return false
+                    }
+
                     guard canViewAllChores else {
                         return assignee.userId == activeCurrentUserId
                     }
@@ -563,16 +567,14 @@ private final class MyChoresViewModel: ObservableObject {
             let visibleOccurrences = loadedChoreOccurrences.filter { occurrence in
                 occurrence.dueAt >= range.start &&
                 occurrence.dueAt < range.end &&
-                occurrence.status != .cancelled
+                occurrence.status != .cancelled &&
+                occurrence.status != .skipped
             }
             let loadedAssigneesByOccurrenceId = try await loadAssignees(for: visibleOccurrences)
             assigneesByOccurrenceId = loadedAssigneesByOccurrenceId
             self.occurrences = visibleOccurrences
             categoriesById = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
             roomsById = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0) })
-            #if DEBUG
-            logMyChoresWeekBoundary(range: range)
-            #endif
         } catch {
             occurrences = []
             assigneesByOccurrenceId = [:]
@@ -694,17 +696,6 @@ private final class MyChoresViewModel: ObservableObject {
         let loadedAssignees = try await repository.fetchOccurrenceAssignees(occurrenceIds: occurrences.map(\.id))
         let groupedAssignees = Dictionary(grouping: loadedAssignees, by: \.occurrenceId)
 
-        if let activeCurrentUserId {
-            for occurrence in occurrences {
-                let currentUserAssignee = groupedAssignees[occurrence.id, default: []].first { $0.userId == activeCurrentUserId }
-                logChoreMemberState(
-                    occurrence: occurrence,
-                    currentUserId: activeCurrentUserId,
-                    assigneeStatus: currentUserAssignee?.status
-                )
-            }
-        }
-
         return groupedAssignees
     }
 
@@ -743,33 +734,6 @@ private final class MyChoresViewModel: ObservableObject {
     private func memberName(for userId: UUID, memberByUserId: [UUID: HomeMemberDisplay]) -> String {
         memberByUserId[userId]?.displayName ?? "Assigned Member"
     }
-
-    private func logChoreMemberState(occurrence: ChoreOccurrence, currentUserId: UUID, assigneeStatus: ChoreAssigneeStatus?) {
-        #if DEBUG
-        print("========== CHORE MEMBER STATE ==========")
-        print("occurrence_id: \(occurrence.id.uuidString)")
-        print("parent_status: \(occurrence.status.rawValue)")
-        print("current_user_id: \(currentUserId.uuidString)")
-        print("assignee_status: \(assigneeStatus?.rawValue ?? "nil")")
-        print("can_start: \(assigneeStatus?.canStartChore == true)")
-        print("can_submit: \(assigneeStatus?.canSubmitChore == true)")
-        print("========================================")
-        #endif
-    }
-    #if DEBUG
-    private func logMyChoresWeekBoundary(range: (start: Date, end: Date)) {
-        let groupedCardCount = summaryDisplayOccurrences.count
-        print("========== MY CHORES WEEK BOUNDARY ==========")
-        print("week_start: \(ISO8601DateFormatter().string(from: range.start))")
-        print("next_week_start: \(ISO8601DateFormatter().string(from: range.end))")
-        print("visible_occurrence_count: \(occurrences.count)")
-        print("grouped_card_count: \(groupedCardCount)")
-        if groupedCardCount != occurrences.count {
-            print("WARNING: Weekly chore grouping/count mismatch")
-        }
-        print("==============================================")
-    }
-    #endif
 }
 
 private struct MyChoresWeekSummary: Equatable {
