@@ -7,6 +7,8 @@ struct MyChoresView: View {
     @StateObject private var viewModel = MyChoresViewModel()
     @State private var selectedOccurrence: MyChoresOccurrenceSelection?
     @State private var scrollToTodayRequest = 0
+    @State private var expandedAssigneeSectionKeys: Set<MyChoresDayAssigneeExpansionKey> = []
+    @State private var isPresentingReschedule = false
 
     private var currentRole: HomeMemberRole? {
         homeService.selectedHomeRole(currentUserID: authenticationService.currentUser?.id)
@@ -102,6 +104,31 @@ struct MyChoresView: View {
                 targetAssigneeUserId: selection.assigneeUserId
             )
         }
+        .sheet(isPresented: $isPresentingReschedule) {
+            if let sourceWeek = viewModel.rescheduleSourceWeek {
+                MyChoresRescheduleSheet(sourceWeek: sourceWeek) { result, destinationStart in
+                    isPresentingReschedule = false
+                    expandedAssigneeSectionKeys.removeAll()
+                    viewModel.moveToWeek(containing: destinationStart)
+                    NotificationCenter.default.post(name: .homeyChoresDidChange, object: nil)
+                    NotificationCenter.default.post(
+                        name: .homeyCalendarEventsDidChange,
+                        object: nil,
+                        userInfo: [HomeyCalendarRefreshReason.userInfoKey: HomeyCalendarRefreshReason.choreEditSaved]
+                    )
+                    _ = result
+                }
+                .presentationDetents([.height(560), .large])
+                .presentationDragIndicator(.visible)
+            } else {
+                ChoreMessageState(
+                    title: "Unable to Reschedule",
+                    message: "Choose a Home before rescheduling chores.",
+                    systemImage: "calendar.badge.exclamationmark"
+                )
+                .padding(24)
+            }
+        }
     }
 
     private var loadTaskID: String {
@@ -147,6 +174,23 @@ struct MyChoresView: View {
 
             Spacer()
 
+            if canViewAllChores {
+                Button {
+                    isPresentingReschedule = true
+                } label: {
+                    Label("Reschedule", systemImage: "calendar.badge.clock")
+                        .labelStyle(.titleAndIcon)
+                }
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 38)
+                .background(HomeyDashboardTheme.cardBackground, in: Capsule())
+                .overlay { Capsule().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Reschedule chores")
+            }
+
             Text("\(viewModel.plannedChoreCount) Chores")
                 .font(.subheadline.weight(.bold))
                 .foregroundStyle(HomeyDashboardTheme.secondaryText)
@@ -178,6 +222,7 @@ struct MyChoresView: View {
                             section: section,
                             isToday: viewModel.isToday(section.date),
                             isSelected: viewModel.isSelectedDay(section.date),
+                            expandedAssigneeSectionKeys: $expandedAssigneeSectionKeys,
                             onSelectDay: { viewModel.selectDay(section.date) },
                             onSelectOccurrence: { selectedOccurrence = $0 }
                         )
@@ -192,10 +237,14 @@ struct MyChoresView: View {
                 positionWeeklyPlanner(proxy: proxy, sections: sections)
             }
             .onChange(of: weekSectionsKey(sections)) { _, _ in
+                expandedAssigneeSectionKeys.removeAll()
                 positionWeeklyPlanner(proxy: proxy, sections: sections)
             }
             .onChange(of: scrollToTodayRequest) { _, _ in
                 scrollWeeklyPlannerToToday(proxy: proxy, sections: sections, animated: true)
+            }
+            .onChange(of: viewModel.selectedAssignee) { _, _ in
+                expandedAssigneeSectionKeys.removeAll()
             }
         }
     }
@@ -329,6 +378,460 @@ private struct MyChoresAssigneeChip: View {
     }
 }
 
+private struct MyChoresRescheduleSourceWeek {
+    let homeId: UUID
+    let sourceStart: Date
+    let sourceEnd: Date
+    let defaultNewStart: Date
+    let timezone: String
+    let calendar: Calendar
+
+    var sourceRangeText: String {
+        Self.rangeText(from: sourceStart, through: sourceEnd, calendar: calendar)
+    }
+
+    func generateThrough(for newStart: Date) -> Date {
+        let basis = max(Date(), newStart)
+        return calendar.date(byAdding: .day, value: ChoresRepository.defaultGenerationWindowDays, to: basis) ?? basis
+    }
+
+    static func rangeText(from start: Date, through end: Date, calendar: Calendar) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+
+        if calendar.component(.year, from: start) == calendar.component(.year, from: end) {
+            formatter.dateFormat = calendar.component(.month, from: start) == calendar.component(.month, from: end) ? "MMM d" : "MMM d"
+            let startText = formatter.string(from: start)
+            formatter.dateFormat = "MMM d"
+            return "\(startText) - \(formatter.string(from: end))"
+        }
+
+        formatter.dateFormat = "MMM d, yyyy"
+        return "\(formatter.string(from: start)) - \(formatter.string(from: end))"
+    }
+
+    static func dayText(_ date: Date, calendar: Calendar) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "MMM d"
+        return formatter.string(from: date)
+    }
+}
+
+private struct MyChoresRescheduleSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let sourceWeek: MyChoresRescheduleSourceWeek
+    let onComplete: (ChoreRescheduleResult, Date) -> Void
+
+    @State private var selectedMode: ChoreRescheduleMode = .restartSchedule
+    @State private var newStartDate: Date
+    @State private var preview: ChoreReschedulePreview?
+    @State private var errorMessage: String?
+    @State private var isPreviewing = false
+    @State private var isExecuting = false
+    @State private var isConfirmingExecution = false
+    @State private var previewRequestId = UUID()
+
+    private let repository: ChoresRepository
+    private let calendarSyncService: ChoreCalendarSyncService
+
+    init(
+        sourceWeek: MyChoresRescheduleSourceWeek,
+        onComplete: @escaping (ChoreRescheduleResult, Date) -> Void
+    ) {
+        self.sourceWeek = sourceWeek
+        self.onComplete = onComplete
+        let repository = ChoresRepository()
+        self.repository = repository
+        self.calendarSyncService = ChoreCalendarSyncService(choresRepository: repository)
+        _newStartDate = State(initialValue: sourceWeek.defaultNewStart)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                HomeyDashboardTheme.appBackground.ignoresSafeArea()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        introSection
+                        modeSection
+                        sourceSection
+                        dateSection
+                        explanationSection
+                        previewSection
+                        actionSection
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.top, 22)
+                    .padding(.bottom, 28)
+                    .frame(maxWidth: 560, alignment: .leading)
+                    .frame(maxWidth: .infinity)
+                }
+                .scrollIndicators(.hidden)
+            }
+            .navigationTitle("Reschedule Chores")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        dismiss()
+                    }
+                    .disabled(isPreviewing || isExecuting)
+                }
+            }
+            .confirmationDialog(
+                confirmationTitle,
+                isPresented: $isConfirmingExecution,
+                titleVisibility: .visible
+            ) {
+                Button("\(confirmationActionVerb) \(preview?.eligibleCount ?? 0) Chores", role: .destructive) {
+                    Task { await executeReschedule() }
+                }
+                .disabled(isExecuting || preview?.eligibleCount ?? 0 == 0)
+
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text(confirmationMessage)
+            }
+            .task(id: previewRequestId) {
+                await loadPreviewForCurrentSelection()
+            }
+        }
+    }
+
+    private var introSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("What would you like to do?")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+            Text("Preview uses the backend reschedule rules, so protected chores stay on their original dates.")
+                .font(.subheadline)
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var modeSection: some View {
+        VStack(spacing: 10) {
+            ForEach(ChoreRescheduleMode.allCases) { mode in
+                Button {
+                    selectedMode = mode
+                    schedulePreviewRefresh()
+                } label: {
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: selectedMode == mode ? "checkmark.circle.fill" : "circle")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(selectedMode == mode ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.secondaryText)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(mode.displayName)
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                            Text(mode.description)
+                                .font(.caption)
+                                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        Spacer(minLength: 0)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        selectedMode == mode ? HomeyDashboardTheme.selectedSidebarBackground : HomeyDashboardTheme.cardBackground,
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(selectedMode == mode ? HomeyDashboardTheme.warmBrown.opacity(0.42) : HomeyDashboardTheme.softBorder, lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var sourceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Current Schedule")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .textCase(.uppercase)
+
+            Text(sourceWeek.sourceRangeText)
+                .font(.headline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+    }
+
+    private var dateSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("New Start Date")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .textCase(.uppercase)
+
+            DatePicker(
+                "New Start Date",
+                selection: Binding(
+                    get: { newStartDate },
+                    set: { date in
+                        newStartDate = sourceWeek.calendar.startOfDay(for: date)
+                        schedulePreviewRefresh()
+                    }
+                ),
+                displayedComponents: .date
+            )
+            .datePickerStyle(.compact)
+            .labelsHidden()
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+    }
+
+    private var explanationSection: some View {
+        Text("Chores keep their relative spacing. A Friday chore stays Friday when moving the schedule forward one week.")
+            .font(.caption)
+            .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    @ViewBuilder
+    private var previewSection: some View {
+        if let preview {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("\(preview.eligibleCount) \(preview.eligibleCount == 1 ? "chore" : "chores") will move")
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                Text("\(preview.protectedCount) \(preview.protectedCount == 1 ? "chore" : "chores") will stay where they are")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+
+                Text("Destination: \(MyChoresRescheduleSourceWeek.rangeText(from: preview.destinationStart, through: preview.destinationEnd, calendar: sourceWeek.calendar))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+
+                if preview.eligibleCount == 0 {
+                    Text("No untouched chores are available to reschedule in this week.")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(HomeyDashboardTheme.destructiveRed)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Text("Chores already started, submitted, awaiting approval, needing redo, completed, skipped, cancelled, or otherwise acted on stay on their original dates.")
+                    .font(.caption)
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+            }
+        }
+
+        if let errorMessage {
+            Text(errorMessage)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.destructiveRed)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var actionSection: some View {
+        VStack(spacing: 10) {
+            Button {
+                schedulePreviewRefresh()
+            } label: {
+                HStack(spacing: 8) {
+                    if isPreviewing {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "eye.fill")
+                    }
+                    Text(isPreviewing ? "Previewing..." : "Preview Reschedule")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(DashboardPrimaryButtonStyle())
+            .disabled(isPreviewing || isExecuting)
+
+            Button {
+                isConfirmingExecution = true
+            } label: {
+                HStack(spacing: 8) {
+                    if isExecuting {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "calendar.badge.clock")
+                    }
+                    Text(isExecuting ? "Rescheduling..." : "Continue")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            .frame(minHeight: 44)
+            .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+            }
+            .buttonStyle(.plain)
+            .disabled(isPreviewing || isExecuting || preview == nil || preview?.eligibleCount == 0)
+        }
+    }
+
+    private var confirmationTitle: String {
+        switch selectedMode {
+        case .moveUnstarted:
+            return "Move \(preview?.eligibleCount ?? 0) chores?"
+        case .restartSchedule:
+            return "Restart \(preview?.eligibleCount ?? 0) chores?"
+        }
+    }
+
+    private var confirmationActionVerb: String {
+        switch selectedMode {
+        case .moveUnstarted:
+            return "Move"
+        case .restartSchedule:
+            return "Restart"
+        }
+    }
+
+    private var confirmationMessage: String {
+        let eligibleCount = preview?.eligibleCount ?? 0
+        let protectedCount = preview?.protectedCount ?? 0
+        let destinationStartText = MyChoresRescheduleSourceWeek.dayText(newStartDate, calendar: sourceWeek.calendar)
+
+        switch selectedMode {
+        case .moveUnstarted:
+            return "\(eligibleCount) untouched chore occurrences will move. Existing recurring schedules will remain unchanged. \(protectedCount) protected chores will stay where they are."
+        case .restartSchedule:
+            return "\(eligibleCount) untouched chores will move and their future recurring schedules will continue from \(destinationStartText). \(protectedCount) protected chores will stay where they are."
+        }
+    }
+
+    private func schedulePreviewRefresh() {
+        preview = nil
+        errorMessage = nil
+        previewRequestId = UUID()
+    }
+
+    private func loadPreviewForCurrentSelection() async {
+        let requestId = previewRequestId
+        guard !isExecuting else { return }
+        isPreviewing = true
+        errorMessage = nil
+        let mode = selectedMode
+        let startDate = newStartDate
+        defer {
+            if requestId == previewRequestId {
+                isPreviewing = false
+            }
+        }
+
+        do {
+            try await Task.sleep(for: .milliseconds(250))
+            try Task.checkCancellation()
+            let loadedPreview = try await repository.previewChoreReschedule(
+                homeId: sourceWeek.homeId,
+                sourceStart: sourceWeek.sourceStart,
+                sourceEnd: sourceWeek.sourceEnd,
+                newStart: startDate,
+                mode: mode,
+                timezone: sourceWeek.timezone
+            )
+            guard !Task.isCancelled, requestId == previewRequestId else { return }
+            preview = loadedPreview
+        } catch where isExpectedCancellation(error) {
+        } catch {
+            guard requestId == previewRequestId else { return }
+            preview = nil
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func executeReschedule() async {
+        guard let preview, preview.eligibleCount > 0, !isExecuting else { return }
+        isExecuting = true
+        errorMessage = nil
+
+        do {
+            let result = try await repository.rescheduleChoreSchedule(
+                homeId: sourceWeek.homeId,
+                sourceStart: sourceWeek.sourceStart,
+                sourceEnd: sourceWeek.sourceEnd,
+                newStart: newStartDate,
+                mode: selectedMode,
+                generateThrough: sourceWeek.generateThrough(for: preview.destinationStart),
+                timezone: sourceWeek.timezone
+            )
+            let generatedThrough = sourceWeek.generateThrough(for: preview.destinationStart)
+            let occurrencesToSync = try await repository.fetchOccurrences(
+                homeId: sourceWeek.homeId,
+                from: preview.destinationStart,
+                through: generatedThrough
+            )
+            _ = try await calendarSyncService.syncMissingCalendarEvents(
+                homeId: sourceWeek.homeId,
+                occurrences: occurrencesToSync
+            )
+            onComplete(result, preview.destinationStart)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+
+        isExecuting = false
+    }
+
+    private func isExpectedCancellation(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            return true
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+            return true
+        }
+
+        if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isExpectedCancellation(underlying)
+        }
+
+        return false
+    }
+}
+
 @MainActor
 private final class MyChoresViewModel: ObservableObject {
     @Published private(set) var occurrences: [ChoreOccurrence] = []
@@ -421,6 +924,24 @@ private final class MyChoresViewModel: ObservableObject {
 
     var plannedChoreCount: Int {
         filteredOccurrences.count
+    }
+
+    var rescheduleSourceWeek: MyChoresRescheduleSourceWeek? {
+        guard let homeId = activeHomeId,
+              let range = visibleWeekRange,
+              let inclusiveEnd = calendar.date(byAdding: .day, value: -1, to: range.end),
+              let defaultNewStart = calendar.date(byAdding: .day, value: 7, to: range.start) else {
+            return nil
+        }
+
+        return MyChoresRescheduleSourceWeek(
+            homeId: homeId,
+            sourceStart: range.start,
+            sourceEnd: inclusiveEnd,
+            defaultNewStart: defaultNewStart,
+            timezone: timezone,
+            calendar: calendar
+        )
     }
 
     func daySections(members: [HomeMemberDisplay]) -> [MyChoresDaySectionModel] {
@@ -623,6 +1144,13 @@ private final class MyChoresViewModel: ObservableObject {
         let today = calendar.startOfDay(for: Date())
         visibleWeekAnchor = today
         selectedDate = today
+        updateWeekDays()
+        reload()
+    }
+
+    func moveToWeek(containing date: Date) {
+        visibleWeekAnchor = calendar.startOfDay(for: date)
+        selectedDate = nil
         updateWeekDays()
         reload()
     }
@@ -859,6 +1387,7 @@ private struct MyChoresDayColumn: View {
     let section: MyChoresDaySectionModel
     let isToday: Bool
     let isSelected: Bool
+    @Binding var expandedAssigneeSectionKeys: Set<MyChoresDayAssigneeExpansionKey>
     let onSelectDay: () -> Void
     let onSelectOccurrence: (MyChoresOccurrenceSelection) -> Void
 
@@ -907,22 +1436,26 @@ private struct MyChoresDayColumn: View {
                 } else {
                     ForEach(assigneeSections) { assigneeSection in
                         VStack(alignment: .leading, spacing: 7) {
-                            Text(assigneeSection.name)
-                                .font(.caption.weight(.bold))
-                                .foregroundStyle(HomeyDashboardTheme.secondaryText)
-                                .lineLimit(1)
+                            MyChoresAssigneeAccordionHeader(
+                                section: assigneeSection,
+                                isExpanded: isExpanded(assigneeSection)
+                            ) {
+                                toggle(assigneeSection)
+                            }
 
-                            ForEach(assigneeSection.occurrences) { occurrence in
-                                MyChoresOccurrenceCard(
-                                    displayOccurrence: occurrence,
-                                    dateTitle: section.accessibilityDateTitle,
-                                    onTap: {
-                                        onSelectOccurrence(MyChoresOccurrenceSelection(
-                                            occurrence: occurrence.occurrence,
-                                            assigneeUserId: occurrence.assigneeUserId
-                                        ))
-                                    }
-                                )
+                            if isExpanded(assigneeSection) {
+                                ForEach(assigneeSection.occurrences) { occurrence in
+                                    MyChoresOccurrenceCard(
+                                        displayOccurrence: occurrence,
+                                        dateTitle: section.accessibilityDateTitle,
+                                        onTap: {
+                                            onSelectOccurrence(MyChoresOccurrenceSelection(
+                                                occurrence: occurrence.occurrence,
+                                                assigneeUserId: occurrence.assigneeUserId
+                                            ))
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
@@ -930,7 +1463,7 @@ private struct MyChoresDayColumn: View {
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 7)
-            .frame(maxWidth: .infinity, minHeight: 190, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
             .background(HomeyDashboardTheme.appBackground.opacity(0.42), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .padding(10)
@@ -941,10 +1474,19 @@ private struct MyChoresDayColumn: View {
     }
 
     private var assigneeSections: [MyChoresAssigneeSectionModel] {
-        let grouped = Dictionary(grouping: section.occurrences, by: \.assigneeName)
+        let grouped = Dictionary(grouping: section.occurrences) { occurrence in
+            MyChoresAssigneeIdentity(
+                userId: occurrence.assigneeUserId,
+                fallbackKey: occurrence.assigneeName
+            )
+        }
         return grouped
-            .map { name, occurrences in
-                MyChoresAssigneeSectionModel(name: name, occurrences: occurrences.sortedForMyChoresWeek())
+            .map { identity, occurrences in
+                MyChoresAssigneeSectionModel(
+                    userId: identity.userId,
+                    name: occurrences.first?.assigneeName ?? "Assigned Member",
+                    occurrences: occurrences.sortedForMyChoresWeek()
+                )
             }
             .sorted { first, second in
                 if first.name == "Anyone" { return false }
@@ -952,13 +1494,93 @@ private struct MyChoresDayColumn: View {
                 return first.name.localizedCaseInsensitiveCompare(second.name) == .orderedAscending
             }
     }
+
+    private func isExpanded(_ section: MyChoresAssigneeSectionModel) -> Bool {
+        expandedAssigneeSectionKeys.contains(expansionKey(for: section))
+    }
+
+    private func toggle(_ section: MyChoresAssigneeSectionModel) {
+        let key = expansionKey(for: section)
+        withAnimation(.easeInOut(duration: 0.18)) {
+            if expandedAssigneeSectionKeys.contains(key) {
+                expandedAssigneeSectionKeys.remove(key)
+            } else {
+                expandedAssigneeSectionKeys.insert(key)
+            }
+        }
+    }
+
+    private func expansionKey(for section: MyChoresAssigneeSectionModel) -> MyChoresDayAssigneeExpansionKey {
+        MyChoresDayAssigneeExpansionKey(day: self.section.date, assigneeUserId: section.userId)
+    }
 }
 
 private struct MyChoresAssigneeSectionModel: Identifiable {
+    let userId: UUID?
     let name: String
     let occurrences: [MyChoresOccurrenceDisplay]
 
-    var id: String { name }
+    var id: String { userId?.uuidString ?? "anyone" }
+}
+
+private struct MyChoresAssigneeIdentity: Hashable {
+    let userId: UUID?
+    let fallbackKey: String
+
+    static func == (lhs: MyChoresAssigneeIdentity, rhs: MyChoresAssigneeIdentity) -> Bool {
+        switch (lhs.userId, rhs.userId) {
+        case let (lhsUserId?, rhsUserId?):
+            return lhsUserId == rhsUserId
+        case (nil, nil):
+            return lhs.fallbackKey == rhs.fallbackKey
+        default:
+            return false
+        }
+    }
+
+    func hash(into hasher: inout Hasher) {
+        if let userId {
+            hasher.combine(userId)
+        } else {
+            hasher.combine(fallbackKey)
+        }
+    }
+}
+
+private struct MyChoresDayAssigneeExpansionKey: Hashable {
+    let day: Date
+    let assigneeUserId: UUID?
+}
+
+private struct MyChoresAssigneeAccordionHeader: View {
+    let section: MyChoresAssigneeSectionModel
+    let isExpanded: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 8) {
+                Text(section.name)
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 6)
+
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText.opacity(0.8))
+                    .frame(width: 10)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(section.name), \(isExpanded ? "expanded" : "collapsed")")
+    }
 }
 
 private struct MyChoresOccurrenceSelection: Identifiable {

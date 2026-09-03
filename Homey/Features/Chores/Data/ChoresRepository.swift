@@ -1494,6 +1494,82 @@ final class ChoresRepository {
         }
     }
 
+    func previewChoreReschedule(
+        homeId: UUID,
+        sourceStart: Date,
+        sourceEnd: Date,
+        newStart: Date,
+        mode: ChoreRescheduleMode,
+        timezone: String
+    ) async throws -> ChoreReschedulePreview {
+        do {
+            try await requireAuthenticatedSession()
+            let rows: [ChoreReschedulePreview] = try await client
+                .rpc(
+                    "preview_chore_reschedule",
+                    params: ChoreRescheduleRPCParameters(
+                        homeId: homeId,
+                        sourceStart: sourceStart,
+                        sourceEnd: sourceEnd,
+                        newStart: newStart,
+                        mode: mode,
+                        timezone: timezone
+                    )
+                )
+                .execute()
+                .value
+            guard let preview = rows.first else {
+                throw ChoreRepositoryError.mutationFailed
+            }
+            return preview
+        } catch {
+            if isExpectedCancellation(error) {
+                throw CancellationError()
+            }
+            logChoreError(error, operation: "preview_chore_reschedule", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func rescheduleChoreSchedule(
+        homeId: UUID,
+        sourceStart: Date,
+        sourceEnd: Date,
+        newStart: Date,
+        mode: ChoreRescheduleMode,
+        generateThrough: Date,
+        timezone: String
+    ) async throws -> ChoreRescheduleResult {
+        do {
+            try await requireAuthenticatedSession()
+            let rows: [ChoreRescheduleResult] = try await client
+                .rpc(
+                    "reschedule_chore_schedule",
+                    params: ExecuteChoreRescheduleRPCParameters(
+                        homeId: homeId,
+                        sourceStart: sourceStart,
+                        sourceEnd: sourceEnd,
+                        newStart: newStart,
+                        mode: mode,
+                        generateThrough: generateThrough,
+                        timezone: timezone
+                    )
+                )
+                .execute()
+                .value
+            guard let result = rows.first else {
+                throw ChoreRepositoryError.mutationFailed
+            }
+            return result
+        } catch {
+            if isExpectedCancellation(error) {
+                throw CancellationError()
+            }
+            logChoreError(error, operation: "reschedule_chore_schedule", homeId: homeId)
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
     // MARK: - Prepared Queries
 
     func fetchMyActionableOccurrences(homeId: UUID, from startDate: Date, through endDate: Date) async throws -> [ChoreOccurrence] {
@@ -2426,6 +2502,27 @@ private func encodeOptional<Value: Encodable, Key: CodingKey>(
     }
 }
 
+private func isExpectedCancellation(_ error: Error) -> Bool {
+    if error is CancellationError {
+        return true
+    }
+
+    if let urlError = error as? URLError, urlError.code == .cancelled {
+        return true
+    }
+
+    let nsError = error as NSError
+    if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+        return true
+    }
+
+    if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+        return isExpectedCancellation(underlyingError)
+    }
+
+    return false
+}
+
 private struct HomeIdParameters: Encodable {
     let homeId: UUID
 
@@ -2445,6 +2542,72 @@ private struct ChoreHistoryRPCParameters: Encodable {
         case userId = "requested_user_id"
         case limit = "requested_limit"
         case offset = "requested_offset"
+    }
+}
+
+private struct ChoreRescheduleRPCParameters: Encodable {
+    let homeId: UUID
+    let sourceStart: String
+    let sourceEnd: String
+    let newStart: String
+    let mode: String
+
+    init(
+        homeId: UUID,
+        sourceStart: Date,
+        sourceEnd: Date,
+        newStart: Date,
+        mode: ChoreRescheduleMode,
+        timezone: String
+    ) {
+        self.homeId = homeId
+        self.sourceStart = ChoreDateOnlyFormatter.string(from: sourceStart, timezone: timezone)
+        self.sourceEnd = ChoreDateOnlyFormatter.string(from: sourceEnd, timezone: timezone)
+        self.newStart = ChoreDateOnlyFormatter.string(from: newStart, timezone: timezone)
+        self.mode = mode.rawValue
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case homeId = "requested_home_id"
+        case sourceStart = "requested_source_start"
+        case sourceEnd = "requested_source_end"
+        case newStart = "requested_new_start"
+        case mode = "requested_mode"
+    }
+}
+
+private struct ExecuteChoreRescheduleRPCParameters: Encodable {
+    let homeId: UUID
+    let sourceStart: String
+    let sourceEnd: String
+    let newStart: String
+    let mode: String
+    let generateThrough: String
+
+    init(
+        homeId: UUID,
+        sourceStart: Date,
+        sourceEnd: Date,
+        newStart: Date,
+        mode: ChoreRescheduleMode,
+        generateThrough: Date,
+        timezone: String
+    ) {
+        self.homeId = homeId
+        self.sourceStart = ChoreDateOnlyFormatter.string(from: sourceStart, timezone: timezone)
+        self.sourceEnd = ChoreDateOnlyFormatter.string(from: sourceEnd, timezone: timezone)
+        self.newStart = ChoreDateOnlyFormatter.string(from: newStart, timezone: timezone)
+        self.mode = mode.rawValue
+        self.generateThrough = ChoreDateOnlyFormatter.string(from: generateThrough, timezone: timezone)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case homeId = "requested_home_id"
+        case sourceStart = "requested_source_start"
+        case sourceEnd = "requested_source_end"
+        case newStart = "requested_new_start"
+        case mode = "requested_mode"
+        case generateThrough = "requested_generate_through"
     }
 }
 

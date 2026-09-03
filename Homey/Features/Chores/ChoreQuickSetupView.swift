@@ -1304,30 +1304,101 @@ private struct QuickSetupRoomDetailsCard: View {
                         .foregroundStyle(HomeyDashboardTheme.primaryText)
                 }
 
-                Picker("Room Type", selection: $room.roomType) {
-                    ForEach(ChoreRoomType.allCases) { type in
-                        Text(type.displayName).tag(type)
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 12) {
+                        roomTypePicker
+                        cleaningDayPicker
+                        frequencyPicker
                     }
-                }
-                .pickerStyle(.menu)
 
-                Picker("Preferred Cleaning Day", selection: $room.preferredCleaningWeekday) {
-                    Text("No Preference").tag(nil as ChorePreferredCleaningWeekday?)
-                    ForEach(ChorePreferredCleaningWeekday.allCases) { weekday in
-                        Text(weekday.displayName).tag(weekday as ChorePreferredCleaningWeekday?)
+                    VStack(alignment: .leading, spacing: 12) {
+                        roomTypePicker
+                        cleaningDayPicker
+                        frequencyPicker
                     }
                 }
-                .pickerStyle(.menu)
-
-                Picker("General Cleaning", selection: $room.preferredCleaningFrequency) {
-                    Text("Custom / No Preference").tag(nil as ChoreRoomCleaningFrequency?)
-                    ForEach(ChoreRoomCleaningFrequency.allCases) { frequency in
-                        Text(frequency.quickSetupDisplayName).tag(frequency as ChoreRoomCleaningFrequency?)
-                    }
-                }
-                .pickerStyle(.menu)
             }
         }
+    }
+
+    private var roomTypePicker: some View {
+        quickSetupPickerField(title: "Room Type") {
+            Picker(selection: $room.roomType) {
+                ForEach(ChoreRoomType.allCases) { type in
+                    Text(type.displayName).tag(type)
+                }
+            } label: {
+                quickSetupPickerValue(room.roomType.displayName)
+            }
+            .pickerStyle(.menu)
+        }
+    }
+
+    private var cleaningDayPicker: some View {
+        quickSetupPickerField(title: "Cleaning Day") {
+            Picker(selection: $room.preferredCleaningWeekday) {
+                Text("No Preference").tag(nil as ChorePreferredCleaningWeekday?)
+                ForEach(ChorePreferredCleaningWeekday.allCases) { weekday in
+                    Text(weekday.displayName).tag(weekday as ChorePreferredCleaningWeekday?)
+                }
+            } label: {
+                quickSetupPickerValue(room.preferredCleaningWeekday?.displayName ?? "No Preference")
+            }
+            .pickerStyle(.menu)
+        }
+    }
+
+    private var frequencyPicker: some View {
+        quickSetupPickerField(title: "Frequency") {
+            Picker(selection: $room.preferredCleaningFrequency) {
+                Text("Custom / No Preference").tag(nil as ChoreRoomCleaningFrequency?)
+                ForEach(ChoreRoomCleaningFrequency.allCases) { frequency in
+                    Text(frequency.quickSetupDisplayName).tag(frequency as ChoreRoomCleaningFrequency?)
+                }
+            } label: {
+                quickSetupPickerValue(room.preferredCleaningFrequency?.quickSetupDisplayName ?? "Custom / No Preference")
+            }
+            .pickerStyle(.menu)
+        }
+    }
+
+    private func quickSetupPickerField<PickerContent: View>(
+        title: String,
+        @ViewBuilder picker: () -> PickerContent
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+
+            picker()
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(HomeyDashboardTheme.appBackground.opacity(0.54), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+        }
+    }
+
+    private func quickSetupPickerValue(_ value: String) -> some View {
+        HStack(spacing: 6) {
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+
+            Spacer(minLength: 4)
+
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+        }
+        .contentShape(Rectangle())
     }
 }
 

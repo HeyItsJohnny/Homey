@@ -49,6 +49,95 @@ struct ChoreHistoryActivity: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+enum ChoreRescheduleMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case restartSchedule = "restart_schedule"
+    case moveUnstarted = "move_unstarted"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .moveUnstarted:
+            return "Move Unstarted Chores"
+        case .restartSchedule:
+            return "Restart Schedule"
+        }
+    }
+
+    var description: String {
+        switch self {
+        case .moveUnstarted:
+            return "Move untouched chores to another week without changing their recurring schedule."
+        case .restartSchedule:
+            return "Restart unfinished recurring chores from a new date and continue the schedule from there."
+        }
+    }
+}
+
+struct ChoreReschedulePreview: Codable, Hashable, Sendable {
+    let eligibleCount: Int
+    let protectedCount: Int
+    let sourceStart: Date
+    let sourceEnd: Date
+    let destinationStart: Date
+    let destinationEnd: Date
+
+    enum CodingKeys: String, CodingKey {
+        case eligibleCount = "eligible_count"
+        case protectedCount = "protected_count"
+        case sourceStart = "source_start"
+        case sourceEnd = "source_end"
+        case destinationStart = "destination_start"
+        case destinationEnd = "destination_end"
+    }
+
+    init(
+        eligibleCount: Int,
+        protectedCount: Int,
+        sourceStart: Date,
+        sourceEnd: Date,
+        destinationStart: Date,
+        destinationEnd: Date
+    ) {
+        self.eligibleCount = eligibleCount
+        self.protectedCount = protectedCount
+        self.sourceStart = sourceStart
+        self.sourceEnd = sourceEnd
+        self.destinationStart = destinationStart
+        self.destinationEnd = destinationEnd
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        eligibleCount = try container.decode(Int.self, forKey: .eligibleCount)
+        protectedCount = try container.decode(Int.self, forKey: .protectedCount)
+        sourceStart = try container.decodeDateOnly(forKey: .sourceStart)
+        sourceEnd = try container.decodeDateOnly(forKey: .sourceEnd)
+        destinationStart = try container.decodeDateOnly(forKey: .destinationStart)
+        destinationEnd = try container.decodeDateOnly(forKey: .destinationEnd)
+    }
+}
+
+struct ChoreRescheduleResult: Codable, Hashable, Sendable {
+    let movedOccurrenceCount: Int
+    let protectedOccurrenceCount: Int
+    let rebasedTemplateCount: Int
+    let deletedFutureOccurrenceCount: Int
+    let updatedCalendarEventCount: Int
+    let deletedCalendarEventCount: Int
+    let generatedOccurrenceCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case movedOccurrenceCount = "moved_occurrence_count"
+        case protectedOccurrenceCount = "protected_occurrence_count"
+        case rebasedTemplateCount = "rebased_template_count"
+        case deletedFutureOccurrenceCount = "deleted_future_occurrence_count"
+        case updatedCalendarEventCount = "updated_calendar_event_count"
+        case deletedCalendarEventCount = "deleted_calendar_event_count"
+        case generatedOccurrenceCount = "generated_occurrence_count"
+    }
+}
+
 extension KeyedDecodingContainer {
     func decodeDateOnlyIfPresent(forKey key: Key) throws -> Date? {
         if let date = try? decodeIfPresent(Date.self, forKey: key) {
