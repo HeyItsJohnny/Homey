@@ -33,16 +33,19 @@ struct ChoreEditorView: View {
     private let mode: Mode
     private let homeId: UUID?
     private let homeTimezone: String
+    private let onMutationComplete: (() -> Void)?
 
     init(
         mode: Mode = .add,
         homeId: UUID?,
         timezone: String,
-        repository: ChoresRepository? = nil
+        repository: ChoresRepository? = nil,
+        onMutationComplete: (() -> Void)? = nil
     ) {
         self.mode = mode
         self.homeId = homeId
         self.homeTimezone = timezone
+        self.onMutationComplete = onMutationComplete
         _viewModel = StateObject(wrappedValue: ChoreEditorViewModel(repository: repository))
     }
 
@@ -433,6 +436,10 @@ struct ChoreEditorView: View {
                 .padding(.vertical, 2)
             }
             .scrollIndicators(.hidden)
+
+            if viewModel.recurrenceOption == .weekly && viewModel.weekdays.isEmpty {
+                helperText("Choose at least one weekday.")
+            }
         }
     }
 
@@ -748,6 +755,7 @@ struct ChoreEditorView: View {
     private func save() async {
         await viewModel.save(currentRole: currentRole)
         if viewModel.didCompleteSave {
+            onMutationComplete?()
             dismiss()
         }
     }
@@ -755,6 +763,7 @@ struct ChoreEditorView: View {
     private func deleteChore() async {
         await viewModel.deleteChore(currentRole: currentRole)
         if viewModel.didCompleteDelete {
+            onMutationComplete?()
             dismiss()
         }
     }
@@ -863,7 +872,6 @@ final class ChoreEditorViewModel: ObservableObject {
     init(repository: ChoresRepository? = nil, calendarService: CalendarService? = nil) {
         self.repository = repository ?? ChoresRepository()
         self.calendarService = calendarService ?? CalendarService()
-        self.weekdays = [Self.weekdayValue(for: Date())]
     }
 
     var assignmentHelpText: String {
@@ -883,7 +891,21 @@ final class ChoreEditorViewModel: ObservableObject {
     }
 
     var activeRooms: [ChoreRoom] {
-        rooms.filter { $0.archivedAt == nil }
+        rooms
+            .filter { $0.archivedAt == nil }
+            .sorted { lhs, rhs in
+                let lhsIsOther = isOtherRoom(lhs)
+                let rhsIsOther = isOtherRoom(rhs)
+                if lhsIsOther != rhsIsOther {
+                    return !lhsIsOther
+                }
+
+                if lhs.sortOrder != rhs.sortOrder {
+                    return lhs.sortOrder < rhs.sortOrder
+                }
+
+                return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+            }
     }
 
     var calendarSummary: String {
@@ -1356,9 +1378,6 @@ final class ChoreEditorViewModel: ObservableObject {
 
         dayOfMonth = Calendar.current.component(.day, from: startDate)
         monthOfYear = Calendar.current.component(.month, from: startDate)
-        if recurrenceOption == .weekly && weekdays.isEmpty {
-            weekdays = [Self.weekdayValue(for: startDate)]
-        }
         if endsOn < startDate {
             endsOn = startDate
         }
@@ -1375,10 +1394,6 @@ final class ChoreEditorViewModel: ObservableObject {
         } else if saveErrorMessage == validationMessage {
             saveErrorMessage = nil
         }
-    }
-
-    private static func weekdayValue(for date: Date) -> Int {
-        Calendar.current.component(.weekday, from: date) - 1
     }
 
     private func deleteMessage(for error: ChoreRepositoryError) -> String {
@@ -1463,6 +1478,10 @@ final class ChoreEditorViewModel: ObservableObject {
     private func otherRoomId(in rooms: [ChoreRoom]) -> UUID? {
         rooms.first { $0.archivedAt == nil && $0.roomType == .other }?.id
             ?? rooms.first { $0.archivedAt == nil && $0.name.caseInsensitiveCompare("Other") == .orderedSame }?.id
+    }
+
+    private func isOtherRoom(_ room: ChoreRoom) -> Bool {
+        room.roomType == .other || room.name.caseInsensitiveCompare("Other") == .orderedSame
     }
 }
 

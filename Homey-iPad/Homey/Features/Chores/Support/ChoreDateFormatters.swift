@@ -62,3 +62,25 @@ enum ChoreLocalTimeFormatter {
         value.wholeMatch(of: pattern) != nil
     }
 }
+
+enum ChoreWeekdayMapping {
+    static func postgresDow(from date: Date, calendar: Calendar) -> Int {
+        postgresDow(fromSwiftCalendarWeekday: calendar.component(.weekday, from: date))
+    }
+
+    static func postgresDow(fromSwiftCalendarWeekday weekday: Int) -> Int {
+        guard (1...7).contains(weekday) else {
+            return 0
+        }
+
+        return weekday - 1
+    }
+
+    static func postgresDow(fromPreferredCleaningWeekday weekday: ChorePreferredCleaningWeekday?) -> Int? {
+        weekday.map { postgresDow(fromSwiftCalendarWeekday: $0.rawValue) }
+    }
+
+    static func swiftCalendarWeekday(fromPostgresDow dow: Int) -> Int {
+        ((dow % 7) + 7) % 7 + 1
+    }
+}

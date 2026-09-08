@@ -1110,7 +1110,7 @@ private enum QuickSetupWeekday: CaseIterable {
     }
 
     var postgresDow: Int {
-        swiftCalendarWeekday - 1
+        ChoreWeekdayMapping.postgresDow(fromSwiftCalendarWeekday: swiftCalendarWeekday)
     }
 
     var swiftCalendarWeekday: Int {
@@ -1232,7 +1232,8 @@ private struct QuickSetupStarterChore: Identifiable {
 
 private enum QuickSetupDateDefaults {
     static func recurrenceWeekday(from weekday: ChorePreferredCleaningWeekday?, timezone: String) -> Int {
-        (QuickSetupWeekday(roomPreference: weekday) ?? QuickSetupWeekday.current(timezone: timezone)).postgresDow
+        let selectedWeekday = QuickSetupWeekday(roomPreference: weekday) ?? QuickSetupWeekday.current(timezone: timezone)
+        return ChoreWeekdayMapping.postgresDow(fromSwiftCalendarWeekday: selectedWeekday.swiftCalendarWeekday)
     }
 
     static func startDate(

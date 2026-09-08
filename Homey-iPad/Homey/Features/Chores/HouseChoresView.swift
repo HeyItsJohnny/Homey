@@ -115,6 +115,7 @@ struct HouseChoresActiveView: View {
     @EnvironmentObject private var homeService: HomeService
     @StateObject private var viewModel = HouseChoresActiveViewModel()
     @State private var editingChore: ChoreTemplate?
+    @State private var shouldRefreshAfterEdit = false
 
     var body: some View {
         HouseChoresSectionCard(title: "Active Chores") {
@@ -151,16 +152,34 @@ struct HouseChoresActiveView: View {
         }
         .task {
             for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
-                viewModel.reload()
+                if editingChore == nil {
+                    viewModel.reload()
+                } else {
+                    shouldRefreshAfterEdit = true
+                }
             }
         }
-        .sheet(item: $editingChore) { chore in
+        .sheet(
+            item: $editingChore,
+            onDismiss: refreshAfterSuccessfulEditIfNeeded
+        ) { chore in
             ChoreEditorView(
                 mode: .edit(templateId: chore.id),
                 homeId: homeService.selectedHomeID,
                 timezone: homeService.selectedHome()?.timezone ?? TimeZone.autoupdatingCurrent.identifier
-            )
+            ) {
+                shouldRefreshAfterEdit = true
+            }
         }
+    }
+
+    private func refreshAfterSuccessfulEditIfNeeded() {
+        guard shouldRefreshAfterEdit else {
+            return
+        }
+
+        shouldRefreshAfterEdit = false
+        viewModel.reload()
     }
 
     private func loadMembersIfNeeded() async {
@@ -265,15 +284,6 @@ struct HouseChoresRoomsView: View {
     @StateObject private var viewModel = HouseChoresRoomsViewModel()
     @State private var selectedRoom: ChoreRoom?
 
-    private var canManageRooms: Bool {
-        switch homeService.selectedHomeRole {
-        case .owner, .admin:
-            return true
-        case .member, nil:
-            return false
-        }
-    }
-
     var body: some View {
         HouseChoresSectionCard(title: "Rooms") {
             if viewModel.isLoading && viewModel.rooms.isEmpty {
@@ -303,17 +313,9 @@ struct HouseChoresRoomsView: View {
             }
         }
         .sheet(item: $selectedRoom) { room in
-            ChoreRoomAssignmentSheet(
+            ChoreRoomDetailSheet(
                 room: room,
-                summaries: viewModel.roomSummaries,
-                chores: viewModel.activeChores,
-                roomNamesById: viewModel.roomNamesById,
-                updatingChoreId: viewModel.updatingChoreId,
-                errorMessage: viewModel.actionErrorMessage,
-                canEdit: canManageRooms,
-                onMoveChore: { chore in
-                    await viewModel.move(chore: chore, to: room, timezone: homeService.selectedHome()?.timezone)
-                }
+                detail: viewModel.roomDetail(for: room)
             )
         }
     }
@@ -411,7 +413,7 @@ private struct ChoreRoomSummaryCard: View {
                 }
                 
                 VStack(alignment: .leading, spacing: 9) {
-                    summaryRow("Last Cleaned", value: summary.lastCleanedText)
+                    lastCleanedRow
                     Text(summary.choreCountText)
                         .font(.subheadline.weight(.bold))
                         .foregroundStyle(HomeyDashboardTheme.warmBrown)
@@ -432,16 +434,26 @@ private struct ChoreRoomSummaryCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(summary.room.name), Last Cleaned \(summary.lastCleanedText), \(summary.choreCountText)")
-        .accessibilityHint("Opens room chore assignments")
+        .accessibilityHint("Opens room overview")
     }
     
-    private func summaryRow(_ label: String, value: String) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(label)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+    private var lastCleanedRow: some View {
+        HStack(alignment: .center, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                if let weekdayText = summary.preferredCleaningWeekdayText {
+                    Text(weekdayText)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+                }
+
+                Text("Last Cleaned")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            }
+
             Spacer(minLength: 8)
-            Text(value)
+
+            Text(summary.lastCleanedText)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
                 .lineLimit(1)
@@ -450,21 +462,11 @@ private struct ChoreRoomSummaryCard: View {
     }
 }
 
-private struct ChoreRoomAssignmentSheet: View {
+private struct ChoreRoomDetailSheet: View {
     @Environment(\.dismiss) private var dismiss
     
     let room: ChoreRoom
-    let summaries: [ChoreRoomManagementSummary]
-    let chores: [ChoreTemplate]
-    let roomNamesById: [UUID: String]
-    let updatingChoreId: UUID?
-    let errorMessage: String?
-    let canEdit: Bool
-    let onMoveChore: (ChoreTemplate) async -> Void
-    
-    private var summary: ChoreRoomManagementSummary? {
-        summaries.first { $0.room.id == room.id }
-    }
+    let detail: ChoreRoomDetail?
     
     var body: some View {
         NavigationStack {
@@ -475,14 +477,7 @@ private struct ChoreRoomAssignmentSheet: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
                         header
-                        choreList
-                        
-                        if let errorMessage {
-                            Text(errorMessage)
-                                .font(.subheadline.weight(.medium))
-                                .foregroundStyle(HomeyDashboardTheme.destructiveRed)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
+                        assignedChoresList
                     }
                     .padding(22)
                     .frame(maxWidth: 760)
@@ -497,7 +492,6 @@ private struct ChoreRoomAssignmentSheet: View {
                     Button("Done") {
                         dismiss()
                     }
-                    .disabled(updatingChoreId != nil)
                 }
             }
         }
@@ -510,9 +504,9 @@ private struct ChoreRoomAssignmentSheet: View {
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
                 .accessibilityAddTraits(.isHeader)
             
-            HStack(spacing: 12) {
-                metadataPill("Last Cleaned: \(summary?.lastCleanedText ?? "Never")")
-                metadataPill(summary?.choreCountText ?? "0 Chores")
+            VStack(alignment: .leading, spacing: 10) {
+                detailRow("Preferred Cleaning Day", value: preferredCleaningDayText)
+                detailRow("Last Cleaned", value: roomLastCleanedText)
             }
         }
         .padding(20)
@@ -520,34 +514,24 @@ private struct ChoreRoomAssignmentSheet: View {
         .dashboardCard(cornerRadius: 24)
     }
     
-    private var choreList: some View {
+    private var assignedChoresList: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Chores")
+            Text("Assigned Chores")
                 .font(.headline.weight(.bold))
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
             
-            if chores.isEmpty {
-                Text("No active chores yet.")
-                    .font(.subheadline)
-                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+            if detail?.chores.isEmpty ?? true {
+                ChoreMessageState(
+                    title: "No chores are assigned to this Room.",
+                    message: "Chores assigned from Add/Edit Chore will appear here.",
+                    systemImage: "tray"
+                )
             } else {
                 VStack(spacing: 0) {
-                    ForEach(chores) { chore in
-                        ChoreRoomAssignmentRow(
-                            chore: chore,
-                            currentRoomName: currentRoomName(for: chore),
-                            isAssignedToRoom: chore.roomId == room.id,
-                            isUpdating: updatingChoreId == chore.id,
-                            canEdit: canEdit,
-                            onTap: {
-                                await onMoveChore(chore)
-                            }
-                        )
+                    ForEach(detail?.chores ?? []) { choreDetail in
+                        ChoreRoomAssignedChoreRow(detail: choreDetail)
                         
-                        if chore.id != chores.last?.id {
+                        if choreDetail.id != detail?.chores.last?.id {
                             Divider()
                                 .overlay(HomeyDashboardTheme.softBorder)
                         }
@@ -565,76 +549,64 @@ private struct ChoreRoomAssignmentSheet: View {
                 .stroke(HomeyDashboardTheme.softBorder.opacity(0.82), lineWidth: 1)
         }
     }
-    
-    private func currentRoomName(for chore: ChoreTemplate) -> String {
-        chore.roomId.flatMap { roomNamesById[$0] } ?? "Other"
+
+    private var preferredCleaningDayText: String {
+        room.preferredCleaningWeekday?.displayName ?? "Not set"
+    }
+
+    private var roomLastCleanedText: String {
+        guard room.lastCleanedAt != nil else {
+            return "Never cleaned"
+        }
+
+        return detail?.summary.lastCleanedText ?? "Never cleaned"
     }
     
-    private func metadataPill(_ text: String) -> some View {
-        Text(text)
-            .font(.caption.weight(.bold))
-            .foregroundStyle(HomeyDashboardTheme.warmBrown)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(HomeyDashboardTheme.selectedSidebarBackground, in: Capsule())
+    private func detailRow(_ label: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .textCase(.uppercase)
+
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+        }
     }
 }
 
-private struct ChoreRoomAssignmentRow: View {
-    let chore: ChoreTemplate
-    let currentRoomName: String
-    let isAssignedToRoom: Bool
-    let isUpdating: Bool
-    let canEdit: Bool
-    let onTap: () async -> Void
+private struct ChoreRoomAssignedChoreRow: View {
+    let detail: ChoreRoomChoreDetail
     
     var body: some View {
-        Button {
-            guard canEdit, !isAssignedToRoom, !isUpdating else {
-                return
-            }
-            
-            Task {
-                await onTap()
-            }
-        } label: {
-            HStack(alignment: .top, spacing: 12) {
-                if isUpdating {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(HomeyDashboardTheme.warmBrown)
-                        .frame(width: 22, height: 22)
-                } else {
-                    Image(systemName: isAssignedToRoom ? "checkmark.circle.fill" : "circle")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(isAssignedToRoom ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.secondaryText)
-                        .frame(width: 22)
-                        .accessibilityHidden(true)
-                }
-                
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(chore.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(HomeyDashboardTheme.primaryText)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                    
-                    Text(currentRoomName)
+        VStack(alignment: .leading, spacing: 5) {
+            Text(detail.chore.title)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+
+            Text(HouseChoreRecurrenceFormatter.text(for: detail.recurrenceRule))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                .lineLimit(1)
+
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(detail.lastCompletedText)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(HomeyDashboardTheme.primaryText)
+
+                if let nextDueText = detail.nextDueText {
+                    Text(nextDueText)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(HomeyDashboardTheme.secondaryText)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
                 }
-                
-                Spacer(minLength: 8)
             }
-            .padding(.vertical, 12)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .disabled(!canEdit || isAssignedToRoom || isUpdating)
-        .opacity(canEdit ? 1 : 0.72)
-        .accessibilityLabel("\(chore.title), \(currentRoomName), \(isAssignedToRoom ? "assigned to this room" : "not assigned to this room")")
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -777,29 +749,7 @@ private struct ChoreSummaryCard: View {
     }
 
     private var recurrenceText: String {
-        guard let recurrenceRule = summary.recurrenceRule else {
-            return "Schedule not set"
-        }
-
-        switch recurrenceRule.frequency {
-        case .none:
-            return "One Time"
-        case .daily:
-            return recurrenceRule.intervalValue == 1 ? "Daily" : "Every \(recurrenceRule.intervalValue) Days"
-        case .weekly:
-            let interval = recurrenceRule.intervalValue == 1 ? "Weekly" : "Every \(recurrenceRule.intervalValue) Weeks"
-            return "\(interval) • \(weekdaySummary(recurrenceRule.weekdays))"
-        case .monthly:
-            if recurrenceRule.intervalValue == 6 {
-                return "Every 6 Months"
-            }
-            let interval = recurrenceRule.intervalValue == 1 ? "Monthly" : "Every \(recurrenceRule.intervalValue) Months"
-            return "\(interval) • Day \(recurrenceRule.dayOfMonth ?? 1)"
-        case .yearly:
-            let month = monthName(recurrenceRule.monthOfYear)
-            let day = recurrenceRule.dayOfMonth ?? 1
-            return "Annually • \(month) \(day)"
-        }
+        HouseChoreRecurrenceFormatter.text(for: summary.recurrenceRule)
     }
 
     private var assignmentText: String {
@@ -856,10 +806,39 @@ private struct ChoreSummaryCard: View {
         "\(summary.chore.title). \(recurrenceText). \(summary.roomName). \(assignmentText). \(pointsText). \(nextDueText)."
     }
 
-    private func weekdaySummary(_ weekdays: [Int]) -> String {
+}
+
+private enum HouseChoreRecurrenceFormatter {
+    static func text(for recurrenceRule: ChoreRecurrenceRule?) -> String {
+        guard let recurrenceRule else {
+            return "Schedule not set"
+        }
+
+        switch recurrenceRule.frequency {
+        case .none:
+            return "One Time"
+        case .daily:
+            return recurrenceRule.intervalValue == 1 ? "Daily" : "Every \(recurrenceRule.intervalValue) Days"
+        case .weekly:
+            let interval = recurrenceRule.intervalValue == 1 ? "Weekly" : "Every \(recurrenceRule.intervalValue) Weeks"
+            return "\(interval) • \(weekdaySummary(recurrenceRule.weekdays))"
+        case .monthly:
+            if recurrenceRule.intervalValue == 6 {
+                return "Every 6 Months"
+            }
+            let interval = recurrenceRule.intervalValue == 1 ? "Monthly" : "Every \(recurrenceRule.intervalValue) Months"
+            return "\(interval) • Day \(recurrenceRule.dayOfMonth ?? 1)"
+        case .yearly:
+            let month = monthName(recurrenceRule.monthOfYear)
+            let day = recurrenceRule.dayOfMonth ?? 1
+            return "Annually • \(month) \(day)"
+        }
+    }
+
+    private static func weekdaySummary(_ weekdays: [Int]) -> String {
         let names = weekdays
             .sorted()
-            .compactMap { Self.weekdayNames[$0] }
+            .compactMap { weekdayNames[$0] }
 
         guard !names.isEmpty else {
             return "Weekdays not set"
@@ -876,7 +855,7 @@ private struct ChoreSummaryCard: View {
         return names.joined(separator: ", ")
     }
 
-    private func monthName(_ month: Int?) -> String {
+    private static func monthName(_ month: Int?) -> String {
         guard let month, (1...12).contains(month) else {
             return "Month not set"
         }
@@ -964,6 +943,11 @@ private final class HouseChoresActiveViewModel: ObservableObject {
             }
 
             summaries = loadedSummaries.sorted { lhs, rhs in
+                let titleComparison = lhs.chore.title.localizedCaseInsensitiveCompare(rhs.chore.title)
+                if titleComparison != .orderedSame {
+                    return titleComparison == .orderedAscending
+                }
+
                 switch (lhs.nextOccurrence?.dueAt, rhs.nextOccurrence?.dueAt) {
                 case let (lhsDate?, rhsDate?):
                     return lhsDate < rhsDate
@@ -972,7 +956,7 @@ private final class HouseChoresActiveViewModel: ObservableObject {
                 case (nil, _?):
                     return false
                 case (nil, nil):
-                    return lhs.chore.title.localizedCaseInsensitiveCompare(rhs.chore.title) == .orderedAscending
+                    return lhs.chore.id.uuidString < rhs.chore.id.uuidString
                 }
             }
         } catch {
@@ -1126,29 +1110,66 @@ private struct ChoreRoomManagementSummary: Identifiable, Hashable {
 
         return lastCleanedAt.formatted(date: .abbreviated, time: .omitted)
     }
+
+    var preferredCleaningWeekdayText: String? {
+        room.preferredCleaningWeekday?.displayName
+    }
+}
+
+private struct ChoreRoomDetail: Identifiable, Hashable {
+    let summary: ChoreRoomManagementSummary
+    let chores: [ChoreRoomChoreDetail]
+
+    var id: UUID {
+        summary.id
+    }
+}
+
+private struct ChoreRoomChoreDetail: Identifiable, Hashable {
+    let chore: ChoreTemplate
+    let recurrenceRule: ChoreRecurrenceRule?
+    let lastCompletedAt: Date?
+    let nextOccurrence: ChoreOccurrence?
+
+    var id: UUID {
+        chore.id
+    }
+
+    var lastCompletedText: String {
+        guard let lastCompletedAt else {
+            return "Never completed"
+        }
+
+        return "Last completed \(lastCompletedAt.formatted(date: .abbreviated, time: .omitted))"
+    }
+
+    var nextDueText: String? {
+        guard let nextOccurrence else {
+            return nil
+        }
+
+        let dateText = nextOccurrence.dueAt.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+        guard !nextOccurrence.isAllDay else {
+            return "Next due \(dateText)"
+        }
+
+        return "Next due \(dateText) at \(nextOccurrence.dueAt.formatted(date: .omitted, time: .shortened))"
+    }
 }
 
 @MainActor
 private final class HouseChoresRoomsViewModel: ObservableObject {
     @Published private(set) var rooms: [ChoreRoom] = []
     @Published private(set) var activeChores: [ChoreTemplate] = []
+    @Published private(set) var roomDetailsById: [UUID: ChoreRoomDetail] = [:]
     @Published private(set) var isLoading = false
-    @Published private(set) var updatingChoreId: UUID?
     @Published private(set) var errorMessage: String?
-    @Published var actionErrorMessage: String?
 
     private let repository: ChoresRepository
-    private let calendarService: CalendarService
-    private var calendarSyncService: ChoreCalendarSyncService?
     private var activeHomeId: UUID?
 
-    init(repository: ChoresRepository? = nil, calendarService: CalendarService? = nil) {
+    init(repository: ChoresRepository? = nil) {
         self.repository = repository ?? ChoresRepository()
-        self.calendarService = calendarService ?? CalendarService()
-    }
-
-    var roomNamesById: [UUID: String] {
-        Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0.name) })
     }
 
     var roomSummaries: [ChoreRoomManagementSummary] {
@@ -1160,6 +1181,16 @@ private final class HouseChoresRoomsViewModel: ObservableObject {
         }
     }
 
+    func roomDetail(for room: ChoreRoom) -> ChoreRoomDetail? {
+        roomDetailsById[room.id] ?? ChoreRoomDetail(
+            summary: ChoreRoomManagementSummary(
+                room: room,
+                choreCount: activeChores.filter { $0.roomId == room.id }.count
+            ),
+            chores: []
+        )
+    }
+
     func load(homeId: UUID?) async {
         guard let homeId else {
             reset()
@@ -1169,19 +1200,35 @@ private final class HouseChoresRoomsViewModel: ObservableObject {
         activeHomeId = homeId
         isLoading = true
         errorMessage = nil
-        actionErrorMessage = nil
 
         do {
+            let range = ChoreDateRange.upcoming()
             async let loadedRooms = repository.fetchRooms(homeId: homeId)
             async let loadedTemplates = repository.fetchTemplates(homeId: homeId, includeArchived: false)
+            async let loadedOccurrences = repository.fetchHouseChoreOccurrences(homeId: homeId, from: range.start, through: range.end)
 
             rooms = try await loadedRooms
             activeChores = try await loadedTemplates
                 .filter { $0.isActive && $0.archivedAt == nil }
                 .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+            let templateIds = activeChores.map(\.id)
+            async let loadedRules = repository.fetchRecurrenceRules(templateIds: templateIds)
+            async let loadedCompletedOccurrences = repository.fetchCompletedOccurrences(templateIds: templateIds)
+            let upcomingOccurrences = try await loadedOccurrences
+            let recurrenceRules = try await loadedRules
+            let completedOccurrences = try await loadedCompletedOccurrences
+
+            roomDetailsById = makeRoomDetails(
+                rooms: rooms,
+                chores: activeChores,
+                recurrenceRules: recurrenceRules,
+                completedOccurrences: completedOccurrences,
+                upcomingOccurrences: upcomingOccurrences
+            )
         } catch {
             rooms = []
             activeChores = []
+            roomDetailsById = [:]
             errorMessage = error.localizedDescription
         }
 
@@ -1194,91 +1241,85 @@ private final class HouseChoresRoomsViewModel: ObservableObject {
         }
     }
 
-    func move(chore: ChoreTemplate, to room: ChoreRoom, timezone: String?) async {
-        guard updatingChoreId == nil else { return }
-        guard chore.roomId != room.id else { return }
-        guard let activeHomeId else {
-            actionErrorMessage = "Unable to update this chore."
-            return
-        }
-
-        updatingChoreId = chore.id
-        actionErrorMessage = nil
-        defer { updatingChoreId = nil }
-
-        let resolvedTimezone: String
-        if let timezone, TimeZone(identifier: timezone) != nil {
-            resolvedTimezone = timezone
-        } else {
-            resolvedTimezone = TimeZone.autoupdatingCurrent.identifier
-        }
-
-        do {
-            try await repository.updateTemplateRoomCleaningMetadata(
-                templateId: chore.id,
-                roomId: room.id,
-                contributesToRoomCleaning: chore.isRegularRoomCleaning
-            )
-
-            let through = generationEndDate()
-            let replacement = try await repository.replaceFutureOccurrences(
-                templateId: chore.id,
-                effectiveFrom: futureReplacementEffectiveDate(timezone: resolvedTimezone),
-                generateThrough: through,
-                timezone: resolvedTimezone
-            )
-            try await deleteCalendarEvents(replacement.calendarEventIds)
-
-            let generatedOccurrences = try await repository.generateOccurrences(
-                templateId: chore.id,
-                through: through,
-                timezone: resolvedTimezone
-            )
-            let syncService = calendarSyncService ?? ChoreCalendarSyncService(
-                choresRepository: repository,
-                calendarService: calendarService
-            )
-            calendarSyncService = syncService
-            _ = try await syncService.syncMissingCalendarEvents(
-                homeId: activeHomeId,
-                occurrences: generatedOccurrences
-            )
-
-            NotificationCenter.default.post(name: .homeyChoresDidChange, object: nil)
-            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
-            await load(homeId: activeHomeId)
-        } catch {
-            actionErrorMessage = "Unable to move this chore."
-        }
-    }
-
     private func reset() {
         activeHomeId = nil
         rooms = []
         activeChores = []
+        roomDetailsById = [:]
         errorMessage = nil
-        actionErrorMessage = nil
         isLoading = false
-        updatingChoreId = nil
     }
 
-    private func generationEndDate() -> Date {
-        Calendar.current.date(
-            byAdding: .day,
-            value: ChoresRepository.defaultGenerationWindowDays,
-            to: Date()
-        ) ?? Date()
+    private func makeRoomDetails(
+        rooms: [ChoreRoom],
+        chores: [ChoreTemplate],
+        recurrenceRules: [ChoreRecurrenceRule],
+        completedOccurrences: [ChoreOccurrence],
+        upcomingOccurrences: [ChoreOccurrence]
+    ) -> [UUID: ChoreRoomDetail] {
+        let rulesByTemplateId = Dictionary(uniqueKeysWithValues: recurrenceRules.map { ($0.templateId, $0) })
+        let lastCompletedByTemplateId = latestCompletedOccurrencesByTemplateId(completedOccurrences)
+        let nextOccurrenceByTemplateId = nextOccurrencesByTemplateId(upcomingOccurrences)
+
+        return Dictionary(uniqueKeysWithValues: rooms.map { room in
+            let assignedChores = chores
+                .filter { $0.roomId == room.id }
+                .map { chore in
+                    ChoreRoomChoreDetail(
+                        chore: chore,
+                        recurrenceRule: rulesByTemplateId[chore.id],
+                        lastCompletedAt: lastCompletedByTemplateId[chore.id]?.completedAt,
+                        nextOccurrence: nextOccurrenceByTemplateId[chore.id]
+                    )
+                }
+                .sorted(by: compareRoomChoreDetails)
+            let summary = ChoreRoomManagementSummary(room: room, choreCount: assignedChores.count)
+            return (room.id, ChoreRoomDetail(summary: summary, chores: assignedChores))
+        })
     }
 
-    private func futureReplacementEffectiveDate(timezone: String) -> Date {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(identifier: timezone) ?? .autoupdatingCurrent
-        return calendar.startOfDay(for: Date())
+    private func latestCompletedOccurrencesByTemplateId(_ occurrences: [ChoreOccurrence]) -> [UUID: ChoreOccurrence] {
+        Dictionary(grouping: occurrences, by: \.templateId).compactMapValues { groupedOccurrences in
+            groupedOccurrences
+                .filter { $0.status == .completed && $0.completedAt != nil }
+                .sorted {
+                    guard let lhsCompletedAt = $0.completedAt, let rhsCompletedAt = $1.completedAt else {
+                        return $0.completedAt != nil
+                    }
+                    return lhsCompletedAt > rhsCompletedAt
+                }
+                .first
+        }
     }
 
-    private func deleteCalendarEvents(_ calendarEventIds: [UUID]) async throws {
-        for calendarEventId in calendarEventIds {
-            try await calendarService.deleteEvent(eventId: calendarEventId)
+    private func nextOccurrencesByTemplateId(_ occurrences: [ChoreOccurrence]) -> [UUID: ChoreOccurrence] {
+        let now = Date()
+        return Dictionary(grouping: occurrences, by: \.templateId).compactMapValues { groupedOccurrences in
+            groupedOccurrences
+                .filter { $0.dueAt >= now && $0.status != .cancelled && $0.status != .skipped }
+                .sorted { $0.dueAt < $1.dueAt }
+                .first
+        }
+    }
+
+    private func compareRoomChoreDetails(_ lhs: ChoreRoomChoreDetail, _ rhs: ChoreRoomChoreDetail) -> Bool {
+        if lhs.chore.isActive != rhs.chore.isActive {
+            return lhs.chore.isActive
+        }
+
+        switch (lhs.nextOccurrence?.dueAt, rhs.nextOccurrence?.dueAt) {
+        case let (lhsDate?, rhsDate?) where lhsDate != rhsDate:
+            return lhsDate < rhsDate
+        case (_?, nil):
+            return true
+        case (nil, _?):
+            return false
+        default:
+            let titleComparison = lhs.chore.title.localizedCaseInsensitiveCompare(rhs.chore.title)
+            if titleComparison != .orderedSame {
+                return titleComparison == .orderedAscending
+            }
+            return lhs.id.uuidString < rhs.id.uuidString
         }
     }
 }

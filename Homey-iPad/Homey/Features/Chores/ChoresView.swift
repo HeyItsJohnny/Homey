@@ -148,6 +148,12 @@ struct ChoresView: View {
             switch sheet {
             case .chore:
                 ChoreEditorView(homeId: selectedHomeID, timezone: selectedHomeTimezone)
+            case .room:
+                if let selectedHomeID {
+                    ChoreRoomEditorSheet(homeId: selectedHomeID) {
+                        NotificationCenter.default.post(name: .homeyChoresDidChange, object: nil)
+                    }
+                }
             case .reward:
                 if let selectedHomeID {
                     RewardEditorView(
@@ -239,6 +245,14 @@ struct ChoresView: View {
                         }
                     }
 
+                    if canManageChores {
+                        Button {
+                            activeCreationSheet = .room
+                        } label: {
+                            Label("Add Room", systemImage: "house.lodge")
+                        }
+                    }
+
                     if canManageRewards {
                         Button {
                             activeCreationSheet = .reward
@@ -309,6 +323,190 @@ struct ChoresView: View {
         case .choreHistory:
             return nil
         }
+    }
+}
+
+private struct ChoreRoomEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var viewModel: ChoreRoomEditorViewModel
+
+    init(homeId: UUID, onComplete: @escaping () -> Void) {
+        _viewModel = StateObject(wrappedValue: ChoreRoomEditorViewModel(homeId: homeId, onComplete: onComplete))
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                HomeyDashboardTheme.appBackground.ignoresSafeArea()
+
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Room Name")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                            .textCase(.uppercase)
+
+                        TextField("Guest Bedroom", text: $viewModel.name)
+                            .textFieldStyle(.plain)
+                            .font(.body.weight(.medium))
+                            .padding(14)
+                            .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                            }
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Preferred Cleaning Day")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                            .textCase(.uppercase)
+
+                        Picker("Preferred Cleaning Day", selection: $viewModel.preferredCleaningWeekday) {
+                            Text("No Preference").tag(nil as ChorePreferredCleaningWeekday?)
+                            ForEach(ChorePreferredCleaningWeekday.allCases) { weekday in
+                                Text(weekday.displayName).tag(weekday as ChorePreferredCleaningWeekday?)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .font(.body.weight(.medium))
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                        }
+                    }
+
+                    if let errorMessage = viewModel.errorMessage {
+                        Text(errorMessage)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(HomeyDashboardTheme.destructiveRed)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .padding(24)
+            }
+            .navigationTitle("Add Room")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .disabled(viewModel.isSaving)
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add Room") {
+                        Task {
+                            if await viewModel.save() {
+                                dismiss()
+                            }
+                        }
+                    }
+                    .disabled(!viewModel.canSave)
+                }
+            }
+            .task {
+                await viewModel.loadRooms()
+            }
+        }
+        .presentationDetents([.height(360), .medium])
+    }
+}
+
+@MainActor
+private final class ChoreRoomEditorViewModel: ObservableObject {
+    @Published var name = "" {
+        didSet {
+            if errorMessage != nil {
+                validate()
+            }
+        }
+    }
+    @Published var preferredCleaningWeekday: ChorePreferredCleaningWeekday?
+    @Published private(set) var isSaving = false
+    @Published private(set) var errorMessage: String?
+
+    private let homeId: UUID
+    private let repository: ChoresRepository
+    private let onComplete: () -> Void
+    private var existingRooms: [ChoreRoom] = []
+
+    init(homeId: UUID, repository: ChoresRepository? = nil, onComplete: @escaping () -> Void) {
+        self.homeId = homeId
+        self.repository = repository ?? ChoresRepository()
+        self.onComplete = onComplete
+    }
+
+    var canSave: Bool {
+        !isSaving && validationMessage == nil
+    }
+
+    func loadRooms() async {
+        do {
+            existingRooms = try await repository.fetchRooms(homeId: homeId)
+        } catch {
+            errorMessage = "Unable to load existing rooms."
+        }
+    }
+
+    func save() async -> Bool {
+        validate()
+        guard canSave else {
+            return false
+        }
+
+        isSaving = true
+        defer { isSaving = false }
+
+        do {
+            let sortOrder = (existingRooms.map(\.sortOrder).max() ?? -1) + 1
+            _ = try await repository.createRoom(
+                homeId: homeId,
+                name: trimmedName,
+                sortOrder: sortOrder,
+                roomType: trimmedName.caseInsensitiveCompare("Other") == .orderedSame ? .other : nil,
+                preferredCleaningWeekday: preferredCleaningWeekday,
+                preferredCleaningFrequency: nil
+            )
+            onComplete()
+            return true
+        } catch {
+            errorMessage = "Unable to add this Room."
+            return false
+        }
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var validationMessage: String? {
+        if trimmedName.isEmpty {
+            return "Enter a Room name."
+        }
+
+        if existingRooms.contains(where: { room in
+            room.archivedAt == nil && room.name.caseInsensitiveCompare(trimmedName) == .orderedSame
+        }) {
+            if trimmedName.caseInsensitiveCompare("Other") == .orderedSame {
+                return "An Other room already exists."
+            }
+
+            return "A Room with this name already exists."
+        }
+
+        return nil
+    }
+
+    private func validate() {
+        errorMessage = validationMessage
     }
 }
 

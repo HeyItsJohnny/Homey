@@ -629,6 +629,50 @@ final class ChoresRepository {
         }
     }
 
+    func fetchRecurrenceRules(templateIds: [UUID]) async throws -> [ChoreRecurrenceRule] {
+        let uniqueTemplateIds = Array(Set(templateIds))
+        guard !uniqueTemplateIds.isEmpty else {
+            return []
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let rules: [ChoreRecurrenceRule] = try await client
+                .from("chore_recurrence_rules")
+                .select()
+                .in("template_id", values: uniqueTemplateIds.map(\.uuidString))
+                .execute()
+                .value
+            return rules
+        } catch {
+            logChoreError(error, operation: "chore_recurrence_rules.select_templates")
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
+    func fetchCompletedOccurrences(templateIds: [UUID]) async throws -> [ChoreOccurrence] {
+        let uniqueTemplateIds = Array(Set(templateIds))
+        guard !uniqueTemplateIds.isEmpty else {
+            return []
+        }
+
+        do {
+            try await requireAuthenticatedSession()
+            let occurrences: [ChoreOccurrence] = try await client
+                .from("chore_occurrences")
+                .select()
+                .in("template_id", values: uniqueTemplateIds.map(\.uuidString))
+                .eq("status", value: ChoreOccurrenceStatus.completed.rawValue)
+                .order("completed_at", ascending: false)
+                .execute()
+                .value
+            return occurrences.filter { $0.completedAt != nil }
+        } catch {
+            logChoreError(error, operation: "chore_occurrences.select_completed_templates")
+            throw ChoreRepositoryError.map(error)
+        }
+    }
+
     func saveTemplate(draft: ChoreTemplateDraft) async throws -> UUID {
         do {
             try await requireAuthenticatedSession()

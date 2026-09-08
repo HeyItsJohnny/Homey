@@ -390,9 +390,21 @@ private struct MyChoresRescheduleSourceWeek {
         Self.rangeText(from: sourceStart, through: sourceEnd, calendar: calendar)
     }
 
+    var weekStartsOn: Int {
+        calendar.firstWeekday
+    }
+
     func generateThrough(for newStart: Date) -> Date {
         let basis = max(Date(), newStart)
         return calendar.date(byAdding: .day, value: ChoresRepository.defaultGenerationWindowDays, to: basis) ?? basis
+    }
+
+    func destinationWeekStart(containing date: Date) -> Date {
+        ChoreWeekRange.startOfWeek(containing: date, calendar: calendar)
+    }
+
+    func localDateText(_ date: Date) -> String {
+        ChoreDateOnlyFormatter.string(from: date, timezone: timezone)
     }
 
     static func rangeText(from start: Date, through end: Date, calendar: Calendar) -> String {
@@ -533,7 +545,7 @@ private struct MyChoresRescheduleSheet: View {
                                 .font(.subheadline.weight(.bold))
                                 .foregroundStyle(HomeyDashboardTheme.primaryText)
 
-                            Text(mode.description)
+                            Text(description(for: mode))
                                 .font(.caption)
                                 .foregroundStyle(HomeyDashboardTheme.secondaryText)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -608,7 +620,7 @@ private struct MyChoresRescheduleSheet: View {
     }
 
     private var explanationSection: some View {
-        Text("Chores keep their relative spacing. A Friday chore stays Friday when moving the schedule forward one week.")
+        Text(explanationText)
             .font(.caption)
             .foregroundStyle(HomeyDashboardTheme.secondaryText)
             .fixedSize(horizontal: false, vertical: true)
@@ -727,13 +739,34 @@ private struct MyChoresRescheduleSheet: View {
     private var confirmationMessage: String {
         let eligibleCount = preview?.eligibleCount ?? 0
         let protectedCount = preview?.protectedCount ?? 0
-        let destinationStartText = MyChoresRescheduleSourceWeek.dayText(newStartDate, calendar: sourceWeek.calendar)
+        let destinationStartText = MyChoresRescheduleSourceWeek.dayText(
+            sourceWeek.destinationWeekStart(containing: newStartDate),
+            calendar: sourceWeek.calendar
+        )
 
         switch selectedMode {
         case .moveUnstarted:
             return "\(eligibleCount) untouched chore occurrences will move. Existing recurring schedules will remain unchanged. \(protectedCount) protected chores will stay where they are."
         case .restartSchedule:
-            return "\(eligibleCount) untouched chores will move and their future recurring schedules will continue from \(destinationStartText). \(protectedCount) protected chores will stay where they are."
+            return "\(eligibleCount) untouched chores will move and their future recurring schedules will continue from \(destinationStartText). Room cleaning chores use each Room's preferred cleaning day. \(protectedCount) protected chores will stay where they are."
+        }
+    }
+
+    private var explanationText: String {
+        switch selectedMode {
+        case .moveUnstarted:
+            return "Untouched chores move into the destination week. Existing recurring schedules remain unchanged."
+        case .restartSchedule:
+            return "Room cleaning chores will move to each Room's preferred cleaning day. Monthly chores will continue on that weekday each month."
+        }
+    }
+
+    private func description(for mode: ChoreRescheduleMode) -> String {
+        switch mode {
+        case .moveUnstarted:
+            return mode.description
+        case .restartSchedule:
+            return "Restart untouched chores from a new week. Room cleaning chores use each Room's preferred cleaning day."
         }
     }
 
@@ -759,11 +792,12 @@ private struct MyChoresRescheduleSheet: View {
         do {
             try await Task.sleep(for: .milliseconds(250))
             try Task.checkCancellation()
+            logPreviewRequest(mode: mode, startDate: startDate)
             let loadedPreview = try await repository.previewChoreReschedule(
                 homeId: sourceWeek.homeId,
                 sourceStart: sourceWeek.sourceStart,
                 sourceEnd: sourceWeek.sourceEnd,
-                newStart: startDate,
+                newStart: sourceWeek.destinationWeekStart(containing: startDate),
                 mode: mode,
                 timezone: sourceWeek.timezone
             )
@@ -787,7 +821,7 @@ private struct MyChoresRescheduleSheet: View {
                 homeId: sourceWeek.homeId,
                 sourceStart: sourceWeek.sourceStart,
                 sourceEnd: sourceWeek.sourceEnd,
-                newStart: newStartDate,
+                newStart: sourceWeek.destinationWeekStart(containing: newStartDate),
                 mode: selectedMode,
                 generateThrough: sourceWeek.generateThrough(for: preview.destinationStart),
                 timezone: sourceWeek.timezone
@@ -829,6 +863,24 @@ private struct MyChoresRescheduleSheet: View {
         }
 
         return false
+    }
+
+    private func logPreviewRequest(mode: ChoreRescheduleMode, startDate: Date) {
+        #if DEBUG
+        let destinationStart = sourceWeek.destinationWeekStart(containing: startDate)
+        print(
+            """
+            ========== CHORE RESCHEDULE PREVIEW ==========
+            visible week: \(sourceWeek.localDateText(sourceWeek.sourceStart)) ... \(sourceWeek.localDateText(sourceWeek.sourceEnd))
+            weekStartsOn: \(sourceWeek.weekStartsOn)
+            requested_source_start: \(sourceWeek.localDateText(sourceWeek.sourceStart))
+            requested_source_end: \(sourceWeek.localDateText(sourceWeek.sourceEnd))
+            requested_new_start: \(sourceWeek.localDateText(destinationStart))
+            mode: \(mode.rawValue)
+            =============================================
+            """
+        )
+        #endif
     }
 }
 
@@ -928,16 +980,16 @@ private final class MyChoresViewModel: ObservableObject {
 
     var rescheduleSourceWeek: MyChoresRescheduleSourceWeek? {
         guard let homeId = activeHomeId,
-              let range = visibleWeekRange,
-              let inclusiveEnd = calendar.date(byAdding: .day, value: -1, to: range.end),
-              let defaultNewStart = calendar.date(byAdding: .day, value: 7, to: range.start) else {
+              let displayedStart = weekDays.first,
+              let displayedEnd = weekDays.last,
+              let defaultNewStart = calendar.date(byAdding: .day, value: 7, to: displayedStart) else {
             return nil
         }
 
         return MyChoresRescheduleSourceWeek(
             homeId: homeId,
-            sourceStart: range.start,
-            sourceEnd: inclusiveEnd,
+            sourceStart: calendar.startOfDay(for: displayedStart),
+            sourceEnd: calendar.startOfDay(for: displayedEnd),
             defaultNewStart: defaultNewStart,
             timezone: timezone,
             calendar: calendar

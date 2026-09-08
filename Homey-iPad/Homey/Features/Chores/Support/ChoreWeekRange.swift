@@ -28,13 +28,10 @@ enum ChoreWeekRange {
     }
 
     private static func resolvedFirstWeekday(_ weekStartsOn: Int?) -> Int {
-        switch weekStartsOn {
-        case 1:
-            return 1
-        case 2:
-            return 2
-        default:
+        guard let weekStartsOn, (1...7).contains(weekStartsOn) else {
             return Calendar.autoupdatingCurrent.firstWeekday
         }
+
+        return weekStartsOn
     }
 }
