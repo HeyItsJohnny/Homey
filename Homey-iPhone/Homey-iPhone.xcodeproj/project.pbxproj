@@ -6,13 +6,35 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		AF49382C3050BFDF00C6FD58 /* Auth in Frameworks */ = {isa = PBXBuildFile; productRef = AF49382B3050BFDF00C6FD58 /* Auth */; };
+		AF49382E3050BFDF00C6FD58 /* Functions in Frameworks */ = {isa = PBXBuildFile; productRef = AF49382D3050BFDF00C6FD58 /* Functions */; };
+		AF4938303050BFDF00C6FD58 /* PostgREST in Frameworks */ = {isa = PBXBuildFile; productRef = AF49382F3050BFDF00C6FD58 /* PostgREST */; };
+		AF4938323050BFDF00C6FD58 /* Realtime in Frameworks */ = {isa = PBXBuildFile; productRef = AF4938313050BFDF00C6FD58 /* Realtime */; };
+		AF4938343050BFDF00C6FD58 /* Storage in Frameworks */ = {isa = PBXBuildFile; productRef = AF4938333050BFDF00C6FD58 /* Storage */; };
+		AF4938363050BFDF00C6FD58 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = AF4938353050BFDF00C6FD58 /* Supabase */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
-		AF49381A3050BDC700C6FD58 /* Homey-iPhone.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Homey-iPhone.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		AF49381A3050BDC700C6FD58 /* Homey.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Homey.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AF4939933050D74900C6FD58 /* Exceptions for "Homey-iPhone" folder in "Homey-iPhone" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = AF4938193050BDC700C6FD58 /* Homey-iPhone */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		AF49381C3050BDC700C6FD58 /* Homey-iPhone */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AF4939933050D74900C6FD58 /* Exceptions for "Homey-iPhone" folder in "Homey-iPhone" target */,
+			);
 			path = "Homey-iPhone";
 			sourceTree = "<group>";
 		};
@@ -23,6 +45,12 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				AF4938303050BFDF00C6FD58 /* PostgREST in Frameworks */,
+				AF49382E3050BFDF00C6FD58 /* Functions in Frameworks */,
+				AF4938363050BFDF00C6FD58 /* Supabase in Frameworks */,
+				AF49382C3050BFDF00C6FD58 /* Auth in Frameworks */,
+				AF4938343050BFDF00C6FD58 /* Storage in Frameworks */,
+				AF4938323050BFDF00C6FD58 /* Realtime in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -40,7 +68,7 @@
 		AF49381B3050BDC700C6FD58 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				AF49381A3050BDC700C6FD58 /* Homey-iPhone.app */,
+				AF49381A3050BDC700C6FD58 /* Homey.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -65,9 +93,15 @@
 			);
 			name = "Homey-iPhone";
 			packageProductDependencies = (
+				AF49382B3050BFDF00C6FD58 /* Auth */,
+				AF49382D3050BFDF00C6FD58 /* Functions */,
+				AF49382F3050BFDF00C6FD58 /* PostgREST */,
+				AF4938313050BFDF00C6FD58 /* Realtime */,
+				AF4938333050BFDF00C6FD58 /* Storage */,
+				AF4938353050BFDF00C6FD58 /* Supabase */,
 			);
 			productName = "Homey-iPhone";
-			productReference = AF49381A3050BDC700C6FD58 /* Homey-iPhone.app */;
+			productReference = AF49381A3050BDC700C6FD58 /* Homey.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -94,6 +128,9 @@
 			);
 			mainGroup = AF4938113050BDC700C6FD58;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				AF49382A3050BFDF00C6FD58 /* XCRemoteSwiftPackageReference "supabase-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = AF49381B3050BDC700C6FD58 /* Products */;
 			projectDirPath = "";
@@ -256,25 +293,34 @@
 				DEVELOPMENT_TEAM = JA38J3EZWJ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Homey-iPhone/Info.plist";
+				INFOPLIST_KEY_SUPABASE_PUBLISHABLE_KEY = "$(SUPABASE_PUBLISHABLE_KEY)";
+				INFOPLIST_KEY_SUPABASE_URL = "$(SUPABASE_URL)";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UIStatusBarStyle = "";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "JohnnyLaroco.Homey-iPhone";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Homey;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPABASE_PUBLISHABLE_KEY = sb_publishable_5v0Xt1ReWAfgiflZJm2egA_cdw28PKw;
+				SUPABASE_URL = "https://czddjigvnliclcjyxqoc.supabase.co";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -288,25 +334,34 @@
 				DEVELOPMENT_TEAM = JA38J3EZWJ;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Homey-iPhone/Info.plist";
+				INFOPLIST_KEY_SUPABASE_PUBLISHABLE_KEY = "$(SUPABASE_PUBLISHABLE_KEY)";
+				INFOPLIST_KEY_SUPABASE_URL = "$(SUPABASE_URL)";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UIStatusBarStyle = "";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "JohnnyLaroco.Homey-iPhone";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = Homey;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPABASE_PUBLISHABLE_KEY = sb_publishable_5v0Xt1ReWAfgiflZJm2egA_cdw28PKw;
+				SUPABASE_URL = "https://czddjigvnliclcjyxqoc.supabase.co";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -332,6 +387,50 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		AF49382A3050BFDF00C6FD58 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift";
+			requirement = {
+				kind = exactVersion;
+				version = 2.53.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		AF49382B3050BFDF00C6FD58 /* Auth */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF49382A3050BFDF00C6FD58 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Auth;
+		};
+		AF49382D3050BFDF00C6FD58 /* Functions */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF49382A3050BFDF00C6FD58 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Functions;
+		};
+		AF49382F3050BFDF00C6FD58 /* PostgREST */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF49382A3050BFDF00C6FD58 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = PostgREST;
+		};
+		AF4938313050BFDF00C6FD58 /* Realtime */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF49382A3050BFDF00C6FD58 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Realtime;
+		};
+		AF4938333050BFDF00C6FD58 /* Storage */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF49382A3050BFDF00C6FD58 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Storage;
+		};
+		AF4938353050BFDF00C6FD58 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = AF49382A3050BFDF00C6FD58 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = AF4938123050BDC700C6FD58 /* Project object */;
 }
