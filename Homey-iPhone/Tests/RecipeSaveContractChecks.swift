@@ -64,6 +64,65 @@ import Foundation
         let photoPath = RecipeImageStoragePath.make(homeId: homeID, mealId: savedID, photoId: photoID)
         assert(photoPath == "\(homeID.uuidString.lowercased())/\(savedID.uuidString.lowercased())/abcdefab-1234-5678-abcd-abcdefabcdef.jpg")
         assert(photoPath.split(separator: "/").count == 3, "iPad Storage contract has no homes/meals literal folders")
+        assert(RecipeImportInput.validURL("  https://example.com/recipe  ") == "https://example.com/recipe")
+        assert(RecipeImportInput.validURL("") == nil)
+        assert(RecipeImportInput.validURL("https://") == nil)
+        assert(RecipeImportInput.validURL("file:///tmp/recipe") == nil)
+        assert(RecipeImportInput.validURL("not a URL") == nil)
+        assert(RecipeImportInput.safeLogURL("https://user:secret@example.com/recipe?token=secret#private") == "https://example.com/recipe")
+        assert(RecipeImportInput.errorCode(data: Data("{\"error\":{\"code\":\"SOURCE_BLOCKED\"}}".utf8)) == "SOURCE_BLOCKED")
+        assert(RecipeImportInput.message(for: "SOURCE_BLOCKED").contains("doesn't currently allow"))
+        var importedDraft = RecipeDraft()
+        importedDraft.apply(draft.imported!)
+        assert(importedDraft.name == preview.title && importedDraft.sourceURL == preview.source.originalUrl)
+        assert(importedDraft.imported?.normalizedUrl == preview.source.normalizedUrl)
+        assert(importedDraft.importImageURL == preview.imageUrl)
+        importedDraft.importedImageRemoved = true
+        assert(importedDraft.importImageURL == nil && importedDraft.imported != nil)
+        let removedPhotoPayload = try json(SaveCommunityParams(draft: importedDraft))
+        assert(removedPhotoPayload["requested_image_url"] is NSNull)
+        assert(RecipeImageReference(photoPath) == .storage(photoPath))
+        assert(RecipeImageReference("  https://example.com/photo.jpg  ") == .remote(URL(string: "https://example.com/photo.jpg")!))
+        assert(RecipeImageReference(nil) == nil && RecipeImageReference("") == nil)
+        assert(RecipeImageReference("file:///tmp/photo.jpg") == nil)
+        assert(RecipeImageReference("../photo.jpg") == nil)
+        assert(RecipeImageReference.safeLog("https://example.com/photo.jpg?token=secret") == "https://example.com/photo.jpg")
+        let fixtureData = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
+        struct LegacyResponse: Decodable {
+            struct Recipe: Decodable { let ingredients: [CommunityIngredient] }
+            let recipe: Recipe
+        }
+        do {
+            _ = try JSONDecoder().decode(LegacyResponse.self, from: fixtureData)
+            fatalError("Legacy database DTO should reject camelCase import ingredients")
+        } catch let error as DecodingError {
+            let details = RecipeImportDiagnostics.decodingDetails(error)
+            assert(details.contains("DecodingError.keyNotFound"))
+            assert(details.contains("missingKey=sort_order"))
+            assert(details.contains("codingPath=recipe.ingredients[0]"))
+            print("REPRODUCED old decoder: " + details.joined(separator: "; "))
+        }
+        let parsed = try RecipeImportResponseDecoder.decode(fixtureData)
+        assert(parsed.recipe.title == "Sheet Pan Pancakes From Mix")
+        assert(parsed.recipe.imageUrl?.isEmpty == false)
+        assert(parsed.recipe.ingredients.count == 6 && parsed.recipe.steps.count == 6)
+        var mapped = RecipeDraft()
+        mapped.apply(parsed)
+        assert(mapped.ingredients.count == 6 && mapped.steps.count == 6 && mapped.importImageURL != nil)
+        assert(mapped.sourceURL == "https://www.frontrangefed.com/sheet-pan-pancakes-from-mix/")
+        var sparse = try JSONSerialization.jsonObject(with: fixtureData) as! [String: Any]
+        var sparseRecipe = sparse["recipe"] as! [String: Any]
+        for key in ["imageUrl", "description", "servings", "prepTimeMinutes", "cookTimeMinutes", "totalTimeMinutes", "cuisine"] { sparseRecipe.removeValue(forKey: key) }
+        sparse["recipe"] = sparseRecipe
+        let sparseResult = try RecipeImportResponseDecoder.decode(JSONSerialization.data(withJSONObject: sparse))
+        assert(sparseResult.recipe.imageUrl == nil && sparseResult.recipe.servings == nil && sparseResult.recipe.ingredients.count == 6)
+        let blocked = Data("{\"error\":{\"code\":\"SOURCE_BLOCKED\",\"message\":\"blocked\"}}".utf8)
+        do { _ = try RecipeImportResponseDecoder.decode(blocked); fatalError("Error envelope decoded as a recipe") }
+        catch let error as RecipeImportResponseError { assert(error.code == "SOURCE_BLOCKED") }
+        assert(!RecipeImportInput.message(for: "RESPONSE_DECODING_ERROR").contains("connection"))
+        let secretBody = Data("{\"access_token\":\"SECRET\",\"imageUrl\":\"https://example.com/p.jpg?token=SECRET\"}".utf8)
+        assert(!RecipeImportDiagnostics.sanitizedJSON(secretBody).contains("SECRET"))
+        print("PASS: exact Front Range Fed parser output, six ingredients/six directions, optional metadata, error envelope, redaction")
         print("PASS: iPad RPC argument shapes with deployed Community source types, numeric/fraction quantities, imported image/source metadata, retry meal ID and photo path; edit prefill, metadata retention, and community-independent Home payload; iPad image object path")
     }
 }

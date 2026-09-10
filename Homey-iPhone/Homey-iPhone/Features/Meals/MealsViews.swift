@@ -29,7 +29,8 @@ struct MealsRootView: View {
     @StateObject private var model = MealsViewModel()
     @State private var section = 0
     @State private var showAdd = false
-    @State private var creationMethod: RecipeCreationMethod?
+    @State private var creationPresentation: RecipeCreationPresentation?
+    @State private var pendingEditorPresentation: RecipeCreationPresentation?
 
     var body: some View {
         NavigationStack {
@@ -82,14 +83,30 @@ struct MealsRootView: View {
             .navigationTitle("Meals")
             .toolbar(.hidden, for: .navigationBar)
             .confirmationDialog("Add Recipe", isPresented: $showAdd, titleVisibility: .visible) {
-                Button("New Recipe") { creationMethod = .new }
-                Button("From Website") { creationMethod = .website }
-                Button("Scan") { creationMethod = .scan }
+                Button("New Recipe") { creationPresentation = .manual() }
+                Button("From Website") { creationPresentation = .website() }
+                Button("Scan") { creationPresentation = .scan() }
                 Button("Cancel", role: .cancel) {}
             }
-            .sheet(item: $creationMethod) { method in
+            .sheet(item: $creationPresentation, onDismiss: {
+                if let editor = pendingEditorPresentation {
+                    pendingEditorPresentation = nil
+                    creationPresentation = editor
+                }
+            }) { presentation in
                 if let home = session.activeHome {
-                    RecipeCreationView(home: home, model: model, method: method)
+                    switch presentation.content {
+                    case .website:
+                        RecipeImportView(home: home) { draft in
+                            pendingEditorPresentation = .imported(draft)
+                            creationPresentation = nil
+                        }
+                    case .editor(let initialDraft):
+                        RecipeEditorView(home: home, model: model, initialDraft: initialDraft)
+                            .id(presentation.id)
+                    case .scan:
+                        RecipeScanComingSoonView()
+                    }
                 }
             }
             .task(id: session.activeHome?.id) {
@@ -118,38 +135,8 @@ private struct RecipeRow:View{let title:String,subtitle:String?,types:[String],f
 
 struct RecipePickerView:View{let recipes:[HomeyMeal],favorites:Set<UUID>,select:(HomeyMeal)->Void;@Environment(\.dismiss)var dismiss;@State var search="";@State var favoritesOnly=false;var body:some View{NavigationStack{List(recipes.filter{(!favoritesOnly||favorites.contains($0.id))&&(search.isEmpty||$0.name.localizedCaseInsensitiveContains(search))}){meal in Button{select(meal)}label:{RecipeRow(title:meal.name,subtitle:meal.cuisine,types:meal.mealTypes.map(\.title),favorite:favorites.contains(meal.id)){}}}.searchable(text:$search).navigationTitle("Choose Recipe").toolbar{ToolbarItem(placement:.topBarLeading){Button("Cancel"){dismiss()}};ToolbarItem(placement:.topBarTrailing){Toggle("Favorites",isOn:$favoritesOnly).labelsHidden()}}}}}
 
-struct CommunityDetailView:View{let recipe:CommunityRecipe,home:HomeSummary;@ObservedObject var model:MealsViewModel;@EnvironmentObject var session:AppSession;@State var message:String?;let service=MealsService();var body:some View{List{Section{Text(recipe.title).font(.title2.bold());if let d=recipe.description{Text(d)}};Section("Ingredients"){ForEach(Array(recipe.ingredients.enumerated()),id:\.offset){_,i in Text([i.quantity,i.ingredientName].compactMap{$0}.joined(separator:" "))}};Section("Directions"){ForEach(Array(recipe.steps.enumerated()),id:\.offset){n,s in Text("\(n+1). \(s.stepText)")}};Section{Button("Add to My Home"){Task{do{_ = try await service.addToHome(recipe,homeId:home.id);await model.load(home:home);message="Added to \(home.name)."}catch{message=error.localizedDescription}}};if recipe.createdBy == session.currentUser?.id{Button("Delete Community Recipe",role:.destructive){Task{try? await service.deleteCommunityRecipe(recipe.id);await model.load(home:home)}}}}}.navigationTitle("Community Recipe").alert("Recipe",isPresented:.init(get:{message != nil},set:{if !$0{message=nil}})){Button("OK"){}}message:{Text(message ?? "")}}
-}
-
 struct RecipePlanSheet:View{let meal:HomeyMeal,home:HomeSummary;@ObservedObject var model:MealsViewModel;@Environment(\.dismiss)var dismiss;@State var day=Date();@State var type=MealType.dinner;var body:some View{NavigationStack{Form{DatePicker("Day",selection:$day,displayedComponents:.date);Picker("Meal",selection:$type){ForEach([MealType.breakfast,.lunch,.dinner,.snack]){Text($0.title).tag($0)}}}.navigationTitle("Add to Meal Plan").toolbar{ToolbarItem(placement:.cancellationAction){Button("Cancel"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("Add"){Task{await model.schedule(meal,type:type,day:day,home:home);dismiss()}}}}}}}
 struct AutoPlanSheet:View{let home:HomeSummary;@ObservedObject var model:MealsViewModel;@Environment(\.dismiss)var dismiss;@State var types:Set<MealType>=[.dinner];@State var favoritesOnly=false;var body:some View{NavigationStack{Form{Section("Fill empty slots"){ForEach([MealType.breakfast,.lunch,.dinner,.snack]){type in Toggle(type.title,isOn:.init(get:{types.contains(type)},set:{types.set(type,included:$0)}))}};Section("Recipe pool"){Toggle("Favorites only",isOn:$favoritesOnly);Text("Past days and existing planned meals are preserved.").font(.caption).foregroundStyle(.secondary)}}.navigationTitle("Auto Plan").toolbar{ToolbarItem(placement:.cancellationAction){Button("Cancel"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("Plan"){Task{await model.autoPlan(home:home,types:types,favoritesOnly:favoritesOnly);dismiss()}}.disabled(types.isEmpty)}}}}}
-
-enum RecipeCreationMethod: String, Identifiable {
-    case new, website, scan
-    var id: String { rawValue }
-}
-
-struct RecipeCreationView: View {
-    let home: HomeSummary
-    @ObservedObject var model: MealsViewModel
-    let method: RecipeCreationMethod
-    @State private var importedDraft: RecipeDraft?
-
-    var body: some View {
-        if let importedDraft {
-            RecipeEditorView(home: home, model: model, initialDraft: importedDraft, showsImportMetadata: true)
-        } else {
-            switch method {
-            case .new:
-                RecipeEditorView(home: home, model: model)
-            case .website:
-                RecipeImportView(home: home) { importedDraft = $0 }
-            case .scan:
-                RecipeScanComingSoonView()
-            }
-        }
-    }
-}
 
 private struct RecipeScanComingSoonView: View {
     @Environment(\.dismiss) private var dismiss
@@ -170,92 +157,5 @@ private struct RecipeScanComingSoonView: View {
     }
 }
 
-private extension RecipeDraft {
-    mutating func apply(_ response: RecipeImportResponse) {
-        imported = response
-        let recipe = response.recipe
-        name = recipe.title
-        description = recipe.description ?? ""
-        cuisine = recipe.cuisine ?? ""
-        sourceName = recipe.source.name ?? recipe.source.domain
-        sourceURL = recipe.source.originalUrl
-        prepMinutes = recipe.prepTimeMinutes
-        cookMinutes = recipe.cookTimeMinutes
-        servings = recipe.servings.flatMap(Double.init)
-        mealTypes = Set(recipe.mealTypes.compactMap(MealType.init(rawValue:)))
-        tagsText = recipe.keywords.joined(separator: ", ")
-        ingredients = recipe.ingredients.map { ingredient in
-            let quantity = ingredient.quantity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            // Match iPad import normalization: preserve descriptive amounts without sending text as numeric JSON.
-            let numeric = quantity.isEmpty || (try? RecipeQuantity.decimal(quantity)) != nil
-            return IngredientDraft(name: numeric ? ingredient.ingredientName : "\(quantity) \(ingredient.ingredientName)", quantity: numeric ? quantity : "", unit: "", section: ingredient.sectionName ?? "Ingredients", optional: ingredient.isOptional)
-        }
-        steps = recipe.steps.map { StepDraft(text: $0.stepText) }
-    }
-}
 private extension StepDraft { init(text: String) { self.init(); self.text = text } }
 private extension Set { mutating func set(_ member: Element, included: Bool) { if included { insert(member) } else { remove(member) } } }
-
-struct RecipeImportView: View {
-    let home: HomeSummary
-    let onPreview: (RecipeDraft) -> Void
-    @Environment(\.dismiss) private var dismiss
-    @State private var url = ""
-    @State private var mealTypes: Set<MealType> = []
-    @State private var tags = ""
-    @State private var loading = false
-    @State private var error: String?
-    private let service = MealsService()
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Recipe URL") {
-                    TextField("https://…", text: $url)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                }
-                Section("Meal types") {
-                    ForEach(MealType.allCases) { type in
-                        Toggle(type.title, isOn: .init(get: { mealTypes.contains(type) }, set: { mealTypes.set(type, included: $0) }))
-                    }
-                }
-                Section("Tags") {
-                    TextField("Tags, comma separated", text: $tags)
-                }
-                Text("Review the imported recipe before saving. Meal types and tags from the website will also be included.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if loading { ProgressView("Importing recipe…") }
-                if let error { Text(error).foregroundStyle(.red) }
-            }
-            .navigationTitle("Recipe URL")
-            .disabled(loading)
-            .interactiveDismissDisabled(loading)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Preview") { Task { await preview() } }
-                        .disabled(url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || loading)
-                }
-            }
-        }
-    }
-
-    private func preview() async {
-        guard !loading else { return }
-        loading = true
-        error = nil
-        defer { loading = false }
-        do {
-            let response = try await service.importURL(url.trimmingCharacters(in: .whitespacesAndNewlines), homeId: home.id)
-            var draft = RecipeDraft()
-            draft.apply(response)
-            draft.mealTypes.formUnion(mealTypes)
-            let combinedTags = (draft.tagsText + "," + tags).split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
-            var seen: Set<String> = []
-            draft.tagsText = combinedTags.filter { seen.insert($0.lowercased()).inserted }.joined(separator: ", ")
-            onPreview(draft)
-        } catch { self.error = error.localizedDescription }
-    }
-}

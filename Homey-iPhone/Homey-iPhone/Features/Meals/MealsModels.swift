@@ -49,13 +49,15 @@ struct RecipeDraft: Equatable {
     var steps: [StepDraft] = [.init()]
     var shareWithCommunity = true
     var imported: RecipeImportResponse?
+    var importedImageRemoved = false
+    var importImageURL: String? { importedImageRemoved ? nil : imported?.recipe.imageUrl }
 }
 struct IngredientDraft: Identifiable, Equatable { let id = UUID(); var name = "", quantity = "", unit = "", section = "Ingredients"; var optional = false; var preparation: String?; var notes: String? }
 struct StepDraft: Identifiable, Equatable { let id = UUID(); var text = ""; var timerMinutes: Int? }
 
 struct RecipeImportRequest: Encodable { let homeId: UUID; let url: String; enum CodingKeys: String, CodingKey { case homeId = "home_id", url } }
 struct RecipeImportResponse: Decodable, Hashable { let importId: UUID; let globalRecipeId: UUID?; let alreadyExists: Bool; let normalizedUrl: String; let recipe: ImportedRecipePreview }
-struct ImportedRecipePreview: Decodable, Hashable { let title: String; let description, imageUrl: String?; let prepTimeMinutes, cookTimeMinutes, totalTimeMinutes: Int?; let servings, cuisine: String?; let mealTypes, keywords: [String]; let ingredients: [CommunityIngredient]; let steps: [CommunityStep]; let source: ImportedRecipeSource }
+struct ImportedRecipePreview: Decodable, Hashable { let title: String; let description, imageUrl: String?; let prepTimeMinutes, cookTimeMinutes, totalTimeMinutes: Int?; let servings, cuisine: String?; let mealTypes, keywords: [String]; let ingredients: [ImportedRecipeIngredient]; let steps: [ImportedRecipeStep]; let source: ImportedRecipeSource }
 struct ImportedRecipeSource: Decodable, Hashable { let originalUrl, normalizedUrl, domain: String; let name: String? }
 
 struct PlannedMeal: Identifiable, Hashable { let eventId: UUID; let occurrenceId: String; let startsAt: Date; let mealType: MealType; let meal: HomeyMeal; var id: String { occurrenceId } }
@@ -63,8 +65,6 @@ struct CalendarMealEvent: Decodable { let eventId: UUID; let occurrenceId: Strin
 struct MealEventDetailRow: Decodable { let calendarEventId, mealId: UUID; let mealType: MealType; enum CodingKeys: String, CodingKey { case calendarEventId = "calendar_event_id", mealId = "meal_id", mealType = "meal_type" } }
 
 enum RecipeScope: String, CaseIterable, Identifiable { case home = "Home", community = "Community"; var id: String { rawValue } }
-enum RecipeFilter: String, CaseIterable, Identifiable { case all = "All", favorites = "Favorites", breakfast = "Breakfast", lunch = "Lunch", dinner = "Dinner", snack = "Snack"; var id: String { rawValue } }
-
 // Build edits from the complete stored recipe so untouched metadata survives saving.
 extension RecipeDraft {
     init(detail: HomeyRecipeDetail) {
@@ -101,4 +101,19 @@ extension RecipeDraft {
             return draft
         }
     }
+}
+
+// Edge Function preview JSON is camelCase; Community database JSON is snake_case.
+// Keep these DTOs separate so persistence CodingKeys cannot leak into import decoding.
+struct ImportedRecipeIngredient: Decodable, Hashable {
+    let sectionName: String?
+    let ingredientName: String
+    let quantity: String?
+    let isOptional: Bool
+    let sortOrder: Int
+}
+struct ImportedRecipeStep: Decodable, Hashable {
+    let sectionName: String?
+    let stepText: String
+    let sortOrder: Int
 }

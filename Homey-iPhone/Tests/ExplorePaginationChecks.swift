@@ -22,9 +22,9 @@ struct ExplorePaginationChecks {
     @MainActor static func main() async {
         let service = ControlledExploreService()
         let model = ExploreRecipesViewModel(service: service)
-        let a = ExploreRecipe(id: UUID(), title: "A", imageURL: nil)
-        let b = ExploreRecipe(id: UUID(), title: "B", imageURL: nil)
-        let c = ExploreRecipe(id: UUID(), title: "C", imageURL: nil)
+        let a = recipe("A")
+        let b = recipe("B")
+        let c = recipe("C")
         let initial = Task { await model.reset(query: ExploreQuery()) }
         await wait { service.calls.count == 1 }
         await model.loadNextPage()
@@ -77,6 +77,11 @@ struct ExplorePaginationChecks {
         await refresh.value
         assert(model.recipes.count == 2)
         print("PASS: paging, request coalescing, deduplication, end-of-feed, retry, refresh, stale search protection, cancellation, detail-return preservation")
+    }
+    static func recipe(_ title: String) -> ExploreRecipe {
+        ExploreRecipe(id: UUID(), title: title, description: nil, imageURL: nil,
+            prepTimeMinutes: nil, cookTimeMinutes: nil, totalTimeMinutes: nil,
+            servings: nil, cuisine: nil, mealTypes: [], keywords: [], createdBy: nil)
     }
     @MainActor static func wait(_ condition: () -> Bool) async {
         for _ in 0..<10_000 {

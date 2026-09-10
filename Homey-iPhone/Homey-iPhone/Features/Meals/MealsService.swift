@@ -7,6 +7,8 @@ import UIKit
 final class MealsService {
     private let client = SupabaseManager.shared.client
     private let imageBucket = "meal-images"
+    private static var communityCopyTasks: [String: Task<UUID, Error>] = [:]
+    private static var pendingCommunityPhotoCopies: [UUID: String] = [:]
 
     func homeRecipes(homeId: UUID) async throws -> [HomeyMeal] {
         try await client.from("meals").select().eq("home_id", value: homeId.uuidString).eq("is_archived", value: false).order("updated_at", ascending: false).execute().value
@@ -47,7 +49,7 @@ final class MealsService {
         print("[RecipeImageFlow] homeRecipeID=\(homeRecipeID.uuidString)")
         print("[RecipeImageFlow] uploadedPath=\(homePhotoPath ?? "nil")")
         print("[RecipeImageFlow] homeImageField=\(homePhotoPath ?? "nil")")
-        print("[RecipeImageFlow] globalImagePayload=\(params.imageURL ?? "nil")")
+        print("[RecipeImageFlow] globalImagePayload=\(RecipeImageReference.safeLog(params.imageURL))")
         print("[CommunityRecipe] sourceType=\(params.sourceType)")
         print("[CommunityRecipe] source=\(params.sourceName ?? "nil")")
         print("[CommunityRecipe] sourceURL=\(params.sourceURL ?? "nil")")
@@ -90,7 +92,62 @@ final class MealsService {
     }
 
     func addToHome(_ recipe: CommunityRecipe, homeId: UUID) async throws -> UUID {
-        try await client.rpc("add_global_meal_to_home", params: AddGlobalParams(globalId: recipe.id, homeId: homeId)).execute().value
+        let key = "\(homeId.uuidString)/\(recipe.id.uuidString)"
+        if let task = Self.communityCopyTasks[key] { return try await task.value }
+        let task = Task { try await copyCommunityRecipeToHome(recipe, homeId: homeId) }
+        Self.communityCopyTasks[key] = task
+        defer { Self.communityCopyTasks[key] = nil }
+        return try await task.value
+    }
+
+    private func copyCommunityRecipeToHome(_ recipe: CommunityRecipe, homeId: UUID) async throws -> UUID {
+        let homeMealID: UUID = try await client.rpc("add_global_meal_to_home", params: AddGlobalParams(globalId: recipe.id, homeId: homeId)).execute().value
+        #if DEBUG
+        print("[RecipeImageFlow] source=community")
+        print("[RecipeImageFlow] globalRecipeID=\(recipe.id.uuidString)")
+        print("[RecipeImageFlow] globalImageReference=\(RecipeImageReference.safeLog(recipe.imageURL))")
+        print("[RecipeImageFlow] homeRecipeID=\(homeMealID.uuidString)")
+        #endif
+        guard let sourceImage = recipe.imageURL?.trimmingCharacters(in: .whitespacesAndNewlines), !sourceImage.isEmpty else { return homeMealID }
+        do {
+            struct ImageRow: Decodable { let primary_photo_path: String? }
+            let homeImage: ImageRow = try await client.from("meals").select("primary_photo_path")
+                .eq("id", value: homeMealID.uuidString).eq("home_id", value: homeId.uuidString)
+                .single().execute().value
+            // The RPC deduplicates by origin_global_recipe_id. Keep an already
+            // copied or edited Home image when Add to Home is retried.
+            if let existing = RecipeImageReference(homeImage.primary_photo_path) {
+                #if DEBUG
+                print("[RecipeImageFlow] homeImageReference=\(RecipeImageReference.safeLog(existing.value))")
+                #endif
+                return homeMealID
+            }
+            let path: String
+            if let uploaded = Self.pendingCommunityPhotoCopies[homeMealID] {
+                path = uploaded
+            } else {
+                guard let sourceURL = await signedImageURL(path: recipe.imageURL) else {
+                    throw MealsError.message("The Community photo isn't accessible.")
+                }
+                path = try await importPhoto(sourceURL.absoluteString, homeId: homeId, mealId: homeMealID)
+                Self.pendingCommunityPhotoCopies[homeMealID] = path
+            }
+            struct AttachPhoto: Encodable { let primary_photo_path: String; let updated_by: UUID }
+            struct UpdatedMeal: Decodable { let id: UUID }
+            let userID = try await client.auth.session.user.id
+            let _: UpdatedMeal = try await client.from("meals").update(AttachPhoto(primary_photo_path: path, updated_by: userID))
+                .eq("id", value: homeMealID.uuidString).eq("home_id", value: homeId.uuidString)
+                .select("id").single().execute().value
+            Self.pendingCommunityPhotoCopies[homeMealID] = nil
+            #if DEBUG
+            print("[RecipeImageFlow] uploadedPath=\(path)")
+            print("[RecipeImageFlow] homeImageReference=\(path)")
+            #endif
+            return homeMealID
+        } catch {
+            RecipeSaveDiagnostics.failure(error, stage: "communityPhotoCopy")
+            throw MealsError.message("The recipe was added to your Home, but its photo couldn't be copied. Tap Add to My Home again to retry.")
+        }
     }
 
     // Use the existing iPad archive contract to preserve planner/history/image references.
@@ -116,24 +173,63 @@ final class MealsService {
     }
 
     func deleteHomeRecipe(_ id: UUID) async throws { try await client.from("meals").delete().eq("id", value: id.uuidString).execute() }
-    func deleteCommunityRecipe(_ id: UUID) async throws { try await client.from("global_recipes").delete().eq("id", value: id.uuidString).execute() }
+    func deleteCommunityRecipe(_ id: UUID) async throws {
+        struct DeletedRecipe: Decodable { let id: UUID }
+        let deleted: [DeletedRecipe] = try await client.from("global_recipes").delete()
+            .eq("id", value: id.uuidString).select("id").execute().value
+        guard deleted.contains(where: { $0.id == id }) else {
+            throw MealsError.message("You don't have permission to delete this community recipe.")
+        }
+    }
 
     func importURL(_ url: String, homeId: UUID) async throws -> RecipeImportResponse {
-        guard let parsed = URL(string: url), parsed.scheme == "https" || parsed.scheme == "http" else { throw MealsError.message("Enter a valid recipe URL.") }
-        do { return try await client.functions.invoke("import-recipe-url", options: FunctionInvokeOptions(body: RecipeImportRequest(homeId: homeId, url: url))) }
-        catch let error as FunctionsError {
-            if case .httpError(_, let data) = error, let body = String(data: data, encoding: .utf8) {
-                if body.contains("SOURCE_BLOCKED") { throw MealsError.message("Homey can’t import directly from this website right now. You can still add the recipe manually.") }
-                if let decoded = try? JSONDecoder().decode(ImportErrorEnvelope.self, from: data) { throw MealsError.message(decoded.error.message) }
+        guard let cleanURL = RecipeImportInput.validURL(url) else { throw MealsError.message("Enter a valid recipe URL.") }
+        #if DEBUG
+        print("[RecipeImport] Starting url=\(RecipeImportInput.safeLogURL(cleanURL))")
+        print("[RecipeImport] Calling importer")
+        #endif
+        do {
+            let response: RecipeImportResponse = try await client.functions.invoke("import-recipe-url", options: FunctionInvokeOptions(body: RecipeImportRequest(homeId: homeId, url: cleanURL))) { data, response in
+                RecipeImportDiagnostics.response(data: data, status: response.statusCode, contentType: response.value(forHTTPHeaderField: "Content-Type"))
+                return try RecipeImportResponseDecoder.decode(data)
             }
-            throw MealsError.message("Homey couldn’t import this recipe. Please try again or add it manually.")
+            RecipeImportDiagnostics.decoded(response)
+            #if DEBUG
+            print("[RecipeImport] Success")
+            print("[RecipeImport] title=\(response.recipe.title)")
+            print("[RecipeImport] imagePresent=\(response.recipe.imageUrl?.isEmpty == false)")
+            print("[RecipeImport] ingredients=\(response.recipe.ingredients.count)")
+            print("[RecipeImport] directions=\(response.recipe.steps.count)")
+            #endif
+            return response
+        } catch {
+            var code = error is URLError ? "NETWORK_ERROR" : "IMPORT_REQUEST_ERROR"
+            if let responseError = error as? RecipeImportResponseError { code = responseError.code }
+            if let decodingError = error as? DecodingError {
+                code = "RESPONSE_DECODING_ERROR"
+                RecipeImportDiagnostics.decoding(decodingError)
+            }
+            if let functionError = error as? FunctionsError, case .httpError(let status, let data) = functionError {
+                RecipeImportDiagnostics.response(data: data, status: status, contentType: nil)
+                code = RecipeImportInput.errorCode(data: data) ?? "HTTP_\(status)"
+            }
+            #if DEBUG
+            print("[RecipeImport] FAILED")
+            print("[RecipeImport] code=\(code)")
+            print("[RecipeImport] errorType=\(String(reflecting: type(of: error)))")
+            print("[RecipeImport] message=\(RecipeImportInput.message(for: code))")
+            #endif
+            throw MealsError.message(RecipeImportInput.message(for: code))
         }
     }
 
     func signedImageURL(path: String?) async -> URL? {
-        guard let path, !path.isEmpty else { return nil }
-        if let remote = URL(string: path), remote.scheme != nil { return remote }
-        return try? await client.storage.from(imageBucket).createSignedURL(path: path, expiresIn: 3600)
+        guard let reference = RecipeImageReference(path) else { return nil }
+        switch reference {
+        case .remote(let url): return url
+        case .storage(let path):
+            return try? await client.storage.from(imageBucket).createSignedURL(path: path, expiresIn: 3600)
+        }
     }
 
     func uploadPhoto(_ data: Data, homeId: UUID, mealId: UUID) async throws -> String {
@@ -202,7 +298,7 @@ struct SaveMealParams: Encodable {
 }
 struct SaveCommunityParams: Encodable {
     let title: String; let imageURL: String?; let sourceType: String; let description, cuisine, servings, sourceName, sourceURL: String?; let prep, cook, total: Int?; let mealTypes, keywords: [String]; let ingredients: [CommunityIngredient]; let steps: [CommunityStep]
-    init(draft: RecipeDraft) { imageURL=draft.imported?.recipe.imageUrl; sourceType=CommunityRecipeSourceType.forDraft(draft).rawValue; title=draft.name.trimmingCharacters(in: .whitespacesAndNewlines); description=draft.description.nilIfBlank; cuisine=draft.cuisine.nilIfBlank; servings=draft.servings.map { String($0) }; sourceName=draft.sourceName.nilIfBlank; sourceURL=draft.sourceURL.nilIfBlank; prep=draft.prepMinutes; cook=draft.cookMinutes; total=draft.imported?.recipe.totalTimeMinutes ?? (((draft.prepMinutes ?? 0)+(draft.cookMinutes ?? 0)) > 0 ? (draft.prepMinutes ?? 0)+(draft.cookMinutes ?? 0) : nil); mealTypes=draft.mealTypes.map(\.rawValue); keywords=draft.tagsText.split(separator:",").map{String($0).trimmingCharacters(in:.whitespaces)}; ingredients=draft.ingredients.enumerated().filter{!$0.element.name.isEmpty}.map{CommunityIngredient(quantity:$0.element.quantity.nilIfBlank,sortOrder:$0.offset,isOptional:$0.element.optional,sectionName:$0.element.section.nilIfBlank,ingredientName:$0.element.name)}; steps=draft.steps.enumerated().filter{!$0.element.text.isEmpty}.map{CommunityStep(stepText:$0.element.text,sortOrder:$0.offset,sectionName:nil)} }
+    init(draft: RecipeDraft) { imageURL=draft.importImageURL; sourceType=CommunityRecipeSourceType.forDraft(draft).rawValue; title=draft.name.trimmingCharacters(in: .whitespacesAndNewlines); description=draft.description.nilIfBlank; cuisine=draft.cuisine.nilIfBlank; servings=draft.servings.map { String($0) }; sourceName=draft.sourceName.nilIfBlank; sourceURL=draft.sourceURL.nilIfBlank; prep=draft.prepMinutes; cook=draft.cookMinutes; total=draft.imported?.recipe.totalTimeMinutes ?? (((draft.prepMinutes ?? 0)+(draft.cookMinutes ?? 0)) > 0 ? (draft.prepMinutes ?? 0)+(draft.cookMinutes ?? 0) : nil); mealTypes=draft.mealTypes.map(\.rawValue); keywords=draft.tagsText.split(separator:",").map{String($0).trimmingCharacters(in:.whitespaces)}; ingredients=draft.ingredients.enumerated().filter{!$0.element.name.isEmpty}.map{CommunityIngredient(quantity:$0.element.quantity.nilIfBlank,sortOrder:$0.offset,isOptional:$0.element.optional,sectionName:$0.element.section.nilIfBlank,ingredientName:$0.element.name)}; steps=draft.steps.enumerated().filter{!$0.element.text.isEmpty}.map{CommunityStep(stepText:$0.element.text,sortOrder:$0.offset,sectionName:nil)} }
     enum CodingKeys: String, CodingKey { case title="requested_title", description="requested_description", prep="requested_prep_time_minutes", cook="requested_cook_time_minutes", total="requested_total_time_minutes", servings="requested_servings", cuisine="requested_cuisine", mealTypes="requested_meal_types", keywords="requested_keywords", ingredients="requested_ingredients", steps="requested_steps", sourceName="requested_source_name", sourceURL="requested_source_url" }
     func encode(to encoder: Encoder) throws { var c=encoder.container(keyedBy:CodingKeys.self); try c.encode(title,forKey:.title); try c.encode(description,forKey:.description); try c.encode(prep,forKey:.prep); try c.encode(cook,forKey:.cook); try c.encode(total,forKey:.total); try c.encode(servings,forKey:.servings); try c.encode(cuisine,forKey:.cuisine); try c.encode(mealTypes,forKey:.mealTypes); try c.encode(keywords,forKey:.keywords); try c.encode(ingredients,forKey:.ingredients); try c.encode(steps,forKey:.steps); try c.encode(sourceName,forKey:.sourceName); try c.encode(sourceURL,forKey:.sourceURL); var d=encoder.container(keyedBy:DynamicKey.self); try d.encode(imageURL,forKey:.init("requested_image_url")); try d.encode(sourceType,forKey:.init("requested_source_type")) }
     struct DynamicKey: CodingKey { let stringValue:String; let intValue:Int?=nil; init(_ v:String){stringValue=v}; init?(stringValue:String){self.init(stringValue)}; init?(intValue:Int){return nil} }

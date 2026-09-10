@@ -44,7 +44,9 @@ struct RecipeEditorView: View {
         self.existingMeal = existingMeal
         _savedHomeID = State(initialValue: existingMeal?.id)
         _savedPhotoPath = State(initialValue: existingMeal?.primaryPhotoPath)
-        _draft = State(initialValue: initialDraft ?? RecipeDraft())
+        let startingDraft = initialDraft ?? RecipeDraft()
+        _draft = State(initialValue: startingDraft)
+        RecipeImportDiagnostics.editor(startingDraft, editing: existingMeal != nil)
     }
 
     var body: some View {
@@ -101,7 +103,8 @@ struct RecipeEditorView: View {
             .alert("Recipe Save", isPresented: .init(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(error ?? "") }
-            .task { photoURL = await service.signedImageURL(path: savedPhotoPath ?? draft.imported?.recipe.imageUrl) }
+            .onAppear { RecipeImportDiagnostics.editor(draft, editing: existingMeal != nil, mounted: true) }
+            .task { photoURL = await service.signedImageURL(path: savedPhotoPath ?? draft.importImageURL) }
             .task(id: photoSelection) { await preparePhoto() }
         }
     }
@@ -132,6 +135,22 @@ struct RecipeEditorView: View {
                 }
                 .overlay { if loadingPhoto { ProgressView().padding().background(.regularMaterial, in: Capsule()) } }
                 .clipShape(RoundedRectangle(cornerRadius: 24))
+        }
+        .overlay(alignment: .topTrailing) {
+            if draft.imported != nil && (selectedPhoto != nil || photoURL != nil) {
+                Button {
+                    draft.importedImageRemoved = true
+                    selectedPhoto = nil
+                    selectedPhotoData = nil
+                    photoSelection = nil
+                    photoURL = nil
+                    savedPhotoPath = nil
+                    uploadedSelectedPhoto = false
+                } label: {
+                    Image(systemName: "xmark").font(.headline).foregroundStyle(.white)
+                        .frame(width: 44, height: 44).background(.black.opacity(0.6), in: Circle())
+                }.padding(10).accessibilityLabel("Remove Photo").disabled(loadingPhoto)
+            }
         }
         .buttonStyle(.plain)
         .disabled(loadingPhoto)
@@ -292,6 +311,7 @@ struct RecipeEditorView: View {
                 throw MealsError.message("We couldn’t prepare that photo. Please choose another image.")
             }
             guard !Task.isCancelled else { return }
+            if draft.imported != nil { draft.importedImageRemoved = true }
             selectedPhotoData = jpeg
             selectedPhoto = UIImage(data: jpeg)
             uploadedSelectedPhoto = false
@@ -306,6 +326,11 @@ struct RecipeEditorView: View {
         guard !saving else { return }
         saving = true
         error = nil
+        #if DEBUG
+        print("[RecipeImageFlow] source=\(draft.imported == nil ? "manual" : "website")")
+        print("[RecipeImageFlow] localImagePresent=\(selectedPhotoData != nil)")
+        print("[RecipeImageFlow] remoteImageURL=\(RecipeImageReference.safeLog(draft.importImageURL))")
+        #endif
         var stage = "validation"
         RecipeSaveDiagnostics.log("Starting save title=\(draft.name) addToHome=true contributeToCommunity=\(draft.shareWithCommunity) imported=\(draft.imported != nil) homeID=\(home.id)")
         defer { saving = false }
@@ -328,7 +353,7 @@ struct RecipeEditorView: View {
                     }
                     stage = "imageAttachment"
                     _ = try await service.save(draft, homeId: home.id, mealId: homeID, photoPath: savedPhotoPath)
-                } else if let imageURL = draft.imported?.recipe.imageUrl, !imageURL.isEmpty {
+                } else if let imageURL = draft.importImageURL, !imageURL.isEmpty {
                     if savedPhotoPath == nil {
                         stage = "imageUpload"
                         RecipeSaveDiagnostics.log("Downloading/uploading imported image to meal-images…")
@@ -341,6 +366,12 @@ struct RecipeEditorView: View {
                 } else {
                     RecipeSaveDiagnostics.log("Image upload skipped: no selected/imported photo")
                 }
+
+                #if DEBUG
+                print("[RecipeImageFlow] uploadedPath=\(savedPhotoPath ?? "nil")")
+                print("[RecipeImageFlow] homeImagePayload=\(savedPhotoPath ?? "nil")")
+                print("[RecipeImageFlow] communityImagePayload=\(RecipeImageReference.safeLog(SaveCommunityParams(draft: draft).imageURL))")
+                #endif
 
                 if existingMeal == nil && draft.shareWithCommunity && savedCommunityID == nil {
                     stage = "communityRecipe"

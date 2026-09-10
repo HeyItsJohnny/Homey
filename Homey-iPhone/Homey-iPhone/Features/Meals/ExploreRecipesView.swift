@@ -3,99 +3,142 @@ import SwiftUI
 struct ExploreRecipesView: View {
     let home: HomeSummary
     @ObservedObject var model: MealsViewModel
+    @EnvironmentObject private var session: AppSession
     @StateObject private var feed = ExploreRecipesViewModel()
     @State private var query = ExploreQuery()
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 2), count: 3)
+    @State private var viewedRecipe: ExploreRecipe?
+    @State private var plannedMeal: HomeyMeal?
+    @State private var recipeToDelete: ExploreRecipe?
+    @State private var busyIDs: Set<UUID> = []
+    @State private var feedback: String?
+    private let filters = RecipeLibraryFilter.allCases.filter { $0 != .favorites }
 
     var body: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 12) {
-                HStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search Recipes", text: $query.search)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .submitLabel(.search)
-                    if !query.search.isEmpty {
-                        Button { query.search = "" } label: {
-                            Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                        }
-                        .accessibilityLabel("Clear search")
-                    }
-                }
-                .padding(10)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
-
-                Menu {
-                    Picker("Meal type", selection: $query.filter) {
-                        ForEach(RecipeFilter.allCases.filter { $0 != .favorites }) { filter in
-                            Text(filter.rawValue).tag(filter)
-                        }
-                    }
-                } label: {
-                    Image(systemName: query.filter == .all ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
-                        .font(.title2)
-                        .frame(minWidth: 44, minHeight: 44)
-                }
-                .tint(HomeyColors.primary)
-                .accessibilityLabel("Filter recipes")
-                .accessibilityValue(query.filter.rawValue)
-            }
-            .padding(.horizontal)
-
+        GeometryReader { geometry in
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 2) {
-                    ForEach(feed.recipes) { recipe in
-                        NavigationLink(value: recipe) {
-                            ExploreRecipeImage(path: recipe.imageURL)
+                LazyVStack(spacing: 14) {
+                    RecipeLibrarySearchBar(search: $query.search, filter: $query.filter,
+                        placeholder: "Search community recipes...", filters: filters)
+                    RecipeLibraryFilterChips(selection: $query.filter, filters: filters)
+
+                    if feed.isLoading && feed.recipes.isEmpty {
+                        RecipeLibraryLoadingState(message: "Gathering community recipes…")
+                    } else if let error = feed.errorMessage, feed.recipes.isEmpty {
+                        VStack(spacing: 12) {
+                            Image(systemName: "wifi.exclamationmark").font(.largeTitle).foregroundStyle(HomeyColors.recipeGreenAccent)
+                            Text(error).font(.subheadline).foregroundStyle(HomeyColors.secondaryText)
+                            Button("Retry") { Task { await feed.reset(query: query) } }.buttonStyle(.bordered)
+                        }.frame(maxWidth: .infinity).padding(.vertical, 36)
+                    } else if feed.recipes.isEmpty && query.search.isEmpty && query.filter == .all {
+                        emptyState
+                    } else if feed.recipes.isEmpty {
+                        RecipeLibraryNoMatches(title: "No recipes match your search") { query = ExploreQuery() }
+                    } else {
+                        ForEach(feed.recipes) { recipe in
+                            RecipeCard(content: cardContent(recipe), width: geometry.size.width - 32,
+                                favorite: nil, favoritePending: false, open: { viewedRecipe = recipe }, favoriteAction: nil) {
+                                Button("View Recipe", systemImage: "book") { viewedRecipe = recipe }
+                                Button("Add to Home Recipes", systemImage: "books.vertical") { Task { await addToHome(recipe) } }
+                                Button("Add to Meal Plan", systemImage: "calendar.badge.plus") { Task { await addToMealPlan(recipe) } }
+                                if recipe.createdBy == session.currentUser?.id {
+                                    Divider()
+                                    Button("Delete Community Recipe", systemImage: "trash", role: .destructive) { recipeToDelete = recipe }
+                                }
+                            }
+                            .disabled(busyIDs.contains(recipe.id))
+                            .onAppear { Task { await feed.loadMoreIfNeeded(near: recipe) } }
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(recipe.title)
-                        .accessibilityHint("Opens recipe details")
-                        .onAppear {
-                            Task { await feed.loadMoreIfNeeded(near: recipe) }
+                        if feed.isLoading { ProgressView().tint(HomeyColors.recipeGreenAccent).padding() }
+                        if let error = feed.errorMessage {
+                            VStack(spacing: 8) {
+                                Text(error).font(.subheadline).foregroundStyle(HomeyColors.secondaryText)
+                                Button("Retry") { Task { await feed.loadNextPage() } }.buttonStyle(.bordered)
+                            }.padding()
                         }
                     }
-                }
-                if feed.isLoading {
-                    ProgressView().tint(HomeyColors.primary)
-                        .frame(maxWidth: .infinity).padding()
-                } else if let error = feed.errorMessage {
-                    VStack(spacing: 8) {
-                        Text(error).font(.subheadline).foregroundStyle(.secondary)
-                        Button("Retry") { Task { await feed.loadNextPage() } }
-                            .buttonStyle(.bordered)
-                    }
-                    .padding()
-                } else if feed.recipes.isEmpty {
-                    ContentUnavailableView {
-                        Label(query.search.isEmpty && query.filter == .all ? "No recipes yet" : "No recipes found", systemImage: "fork.knife")
-                    } description: {
-                        Text(query.search.isEmpty && query.filter == .all ? "Community recipes will appear here." : "Try another search or meal type.")
-                    } actions: {
-                        if !query.search.isEmpty || query.filter != .all {
-                            Button("Reset search and filters") { query = ExploreQuery() }
-                        }
-                    }
-                }
+                }.padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 24)
             }
             .scrollDismissesKeyboard(.interactively)
             .refreshable { await feed.reset(query: query) }
-            .id(query)
         }
         .task(id: query) { await feed.update(query: query) }
-        .navigationDestination(for: ExploreRecipe.self) { recipe in
+        .navigationDestination(item: $viewedRecipe) { recipe in
             ExploreRecipeDestination(id: recipe.id, home: home, model: model)
-                .toolbar(.visible, for: .navigationBar)
         }
-        .onChange(of: model.recipesRevision) {
-            Task { await feed.reset(query: query) }
+        .sheet(item: $plannedMeal) { RecipePlanSheet(meal: $0, home: home, model: model) }
+        .confirmationDialog("Delete Community Recipe?", isPresented: .init(get: { recipeToDelete != nil }, set: { if !$0 { recipeToDelete = nil } }),
+            titleVisibility: .visible, presenting: recipeToDelete) { recipe in
+                Button("Delete Recipe", role: .destructive) { Task { await delete(recipe) } }
+                Button("Cancel", role: .cancel) { recipeToDelete = nil }
+            } message: { recipe in
+                Text("Are you sure you want to permanently delete “\(recipe.title)” from the Homey community?")
+            }
+        .alert("Community Recipe", isPresented: .init(get: { feedback != nil }, set: { if !$0 { feedback = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(feedback ?? "") }
+        .onChange(of: model.recipesRevision) { Task { await feed.reset(query: query) } }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "book.closed").font(.system(size: 38)).foregroundStyle(HomeyColors.recipeGreenAccent)
+                .frame(width: 84, height: 84).background(HomeyColors.recipeGreenAccent.opacity(0.1), in: Circle())
+            Text("No community recipes found").font(HomeyTypography.title)
+            Text("Community recipes will appear here.").foregroundStyle(HomeyColors.secondaryText)
+        }.padding(28).frame(maxWidth: .infinity)
+            .background(HomeyColors.recipeCardBackground.opacity(0.9), in: RoundedRectangle(cornerRadius: 24))
+    }
+
+    private func cardContent(_ recipe: ExploreRecipe) -> RecipeCardContent {
+        RecipeCardContent(title: recipe.title, imageReference: recipe.imageURL, description: recipe.description,
+            mealTypes: recipe.mealTypes, totalMinutes: recipe.displayedTotalMinutes,
+            servings: recipe.displayedServings, badges: recipe.keywords + [recipe.cuisine].compactMap { $0 })
+    }
+
+    private func addToHome(_ summary: ExploreRecipe) async {
+        guard !busyIDs.contains(summary.id) else { return }
+        busyIDs.insert(summary.id); defer { busyIDs.remove(summary.id) }
+        do {
+            let recipe = try await ExploreRecipeService().recipe(id: summary.id)
+            _ = try await MealsService().addToHome(recipe, homeId: home.id)
+            await model.load(home: home)
+            feedback = "Added to \(home.name)."
+        } catch {
+            await model.load(home: home)
+            feedback = error.localizedDescription
         }
+    }
+
+    private func addToMealPlan(_ summary: ExploreRecipe) async {
+        guard !busyIDs.contains(summary.id) else { return }
+        busyIDs.insert(summary.id); defer { busyIDs.remove(summary.id) }
+        do {
+            let recipe = try await ExploreRecipeService().recipe(id: summary.id)
+            let homeMealID = try await MealsService().addToHome(recipe, homeId: home.id)
+            await model.load(home: home)
+            guard let meal = model.homeRecipes.first(where: { $0.id == homeMealID }) else {
+                throw MealsError.message("The recipe was added, but Homey couldn't open Meal Plan.")
+            }
+            plannedMeal = meal
+        } catch {
+            await model.load(home: home)
+            feedback = error.localizedDescription
+        }
+    }
+
+    private func delete(_ recipe: ExploreRecipe) async {
+        recipeToDelete = nil
+        guard recipe.createdBy == session.currentUser?.id, !busyIDs.contains(recipe.id) else { return }
+        busyIDs.insert(recipe.id); defer { busyIDs.remove(recipe.id) }
+        do {
+            try await MealsService().deleteCommunityRecipe(recipe.id)
+            feed.remove(id: recipe.id)
+        } catch { feedback = "Homey couldn't delete this community recipe." }
     }
 }
 
-/// Loads full data, then presents the existing detail and its existing actions unchanged.
-private struct ExploreRecipeDestination: View {
+/// Loads full data, then presents the existing read-only Community detail.
+struct ExploreRecipeDestination: View {
     let id: UUID
     let home: HomeSummary
     @ObservedObject var model: MealsViewModel
@@ -115,9 +158,7 @@ private struct ExploreRecipeDestination: View {
                 } actions: {
                     Button("Retry") { attempt += 1 }
                 }
-            } else {
-                ProgressView().tint(HomeyColors.primary)
-            }
+            } else { ProgressView().tint(HomeyColors.primary) }
         }
         .task(id: attempt) {
             failed = false

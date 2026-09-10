@@ -14,8 +14,10 @@ source = source[:start] + source[end:]
 source = source.replace('import Supabase\n', '')
 source = source.replace('init(service: (any ExploreRecipeProviding)? = nil)', 'init(service: any ExploreRecipeProviding)')
 source = source.replace('service ?? ExploreRecipeService()', 'service')
-models = (root / 'Homey-iPhone/Features/Meals/MealsModels.swift').read_text()
-source += '\n' + next(line for line in models.splitlines() if line.startswith('enum RecipeFilter:'))
+source += '''
+enum MealType: String, Codable, Hashable { case breakfast, lunch, dinner, snack, dessert, drink }
+enum RecipeLibraryFilter: Hashable { case all, favorites, breakfast, lunch, dinner, dessert }
+'''
 with tempfile.TemporaryDirectory(prefix='homey-explore-') as directory:
     directory = Path(directory)
     production = directory / 'Production.swift'

@@ -5,7 +5,7 @@ struct RecipeLibraryView: View {
     @ObservedObject var model: MealsViewModel
     let onAddRecipe: () -> Void
     let onExplore: () -> Void
-    @State private var filter: LibraryFilter = .all
+    @State private var filter: RecipeLibraryFilter = .all
     @State private var search = ""
     @State private var viewedMeal: HomeyMeal?
     @State private var plannedMeal: HomeyMeal?
@@ -26,34 +26,26 @@ struct RecipeLibraryView: View {
         GeometryReader { geometry in
             ScrollView {
                 LazyVStack(spacing: 14) {
-                    searchBar
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(LibraryFilter.allCases) { value in
-                                Button { filter = value } label: {
-                                    Text(value.title).font(.subheadline.weight(filter == value ? .semibold : .regular))
-                                        .padding(.horizontal, 16).frame(minHeight: 40)
-                                        .foregroundStyle(filter == value ? .white : HomeyColors.text)
-                                        .background(filter == value ? HomeyColors.recipeGreenAccent : HomeyColors.field.opacity(0.8), in: Capsule())
-                                }.buttonStyle(.plain).accessibilityAddTraits(filter == value ? .isSelected : [])
-                            }
-                        }
-                    }
+                    RecipeLibrarySearchBar(search: $search, filter: $filter, placeholder: "Search your recipes...", filters: RecipeLibraryFilter.allCases)
+                    RecipeLibraryFilterChips(selection: $filter, filters: RecipeLibraryFilter.allCases)
                     if model.isLoading && model.homeRecipes.isEmpty {
                         loadingState
                     } else if model.homeRecipes.isEmpty {
                         emptyState
                     } else if filteredRecipes.isEmpty {
-                        VStack(spacing: 12) {
-                            Image(systemName: "magnifyingglass").font(.largeTitle).foregroundStyle(HomeyColors.recipeGreenAccent)
-                            Text("No matching recipes").font(HomeyTypography.title)
-                            Text("Try another search or filter.").foregroundStyle(HomeyColors.secondaryText)
-                            Button("Clear filters") { search = ""; filter = .all }.buttonStyle(.bordered)
-                        }.frame(maxWidth: .infinity).padding(.vertical, 36)
+                        RecipeLibraryNoMatches(title: "No matching recipes") { search = ""; filter = .all }
                     } else {
                         ForEach(filteredRecipes) { meal in
-                            HomeRecipeCard(meal: meal, width: geometry.size.width - 32, favorite: isFavorite(meal), favoritePending: pendingFavorites[meal.id] != nil,
-                                open: { viewedMeal = meal }, favoriteAction: { toggleFavorite(meal) }, plan: { plannedMeal = meal }, canRemove: canRemove, remove: { recipeToRemove = meal })
+                            RecipeCard(content: cardContent(meal), width: geometry.size.width - 32, favorite: isFavorite(meal), favoritePending: pendingFavorites[meal.id] != nil,
+                                open: { viewedMeal = meal }, favoriteAction: { toggleFavorite(meal) }) {
+                                Button("View Recipe", systemImage: "book") { viewedMeal = meal }
+                                Button("Add to Meal Plan", systemImage: "calendar.badge.plus") { plannedMeal = meal }
+                                if canRemove {
+                                    Divider()
+                                    Button("Remove Recipe", systemImage: "trash", role: .destructive) { recipeToRemove = meal }
+                                        .accessibilityLabel("Remove Recipe")
+                                }
+                            }
                                 .disabled(removingIDs.contains(meal.id))
                         }
                     }
@@ -74,29 +66,6 @@ struct RecipeLibraryView: View {
         } message: { Text(removalError ?? "") }
     }
 
-    private var searchBar: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").foregroundStyle(HomeyColors.secondaryText)
-                TextField("Search your recipes...", text: $search)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled().submitLabel(.search)
-                if !search.isEmpty {
-                    Button { search = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .accessibilityLabel("Clear search").foregroundStyle(HomeyColors.secondaryText)
-                }
-            }.padding(.horizontal, 14).frame(minHeight: 52)
-                .background(HomeyColors.field.opacity(0.8), in: RoundedRectangle(cornerRadius: 18))
-            Menu {
-                Picker("Filter recipes", selection: $filter) {
-                    ForEach(LibraryFilter.allCases) { Text($0.title).tag($0) }
-                }
-            } label: {
-                Image(systemName: "slider.horizontal.3").font(.title3).foregroundStyle(HomeyColors.text)
-                    .frame(width: 52, height: 52).background(HomeyColors.field.opacity(0.8), in: RoundedRectangle(cornerRadius: 18))
-            }.accessibilityLabel("Filter recipes").accessibilityValue(filter.title)
-        }
-    }
-
     private var emptyState: some View {
         VStack(spacing: 16) {
             Image(systemName: "book.closed").font(.system(size: 38)).foregroundStyle(HomeyColors.recipeGreenAccent)
@@ -110,20 +79,12 @@ struct RecipeLibraryView: View {
             .background(HomeyColors.recipeCardBackground.opacity(0.9), in: RoundedRectangle(cornerRadius: 24))
     }
 
-    private var loadingState: some View {
-        VStack(spacing: 14) {
-            HStack(spacing: 10) { ProgressView(); Text("Gathering your recipes…").font(.subheadline) }.padding(12)
-            ForEach(0..<3) { _ in
-                HStack(spacing: 14) {
-                    RoundedRectangle(cornerRadius: 20).fill(HomeyColors.border.opacity(0.2)).frame(width: 110, height: 110)
-                    VStack(alignment: .leading, spacing: 14) {
-                        RoundedRectangle(cornerRadius: 6).fill(HomeyColors.border.opacity(0.25)).frame(height: 16)
-                        RoundedRectangle(cornerRadius: 6).fill(HomeyColors.border.opacity(0.15)).frame(height: 12)
-                        RoundedRectangle(cornerRadius: 6).fill(HomeyColors.border.opacity(0.15)).frame(width: 90, height: 12)
-                    }
-                }.padding(12).background(.white.opacity(0.7), in: RoundedRectangle(cornerRadius: 24)).accessibilityHidden(true)
-            }
-        }
+    private var loadingState: some View { RecipeLibraryLoadingState(message: "Gathering your recipes…") }
+
+    private func cardContent(_ meal: HomeyMeal) -> RecipeCardContent {
+        RecipeCardContent(title: meal.name, imageReference: meal.primaryPhotoPath, description: meal.description,
+            mealTypes: meal.mealTypes, totalMinutes: (meal.prepTimeMinutes ?? 0) + (meal.cookTimeMinutes ?? 0),
+            servings: meal.servings, badges: meal.tags + [meal.cuisine].compactMap { $0 })
     }
 
     private func removeRecipe(_ meal: HomeyMeal) async {
@@ -150,105 +111,6 @@ struct RecipeLibraryView: View {
             await model.toggleFavorite(meal)
             pendingFavorites[meal.id] = nil // The model retains its original value if the request fails.
         }
-    }
-}
-
-private enum LibraryFilter: Hashable, Identifiable, CaseIterable {
-    case all, favorites, breakfast, lunch, dinner, dessert
-    var id: Self { self }
-    var mealType: MealType? {
-        switch self {
-        case .all, .favorites: nil
-        case .breakfast: .breakfast
-        case .lunch: .lunch
-        case .dinner: .dinner
-        case .dessert: .dessert
-        }
-    }
-    var title: String {
-        switch self {
-        case .all: "All"
-        case .favorites: "Favorites"
-        case .dessert: "Desserts"
-        default: mealType?.title ?? ""
-        }
-    }
-}
-
-private struct HomeRecipeCard: View {
-    let meal: HomeyMeal
-    let width: CGFloat
-    let favorite: Bool
-    let favoritePending: Bool
-    let open: () -> Void
-    let favoriteAction: () -> Void
-    let plan: () -> Void
-    let canRemove: Bool
-    let remove: () -> Void
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    private var imageSize: CGFloat { min(130, max(100, width * 0.30)) }
-    private var badges: [String] {
-        var seen = Set<String>()
-        return (meal.tags + [meal.cuisine].compactMap { $0 }).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
-    }
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            Button(action: open) {
-                let layout = dynamicTypeSize.isAccessibilitySize ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12)) : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
-                layout {
-                    HomeRecipeThumbnail(path: meal.primaryPhotoPath).frame(width: imageSize, height: imageSize)
-                        .clipShape(RoundedRectangle(cornerRadius: 20))
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(meal.name).font(.headline.weight(.bold)).lineLimit(2).foregroundStyle(HomeyColors.text)
-                        if let description = meal.description?.trimmingCharacters(in: .whitespacesAndNewlines), !description.isEmpty {
-                            Text(description).font(.subheadline).lineLimit(2).foregroundStyle(HomeyColors.secondaryText)
-                        }
-                        RecipeBadgeFlow(spacing: 7) {
-                            let total = (meal.prepTimeMinutes ?? 0) + (meal.cookTimeMinutes ?? 0)
-                            if total > 0 { Label("\(total) min", systemImage: "clock") }
-                            ForEach(meal.mealTypes) { Label($0.title, systemImage: "fork.knife") }
-                            if let servings = meal.servings, servings > 0 { Label("\(servings.formatted()) servings", systemImage: "person.2") }
-                        }.font(.caption).foregroundStyle(HomeyColors.secondaryText)
-                        if !badges.isEmpty {
-                            RecipeBadgeFlow(spacing: 5) {
-                                ForEach(Array(badges.prefix(3).enumerated()), id: \.offset) { index, tag in
-                                    Text(tag).font(.caption2.weight(.medium)).lineLimit(1)
-                                        .padding(.horizontal, 9).padding(.vertical, 5)
-                                        .foregroundStyle(badgeColor(index))
-                                        .background(badgeColor(index).opacity(0.1), in: Capsule())
-                                }
-                            }
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-            }.buttonStyle(.plain).accessibilityHint("Opens recipe details")
-            VStack(spacing: 0) {
-                Button(action: favoriteAction) {
-                    Image(systemName: favorite ? "heart.fill" : "heart").font(.system(size: 21))
-                        .foregroundStyle(favorite ? HomeyColors.danger : HomeyColors.secondaryText).frame(width: 44, height: 44)
-                }.buttonStyle(.plain).disabled(favoritePending)
-                    .accessibilityLabel(favorite ? "Remove \(meal.name) from favorites" : "Favorite \(meal.name)")
-                Menu {
-                    Button("View Recipe", systemImage: "book", action: open)
-                    Button("Add to Meal Plan", systemImage: "calendar.badge.plus", action: plan)
-                    if canRemove {
-                        Divider()
-                        Button("Remove Recipe", systemImage: "trash", role: .destructive, action: remove)
-                            .accessibilityLabel("Remove Recipe")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis").rotationEffect(.degrees(90)).foregroundStyle(HomeyColors.secondaryText).frame(width: 44, height: 44)
-                }.accessibilityLabel("Actions for \(meal.name)")
-            }
-        }.padding(10)
-            .background(HomeyColors.recipeCardBackground.opacity(0.95), in: RoundedRectangle(cornerRadius: 26))
-            .shadow(color: HomeyColors.text.opacity(0.035), radius: 10, y: 4)
-    }
-
-    private func badgeColor(_ index: Int) -> Color {
-        [HomeyColors.recipeGreenAccent, HomeyColors.primary, HomeyColors.recipeOrangeAccent][index % 3]
     }
 }
 

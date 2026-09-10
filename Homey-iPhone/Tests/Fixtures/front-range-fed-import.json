@@ -1,0 +1,128 @@
+{
+  "importId": "00000000-0000-4000-8000-000000000001",
+  "globalRecipeId": null,
+  "alreadyExists": false,
+  "normalizedUrl": "https://frontrangefed.com/sheet-pan-pancakes-from-mix/",
+  "recipe": {
+    "title": "Sheet Pan Pancakes From Mix",
+    "description": "Sheet pan pancakes from mix are easy to make, customizable, perfect for feeding a crowd and can be made in just 15 minutes. This recipe uses Kodiak Cakes pancake mix for extra nutrition and protein. Topped with strawberries, blueberries and chocolate chips, oven baked pancakes using a mix are a breakfast favorite!",
+    "imageUrl": "https://www.frontrangefed.com/wp-content/uploads/2023/04/Sheet-Pan-Pancakes-With-Mix-Featured.jpg",
+    "prepTimeMinutes": 3,
+    "cookTimeMinutes": 12,
+    "totalTimeMinutes": 15,
+    "servings": "8",
+    "cuisine": "American",
+    "mealTypes": [
+      "breakfast",
+      "dinner"
+    ],
+    "keywords": [
+      "15-minute dinner",
+      "breakfast food",
+      "breakfast for dinner",
+      "easy recipe",
+      "entertaining",
+      "good for a crowd",
+      "make-ahead breakfast",
+      "brunch",
+      "Main Course"
+    ],
+    "ingredients": [
+      {
+        "sectionName": null,
+        "ingredientName": "2 1/2 cups Kodiak Cakes pancake mix (or another mix like Bisquick or Krusteaz)",
+        "quantity": null,
+        "isOptional": false,
+        "sortOrder": 0
+      },
+      {
+        "sectionName": null,
+        "ingredientName": "dash of cinnamon (optional)",
+        "quantity": null,
+        "isOptional": false,
+        "sortOrder": 1
+      },
+      {
+        "sectionName": null,
+        "ingredientName": "2 eggs",
+        "quantity": null,
+        "isOptional": false,
+        "sortOrder": 2
+      },
+      {
+        "sectionName": null,
+        "ingredientName": "2 cups milk",
+        "quantity": null,
+        "isOptional": false,
+        "sortOrder": 3
+      },
+      {
+        "sectionName": null,
+        "ingredientName": "1 tbsp oil or butter, melted",
+        "quantity": null,
+        "isOptional": false,
+        "sortOrder": 4
+      },
+      {
+        "sectionName": null,
+        "ingredientName": "toppings of your choice - I used strawberries, blueberries, and chocolate chips",
+        "quantity": null,
+        "isOptional": false,
+        "sortOrder": 5
+      }
+    ],
+    "steps": [
+      {
+        "sectionName": null,
+        "stepText": "Preheat your oven to 425 degrees.",
+        "sortOrder": 0
+      },
+      {
+        "sectionName": null,
+        "stepText": "Grease your pan with oil, or melted butter. (I like to place the butter on my pan, then put it in the preheating oven for 2-3 minutes to melt. Swirl the butter around the pan to coat it.)",
+        "sortOrder": 1
+      },
+      {
+        "sectionName": null,
+        "stepText": "In a large bowl, add the pancake mix, a dash of cinnamon (if using), eggs, and milk. Mix until just combined.",
+        "sortOrder": 2
+      },
+      {
+        "sectionName": null,
+        "stepText": "Pour the pancake batter into your prepared sheet pan and spread it evenly across the pan with a spatula. Then top with your choice of add-ins (just sprinkle them right on top of the batter). Strawberries, blueberries, and chocolate chips are a delicious combination!",
+        "sortOrder": 3
+      },
+      {
+        "sectionName": null,
+        "stepText": "Bake the pancakes for 12-14 minutes. You’ll know the pancakes are done when you stick a toothpick in the center and it comes out clean. The pancakes should be a very light, golden brown. Be careful not to overcook!",
+        "sortOrder": 4
+      },
+      {
+        "sectionName": null,
+        "stepText": "Cut the sheet pan pancakes into squares and serve with your choice of toppings: syrup, honey, peanut butter, powdered sugar, etc.",
+        "sortOrder": 5
+      }
+    ],
+    "nutrition": {
+      "@type": "NutritionInformation",
+      "calories": "153 kcal",
+      "carbohydrateContent": "15 g",
+      "proteinContent": "7 g",
+      "fatContent": "8 g",
+      "saturatedFatContent": "3 g",
+      "transFatContent": "0.1 g",
+      "cholesterolContent": "81 mg",
+      "sodiumContent": "255 mg",
+      "fiberContent": "1 g",
+      "sugarContent": "3 g",
+      "unsaturatedFatContent": "4 g",
+      "servingSize": "1 serving"
+    },
+    "source": {
+      "originalUrl": "https://www.frontrangefed.com/sheet-pan-pancakes-from-mix/",
+      "normalizedUrl": "https://frontrangefed.com/sheet-pan-pancakes-from-mix/",
+      "domain": "frontrangefed.com",
+      "name": "Frontrangefed"
+    }
+  }
+}

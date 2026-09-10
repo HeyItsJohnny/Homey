@@ -83,8 +83,7 @@ struct ExploreRecipeImage: View {
             .onDisappear { image = nil }
             .task(id: path) {
                 image = nil
-                guard let path, let url = URL(string: path),
-                      ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return }
+                guard let url = await MealsService().signedImageURL(path: path) else { return }
                 let loaded = await ExploreImageCache.shared.image(url: url)
                 guard !Task.isCancelled else { return }
                 image = loaded

@@ -2,21 +2,35 @@ import Combine
 import Foundation
 import Supabase
 
-/// Lightweight feed data; full ingredients and directions are fetched only on opening a tile.
+/// Lightweight card data; full ingredients and directions are fetched only on opening a card.
 struct ExploreRecipe: Identifiable, Decodable, Hashable {
     let id: UUID
     let title: String
-    let imageURL: String?
+    let description, imageURL: String?
+    let prepTimeMinutes, cookTimeMinutes, totalTimeMinutes: Int?
+    let servings, cuisine: String?
+    let mealTypes: [MealType]
+    let keywords: [String]
+    let createdBy: UUID?
+
+    var displayedTotalMinutes: Int? {
+        if let totalTimeMinutes, totalTimeMinutes > 0 { return totalTimeMinutes }
+        let total = (prepTimeMinutes ?? 0) + (cookTimeMinutes ?? 0)
+        return total > 0 ? total : nil
+    }
+    var displayedServings: Double? { servings.flatMap(Double.init) }
 
     enum CodingKeys: String, CodingKey {
         case id, title
-        case imageURL = "image_url"
+        case description, servings, cuisine, keywords
+        case imageURL = "image_url", prepTimeMinutes = "prep_time_minutes", cookTimeMinutes = "cook_time_minutes"
+        case totalTimeMinutes = "total_time_minutes", mealTypes = "meal_types", createdBy = "created_by"
     }
 }
 
 struct ExploreQuery: Hashable {
     var search = ""
-    var filter: RecipeFilter = .all
+    var filter: RecipeLibraryFilter = .all
 }
 
 struct ExploreRecipePage {
@@ -37,7 +51,7 @@ final class ExploreRecipeService: ExploreRecipeProviding {
 
     func page(query: ExploreQuery, offset: Int) async throws -> ExploreRecipePage {
         var request = client.from("global_recipes")
-            .select("id,title,image_url")
+            .select("id,title,description,image_url,prep_time_minutes,cook_time_minutes,total_time_minutes,servings,cuisine,meal_types,keywords,created_by")
             .eq("status", value: "active")
         let search = query.search.trimmingCharacters(in: .whitespacesAndNewlines)
         if !search.isEmpty {
@@ -48,8 +62,8 @@ final class ExploreRecipeService: ExploreRecipeProviding {
                 .replacingOccurrences(of: "*", with: "\\*")
             request = request.ilike("title", pattern: "%\(escaped)%")
         }
-        if query.filter != .all && query.filter != .favorites {
-            request = request.contains("meal_types", value: [query.filter.rawValue.lowercased()])
+        if let mealType = query.filter.mealType {
+            request = request.contains("meal_types", value: [mealType.rawValue])
         }
         let recipes: [ExploreRecipe] = try await request
             .order("save_count", ascending: false)
@@ -135,5 +149,9 @@ final class ExploreRecipesViewModel: ObservableObject {
               let index = recipes.firstIndex(where: { $0.id == recipe.id }),
               index >= recipes.count - 9 else { return }
         await loadNextPage()
+    }
+
+    func remove(id: UUID) {
+        recipes.removeAll { $0.id == id }
     }
 }

@@ -1,0 +1,75 @@
+--- a/supabase/functions/import-recipe-url/types.ts
++++ b/supabase/functions/import-recipe-url/types.ts
+@@ -1,6 +1,7 @@
+ export interface RecipeImportRequest {
+   home_id: string;
+   url: string;
++  preview_only?: boolean;
+ }
+ 
+ export interface RecipeImportResponse {
+--- a/supabase/functions/import-recipe-url/index.ts
++++ b/supabase/functions/import-recipe-url/index.ts
+@@ -25,6 +25,7 @@
+   }
+ 
+   let importId: string | null = null;
++  let previewOnly = false;
+   let serviceClient: SupabaseClient | null = null;
+   let stage = "request";
+ 
+@@ -53,6 +54,7 @@
+     const user = await authenticatedUser(userClient);
+     stage = "parse-request";
+     const payload = await parseRequest(request);
++    previewOnly = payload.preview_only === true;
+     stage = "home-membership";
+     await assertHomeMembership(serviceClient, payload.home_id, user.id);
+ 
+@@ -79,7 +81,8 @@
+     };
+ 
+     stage = "recipe-imports.insert";
+-    importId = await createRecipeImport(serviceClient, trackingInput);
++    // Preview-only IDs identify this response; no tracking record is persisted.
++    importId = previewOnly ? crypto.randomUUID() : await createRecipeImport(serviceClient, trackingInput);
+ 
+     stage = "fetch";
+     const html = await fetchRecipePage(normalized.normalizedUrl);
+@@ -111,7 +114,7 @@
+     });
+ 
+     stage = "recipe_imports.update-succeeded";
+-    await markRecipeImportSucceeded(serviceClient, importId, null, false);
++    if (!previewOnly) await markRecipeImportSucceeded(serviceClient, importId, null, false);
+ 
+     stage = "response";
+     console.log("========== RECIPE IMPORT ==========", {
+@@ -138,7 +141,7 @@
+ 
+     return jsonResponse(response);
+   } catch (error) {
+-    if (serviceClient && importId) {
++    if (serviceClient && importId && !previewOnly) {
+       await markRecipeImportFailed(serviceClient, importId, error);
+     }
+ 
+@@ -184,6 +187,7 @@
+   return {
+     home_id: payload.home_id,
+     url: payload.url,
++    preview_only: payload.preview_only === true,
+   };
+ }
+ 
+--- a/Homey-iPhone/Homey-iPhone/Features/Meals/MealsModels.swift
++++ b/Homey-iPhone/Homey-iPhone/Features/Meals/MealsModels.swift
+@@ -55,7 +55,7 @@
+ struct IngredientDraft: Identifiable, Equatable { let id = UUID(); var name = "", quantity = "", unit = "", section = "Ingredients"; var optional = false; var preparation: String?; var notes: String? }
+ struct StepDraft: Identifiable, Equatable { let id = UUID(); var text = ""; var timerMinutes: Int? }
+ 
+-struct RecipeImportRequest: Encodable { let homeId: UUID; let url: String; enum CodingKeys: String, CodingKey { case homeId = "home_id", url } }
++struct RecipeImportRequest: Encodable { let homeId: UUID; let url: String; let previewOnly = true; enum CodingKeys: String, CodingKey { case homeId = "home_id", url; case previewOnly = "preview_only" } }
+ struct RecipeImportResponse: Decodable, Hashable { let importId: UUID; let globalRecipeId: UUID?; let alreadyExists: Bool; let normalizedUrl: String; let recipe: ImportedRecipePreview }
+ struct ImportedRecipePreview: Decodable, Hashable { let title: String; let description, imageUrl: String?; let prepTimeMinutes, cookTimeMinutes, totalTimeMinutes: Int?; let servings, cuisine: String?; let mealTypes, keywords: [String]; let ingredients: [CommunityIngredient]; let steps: [CommunityStep]; let source: ImportedRecipeSource }
+ struct ImportedRecipeSource: Decodable, Hashable { let originalUrl, normalizedUrl, domain: String; let name: String? }
