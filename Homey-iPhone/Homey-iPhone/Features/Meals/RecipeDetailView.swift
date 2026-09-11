@@ -13,9 +13,13 @@ struct RecipeDetailView: View {
     @State private var loading = true
     @State private var loadID = UUID()
     @State private var pendingFavorite: Bool?
+    @State private var confirmsRemoval = false
+    @State private var removing = false
+    @State private var removalError: String?
     private let service = MealsService()
     private var currentMeal: HomeyMeal { model.homeRecipes.first { $0.id == meal.id } ?? meal }
     private var favorite: Bool { pendingFavorite ?? model.favoriteIDs.contains(meal.id) }
+    private var canRemove: Bool { home.role == .owner || home.role == .admin }
     private var presentation: RecipeDetailPresentation {
         let ingredients = (detail?.ingredients ?? []).map { ingredient in
             RecipeDetailIngredientItem(id: ingredient.id.uuidString, text: ingredientText(ingredient),
@@ -42,11 +46,20 @@ struct RecipeDetailView: View {
                         .frame(minHeight: 44)
                 }
                 Spacer()
-                Button { showEditor = true } label: {
-                    Label("Edit", systemImage: "pencil").font(.headline)
-                        .padding(.horizontal, 18).frame(minHeight: 44)
-                        .background(HomeyColors.recipeCardBackground, in: Capsule())
-                }.disabled(detail == nil || loading)
+                Menu {
+                    Button("Edit", systemImage: "pencil") { showEditor = true }
+                    Button("Add to Plan", systemImage: "calendar.badge.plus") { showPlan = true }
+                    Button("Add to Groceries", systemImage: "cart") { showGrocery = true }
+                    if canRemove {
+                        Divider()
+                        Button("Remove Recipe", systemImage: "trash", role: .destructive) { confirmsRemoval = true }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis").font(.headline).frame(width: 44, height: 44)
+                        .background(HomeyColors.recipeCardBackground, in: Circle())
+                }
+                .disabled(detail == nil || loading || removing)
+                .accessibilityLabel("Recipe actions")
             }.buttonStyle(.plain).foregroundStyle(HomeyColors.recipeGreenAccent)
                 .padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 12)
             ScrollView {
@@ -77,7 +90,6 @@ struct RecipeDetailView: View {
                         RecipeDetailIngredientsCard(ingredients: presentation.ingredients)
                         RecipeDetailDirectionsCard(directions: presentation.directions)
                     }
-                    quickActions
                     RecipeDetailAdditionalCard(presentation: presentation)
                 }.padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 28)
                     .frame(maxWidth: 640).frame(maxWidth: .infinity)
@@ -96,16 +108,17 @@ struct RecipeDetailView: View {
         }
         .sheet(isPresented: $showPlan) { RecipePlanSheet(meal: currentMeal, home: home, model: model) }
         .alert("Groceries", isPresented: $showGrocery) { Button("OK") {} } message: {
-            Text("Grocery-list integration is not available in the current backend contract yet.")
+            Text("Coming Soon")
         }
-    }
-
-    private var quickActions: some View {
-        VStack(spacing: 0) {
-            RecipeDetailActionRow(title: "Add to Meal Plan", icon: "calendar", color: HomeyColors.recipeGreenAccent) { showPlan = true }
-            Divider().padding(.leading, 66)
-            RecipeDetailActionRow(title: "Add ingredients to Groceries", icon: "cart", color: HomeyColors.primary) { showGrocery = true }
-        }.padding(.horizontal, 16).padding(.vertical, 6).recipeDetailCard()
+        .confirmationDialog("Remove Recipe?", isPresented: $confirmsRemoval, titleVisibility: .visible) {
+            Button("Remove Recipe", role: .destructive) { Task { await removeRecipe() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Are you sure you want to remove “\(currentMeal.name)” from your Home Recipes?")
+        }
+        .alert("Couldn't Remove Recipe", isPresented: .init(get: { removalError != nil }, set: { if !$0 { removalError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(removalError ?? "") }
     }
 
     private func loadDetail() async {
@@ -133,6 +146,20 @@ struct RecipeDetailView: View {
         Task {
             await model.toggleFavorite(currentMeal)
             pendingFavorite = nil
+        }
+    }
+
+    private func removeRecipe() async {
+        guard canRemove, currentMeal.homeId == home.id, !removing else { return }
+        removing = true
+        defer { removing = false }
+        do {
+            try await service.removeHomeRecipe(currentMeal, home: home)
+            model.homeRecipes.removeAll { $0.id == currentMeal.id }
+            dismiss()
+        } catch {
+            RecipeSaveDiagnostics.failure(error, stage: "removeHomeRecipe")
+            removalError = "Homey couldn't remove this recipe. Please try again."
         }
     }
 

@@ -12,6 +12,10 @@ struct RecipeLibraryView: View {
     @State private var recipeToRemove: HomeyMeal?
     @State private var removingIDs: Set<UUID> = []
     @State private var removalError: String?
+    @State private var editPresentation: RecipeListEditPresentation?
+    @State private var loadingEditorIDs: Set<UUID> = []
+    @State private var showGroceriesComingSoon = false
+    @State private var editError: String?
     private var canRemove: Bool { home.role == .owner || home.role == .admin }
     @State private var pendingFavorites: [UUID: Bool] = [:]
 
@@ -38,15 +42,16 @@ struct RecipeLibraryView: View {
                         ForEach(filteredRecipes) { meal in
                             RecipeCard(content: cardContent(meal), width: geometry.size.width - 32, favorite: isFavorite(meal), favoritePending: pendingFavorites[meal.id] != nil,
                                 open: { viewedMeal = meal }, favoriteAction: { toggleFavorite(meal) }) {
-                                Button("View Recipe", systemImage: "book") { viewedMeal = meal }
-                                Button("Add to Meal Plan", systemImage: "calendar.badge.plus") { plannedMeal = meal }
+                                Button("Edit Recipe", systemImage: "pencil") { Task { await editRecipe(meal) } }
+                                Button("Add to Plan", systemImage: "calendar.badge.plus") { plannedMeal = meal }
+                                Button("Add to Groceries", systemImage: "cart") { showGroceriesComingSoon = true }
                                 if canRemove {
                                     Divider()
                                     Button("Remove Recipe", systemImage: "trash", role: .destructive) { recipeToRemove = meal }
                                         .accessibilityLabel("Remove Recipe")
                                 }
                             }
-                                .disabled(removingIDs.contains(meal.id))
+                                .disabled(removingIDs.contains(meal.id) || loadingEditorIDs.contains(meal.id))
                         }
                     }
                 }.padding(.horizontal, 16).padding(.top, 4).padding(.bottom, 24)
@@ -55,6 +60,10 @@ struct RecipeLibraryView: View {
         }
         .navigationDestination(item: $viewedMeal) { RecipeDetailView(meal: $0, home: home, model: model) }
         .sheet(item: $plannedMeal) { RecipePlanSheet(meal: $0, home: home, model: model) }
+        .sheet(item: $editPresentation, onDismiss: { Task { await model.load(home: home) } }) { presentation in
+            RecipeEditorView(home: home, model: model, initialDraft: RecipeDraft(detail: presentation.detail),
+                showsImportMetadata: true, existingMeal: presentation.meal)
+        }
         .confirmationDialog("Remove Recipe?", isPresented: .init(get: { recipeToRemove != nil }, set: { if !$0 { recipeToRemove = nil } }), titleVisibility: .visible, presenting: recipeToRemove) { meal in
             Button("Remove Recipe", role: .destructive) { Task { await removeRecipe(meal) } }
             Button("Cancel", role: .cancel) { recipeToRemove = nil }
@@ -64,6 +73,12 @@ struct RecipeLibraryView: View {
         .alert("Couldn't Remove Recipe", isPresented: .init(get: { removalError != nil }, set: { if !$0 { removalError = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(removalError ?? "") }
+        .alert("Groceries", isPresented: $showGroceriesComingSoon) {
+            Button("OK", role: .cancel) {}
+        } message: { Text("Coming Soon") }
+        .alert("Couldn't Edit Recipe", isPresented: .init(get: { editError != nil }, set: { if !$0 { editError = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: { Text(editError ?? "") }
     }
 
     private var emptyState: some View {
@@ -103,6 +118,18 @@ struct RecipeLibraryView: View {
         }
     }
 
+    private func editRecipe(_ meal: HomeyMeal) async {
+        guard !loadingEditorIDs.contains(meal.id) else { return }
+        loadingEditorIDs.insert(meal.id)
+        defer { loadingEditorIDs.remove(meal.id) }
+        do {
+            let detail = try await MealsService().detail(for: meal)
+            editPresentation = RecipeListEditPresentation(meal: meal, detail: detail)
+        } catch {
+            editError = "Homey couldn't open this recipe for editing. Please try again."
+        }
+    }
+
     private func isFavorite(_ meal: HomeyMeal) -> Bool { pendingFavorites[meal.id] ?? model.favoriteIDs.contains(meal.id) }
     private func toggleFavorite(_ meal: HomeyMeal) {
         guard pendingFavorites[meal.id] == nil else { return }
@@ -112,6 +139,12 @@ struct RecipeLibraryView: View {
             pendingFavorites[meal.id] = nil // The model retains its original value if the request fails.
         }
     }
+}
+
+private struct RecipeListEditPresentation: Identifiable {
+    let meal: HomeyMeal
+    let detail: HomeyRecipeDetail
+    var id: UUID { meal.id }
 }
 
 struct HomeRecipeThumbnail: View {
