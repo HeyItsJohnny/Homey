@@ -8,6 +8,7 @@ import Combine
     @Published var favoriteIDs: Set<UUID> = []
     @Published var planned: [PlannedMeal] = []
     @Published var isLoading = false
+    @Published private(set) var isAutoPlanning = false
     @Published var errorMessage: String?
     private let service = MealsService()
     func load(home: HomeSummary) async { isLoading=true; defer{isLoading=false}; do { async let h=service.homeRecipes(homeId:home.id); async let f=service.favoriteIDs(); let week=Self.week(containing:Date(),home:home); async let p=service.plannedMeals(home:home,week:week); (homeRecipes,favoriteIDs,planned)=try await(h,f,p); recipesRevision += 1 } catch { errorMessage=error.localizedDescription } }
@@ -65,6 +66,99 @@ import Combine
         }
     }
     func remove(_ item: PlannedMeal,home:HomeSummary, containing date:Date = Date()) async { do { try await service.removePlanned(item.eventId); await refreshPlan(home:home, containing:date) } catch { errorMessage=error.localizedDescription } }
+    func autoPlanDay(home: HomeSummary, date: Date) async {
+        guard !isAutoPlanning else { return }
+        isAutoPlanning = true
+        defer { isAutoPlanning = false }
+
+        let calendar = Self.calendar(home)
+        let selectedDay = calendar.startOfDay(for: date)
+        let visibleTypes: [MealType] = [.breakfast, .lunch, .dinner]
+
+        #if DEBUG
+        let components = calendar.dateComponents([.year, .month, .day], from: selectedDay)
+        let dateText = String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+        print("[AutoPlan] selectedDate=\(dateText)")
+        print("[AutoPlan] homeID=\(home.id.uuidString)")
+        #endif
+
+        do {
+            planned = try await service.plannedMeals(home: home, week: Self.week(containing: selectedDay, home: home))
+        } catch {
+            errorMessage = "Homey couldn't load this day's meals. Please try again."
+            return
+        }
+
+        let dayMeals = planned.filter { calendar.isDate($0.startsAt, inSameDayAs: selectedDay) }
+        let missingTypes = visibleTypes.filter { type in
+            !dayMeals.contains { $0.mealType == type }
+        }
+
+        #if DEBUG
+        for type in visibleTypes {
+            let count = dayMeals.count { $0.mealType == type }
+            print("[AutoPlan] \(type.rawValue)Count=\(count)")
+            if count > 0 { print("[AutoPlan] \(type.title) already planned - skipping") }
+        }
+        print("[AutoPlan] missingTypes=\(missingTypes.map(\.rawValue).joined(separator: ","))")
+        #endif
+
+        guard !missingTypes.isEmpty else {
+            errorMessage = "All meals are planned for this day."
+            return
+        }
+        guard !homeRecipes.isEmpty else {
+            errorMessage = "Add some Home Recipes before using Auto Plan."
+            return
+        }
+
+        var usedRecipeIDs = Set(dayMeals.map(\.meal.id))
+        var created = 0
+        var failed = 0
+        var unavailableTypes: [MealType] = []
+
+        for type in missingTypes {
+            let eligible = homeRecipes.filter { $0.mealTypes.isEmpty || $0.mealTypes.contains(type) }
+            #if DEBUG
+            print("[AutoPlan] \(type.title) eligibleRecipes=\(eligible.count)")
+            #endif
+            guard !eligible.isEmpty else {
+                unavailableTypes.append(type)
+                continue
+            }
+
+            let unused = eligible.filter { !usedRecipeIDs.contains($0.id) }
+            guard let selected = (unused.isEmpty ? eligible : unused).randomElement() else { continue }
+            #if DEBUG
+            print("[AutoPlan] \(type.title) selected=\(selected.id.uuidString)")
+            #endif
+            do {
+                try await service.schedule(selected, type: type, day: selectedDay, home: home)
+                usedRecipeIDs.insert(selected.id)
+                created += 1
+            } catch {
+                failed += 1
+                #if DEBUG
+                print("[AutoPlan] FAILED mealType=\(type.rawValue)")
+                print("[AutoPlan] message=\(error.localizedDescription)")
+                #endif
+            }
+        }
+
+        await refreshPlan(home: home, containing: selectedDay)
+        #if DEBUG
+        print("[AutoPlan] Complete created=\(created) skipped=\(visibleTypes.count - missingTypes.count + unavailableTypes.count)")
+        #endif
+
+        if failed > 0 {
+            errorMessage = created > 0
+                ? "Homey planned some meals, but couldn't finish the entire day."
+                : "Homey couldn't plan this day. Please try again."
+        } else if created == 0, !unavailableTypes.isEmpty {
+            let names = unavailableTypes.map(\.title).joined(separator: ", ")
+            errorMessage = "No eligible \(names) recipes are available yet."
+        }
+    }
     func autoPlan(home: HomeSummary, types: Set<MealType>, favoritesOnly: Bool) async { let calendar=Self.calendar(home); let week=Self.week(containing:Date(),home:home); let candidates=(favoritesOnly ? homeRecipes.filter{favoriteIDs.contains($0.id)}:homeRecipes); guard !candidates.isEmpty else { errorMessage="Add recipes to this Home before auto-planning."; return }; var index=0; for offset in 0..<7 { guard let day=calendar.date(byAdding:.day,value:offset,to:week.start), day >= calendar.startOfDay(for:Date()) else { continue }; for type in types { let occupied=planned.contains{calendar.isDate($0.startsAt,inSameDayAs:day) && $0.mealType == type}; guard !occupied else {continue}; let preferred=candidates.filter{$0.mealTypes.isEmpty || $0.mealTypes.contains(type)}; let pool=preferred.isEmpty ? candidates:preferred; do { try await service.schedule(pool[index % pool.count],type:type,day:day,home:home); index += 1 } catch { errorMessage=error.localizedDescription; await refreshPlan(home:home); return } }; await refreshPlan(home:home) } }
     static func calendar(_ home:HomeSummary)->Calendar { var c=Calendar(identifier:.gregorian); c.timeZone=home.timezone.flatMap(TimeZone.init(identifier:)) ?? .current; c.firstWeekday=home.weekStartsOn == 2 ? 2:1; return c }
     static func week(containing date:Date,home:HomeSummary)->DateInterval { let c=calendar(home); return c.dateInterval(of:.weekOfYear,for:date) ?? .init(start:c.startOfDay(for:date),duration:604800) }
@@ -77,7 +171,7 @@ struct MealsRootView: View {
     @State private var showAdd = false
     @State private var creationPresentation: RecipeCreationPresentation?
     @State private var pendingEditorPresentation: RecipeCreationPresentation?
-    @State private var showAutoPlan = false
+    @State private var selectedMealPlanDate = Date()
     @State private var comingSoonFeature: String?
 
     var body: some View {
@@ -93,15 +187,21 @@ struct MealsRootView: View {
                         Spacer()
                         if section == 0, session.activeHome != nil {
                             Menu {
-                                Button("Auto Plan", systemImage: "wand.and.sparkles") { showAutoPlan = true }
+                                Button("Auto Plan", systemImage: "wand.and.sparkles") {
+                                    guard let home = session.activeHome else { return }
+                                    Task { await model.autoPlanDay(home: home, date: selectedMealPlanDate) }
+                                }
+                                .disabled(model.isAutoPlanning)
                                 Button("Leftovers", systemImage: "takeoutbag.and.cup.and.straw") { comingSoonFeature = "Leftovers" }
                                 Button("Add to Groceries", systemImage: "cart.badge.plus") { comingSoonFeature = "Add to Groceries" }
                             } label: {
-                                Image(systemName: "ellipsis")
-                                    .font(.title3.weight(.semibold))
-                                    .foregroundStyle(HomeyColors.primary)
-                                    .frame(width: 44, height: 44)
-                                    .background(HomeyColors.field, in: Circle())
+                                Group {
+                                    if model.isAutoPlanning { ProgressView().tint(HomeyColors.primary) }
+                                    else { Image(systemName: "ellipsis").font(.title3.weight(.semibold)) }
+                                }
+                                .foregroundStyle(HomeyColors.primary)
+                                .frame(width: 44, height: 44)
+                                .background(HomeyColors.field, in: Circle())
                             }
                             .accessibilityLabel("Meal plan actions")
                         } else if section == 1 {
@@ -130,7 +230,7 @@ struct MealsRootView: View {
 
                     if let home = session.activeHome {
                         if section == 0 {
-                            MealPlanView(home: home, model: model)
+                            MealPlanView(home: home, model: model, selectedDate: $selectedMealPlanDate)
                         } else if section == 1 {
                             RecipeLibraryView(home: home, model: model, onAddRecipe: { showAdd = true }, onExplore: { section = 2 })
                         } else {
@@ -170,11 +270,11 @@ struct MealsRootView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showAutoPlan) {
-                if let home = session.activeHome { AutoPlanSheet(home: home, model: model) }
-            }
             .task(id: session.activeHome?.id) {
-                if let home = session.activeHome { await model.load(home: home) }
+                if let home = session.activeHome {
+                    selectedMealPlanDate = Self.startOfToday(home: home)
+                    await model.load(home: home)
+                }
             }
             .refreshable {
                 if let home = session.activeHome { await model.load(home: home) }
@@ -191,6 +291,10 @@ struct MealsRootView: View {
                 Text("This feature is coming soon.")
             }
         }
+    }
+
+    private static func startOfToday(home: HomeSummary) -> Date {
+        MealsViewModel.calendar(home).startOfDay(for: Date())
     }
 }
 

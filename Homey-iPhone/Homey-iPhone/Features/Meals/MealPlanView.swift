@@ -3,7 +3,7 @@ import SwiftUI
 struct MealPlanView: View {
     let home: HomeSummary
     @ObservedObject var model: MealsViewModel
-    @State private var selectedDate: Date
+    @Binding var selectedDate: Date
     @State private var pickerSlot: MealPlanSlot?
     @State private var showsCalendar = false
     @State private var transitionDirection = 1
@@ -13,13 +13,6 @@ struct MealPlanView: View {
     private var today: Date { calendar.startOfDay(for: Date()) }
     private var selectedDay: Date { calendar.startOfDay(for: selectedDate) }
     private var isToday: Bool { calendar.isDate(selectedDay, inSameDayAs: today) }
-
-    init(home: HomeSummary, model: MealsViewModel) {
-        self.home = home
-        self.model = model
-        let calendar = MealsViewModel.calendar(home)
-        _selectedDate = State(initialValue: calendar.startOfDay(for: Date()))
-    }
 
     var body: some View {
         VStack(spacing: 12) {
