@@ -338,6 +338,7 @@ final class MealsService {
     }
 
     func removePlanned(_ eventId: UUID) async throws { try await client.rpc("delete_calendar_event", params: DeleteEvent(eventId: eventId)).execute() }
+
 }
 
 enum MealsError: LocalizedError { case message(String); var errorDescription: String? { if case .message(let value) = self { value } else { nil } } }

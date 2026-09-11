@@ -231,3 +231,226 @@ private struct MealPlanDatePicker: View {
         }
     }
 }
+
+struct AssignLeftoversView: View {
+    private enum Mode: String, CaseIterable, Identifiable {
+        case move, replace
+        var id: String { rawValue }
+        var title: String { self == .move ? "Add meals" : "Replace meals" }
+        var subtitle: String {
+            self == .move
+                ? "Add them to the Leftovers Day, keep existing plans, and leave the original day unchanged."
+                : "Replace that meal type on the Leftovers Day and leave the original day unchanged."
+        }
+    }
+
+    let home: HomeSummary
+    let sourceDate: Date
+    @ObservedObject var model: MealsViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var sourceMeals: [PlannedMeal] = []
+    @State private var selectedTypes: Set<MealType> = []
+    @State private var destinationDate: Date
+    @State private var mode: Mode = .move
+    @State private var showDatePicker = false
+    @State private var isProcessing = false
+    @State private var replaceConflicts: Set<MealType> = []
+    @State private var showReplaceConfirmation = false
+    @State private var errorMessage: String?
+
+    private let mealTypes: [MealType] = [.breakfast, .lunch, .dinner]
+    private var calendar: Calendar { MealsViewModel.calendar(home) }
+    private var sourceDay: Date { calendar.startOfDay(for: sourceDate) }
+    private var minimumDestination: Date {
+        calendar.date(byAdding: .day, value: 1, to: sourceDay) ?? sourceDay.addingTimeInterval(86_400)
+    }
+    private var canAssign: Bool {
+        !selectedTypes.isEmpty && calendar.startOfDay(for: destinationDate) >= minimumDestination && !isProcessing
+    }
+
+    init(home: HomeSummary, sourceDate: Date, model: MealsViewModel) {
+        self.home = home
+        self.sourceDate = sourceDate
+        self.model = model
+        let calendar = MealsViewModel.calendar(home)
+        let sourceDay = calendar.startOfDay(for: sourceDate)
+        _destinationDate = State(initialValue: calendar.date(byAdding: .day, value: 1, to: sourceDay) ?? sourceDay.addingTimeInterval(86_400))
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    Text("Choose which meals you'd like to carry over.")
+                        .font(.subheadline).foregroundStyle(HomeyColors.secondaryText)
+
+                    sectionTitle("Meals")
+                    VStack(spacing: 0) {
+                        ForEach(Array(mealTypes.enumerated()), id: \.element.id) { index, type in
+                            if index > 0 { Divider().padding(.leading, 50) }
+                            mealTypeRow(type)
+                        }
+                    }
+                    .background(HomeyColors.recipeCardBackground, in: RoundedRectangle(cornerRadius: 20))
+
+                    sectionTitle("Leftovers Day")
+                    Button { showDatePicker = true } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: "calendar").font(.headline).foregroundStyle(HomeyColors.recipeGreenAccent)
+                            Text(destinationLabel).font(.headline).foregroundStyle(HomeyColors.text)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption.weight(.bold)).foregroundStyle(HomeyColors.secondaryText)
+                        }
+                        .padding(18).background(HomeyColors.recipeCardBackground, in: RoundedRectangle(cornerRadius: 20))
+                    }.buttonStyle(.plain)
+
+                    sectionTitle("When leftovers arrive")
+                    VStack(spacing: 0) {
+                        ForEach(Array(Mode.allCases.enumerated()), id: \.element.id) { index, option in
+                            if index > 0 { Divider().padding(.leading, 50) }
+                            modeRow(option)
+                        }
+                    }
+                    .background(HomeyColors.recipeCardBackground, in: RoundedRectangle(cornerRadius: 20))
+
+                    if let errorMessage { HomeyErrorView(message: errorMessage) }
+
+                    Button { Task { await prepareAssignment() } } label: {
+                        HStack {
+                            if isProcessing { ProgressView().tint(.white) }
+                            Text(isProcessing ? "Assigning…" : "Assign Leftovers")
+                        }
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .background(HomeyColors.recipeGreenAccent, in: RoundedRectangle(cornerRadius: HomeyCornerRadius.field))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canAssign)
+                    .opacity(canAssign ? 1 : 0.5)
+                }
+                .padding(20).padding(.bottom, 24)
+            }
+            .background(HomeyColors.recipeBackground.ignoresSafeArea())
+            .navigationTitle("Assign Leftovers")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(isProcessing) } }
+            .task { await loadSourceMeals() }
+            .sheet(isPresented: $showDatePicker) {
+                NavigationStack {
+                    DatePicker("Leftovers Day", selection: $destinationDate, in: minimumDestination..., displayedComponents: .date)
+                        .datePickerStyle(.graphical).padding().environment(\.timeZone, calendar.timeZone)
+                        .navigationTitle("Leftovers Day").navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showDatePicker = false } } }
+                }
+                .presentationDetents([.medium])
+            }
+            .alert("Replace planned meals?", isPresented: $showReplaceConfirmation) {
+                Button("Cancel", role: .cancel) {}
+                Button("Replace Meals", role: .destructive) { Task { await performAssignment() } }
+            } message: {
+                Text(replaceConfirmationMessage)
+            }
+        }
+        .presentationDetents([.large])
+        .interactiveDismissDisabled(isProcessing)
+    }
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title.uppercased()).font(.caption.weight(.bold)).foregroundStyle(HomeyColors.secondaryText)
+    }
+
+    private func mealTypeRow(_ type: MealType) -> some View {
+        let count = sourceMeals.count { $0.mealType == type }
+        let available = count > 0
+        return Button {
+            if selectedTypes.contains(type) { selectedTypes.remove(type) } else { selectedTypes.insert(type) }
+        } label: {
+            HStack(spacing: 14) {
+                Image(systemName: selectedTypes.contains(type) ? "checkmark.square.fill" : "square")
+                    .font(.title3).foregroundStyle(selectedTypes.contains(type) ? HomeyColors.recipeGreenAccent : HomeyColors.secondaryText)
+                Image(systemName: type.symbol).foregroundStyle(HomeyColors.recipeOrangeAccent).frame(width: 20)
+                Text(type.title).font(.headline).foregroundStyle(HomeyColors.text)
+                Spacer()
+                Text(available ? "\(count) meal\(count == 1 ? "" : "s")" : "Empty")
+                    .font(.caption).foregroundStyle(HomeyColors.secondaryText)
+            }.padding(16).contentShape(Rectangle()).opacity(available ? 1 : 0.45)
+        }.buttonStyle(.plain).disabled(!available || isProcessing)
+    }
+
+    private func modeRow(_ option: Mode) -> some View {
+        Button { mode = option } label: {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: mode == option ? "largecircle.fill.circle" : "circle")
+                    .font(.title3).foregroundStyle(HomeyColors.recipeGreenAccent)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(option.title).font(.headline).foregroundStyle(HomeyColors.text)
+                    Text(option.subtitle).font(.caption).foregroundStyle(HomeyColors.secondaryText).fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+            }.padding(16).contentShape(Rectangle())
+        }.buttonStyle(.plain).disabled(isProcessing)
+    }
+
+    private var destinationLabel: String {
+        let formatter = DateFormatter()
+        formatter.calendar = calendar; formatter.timeZone = calendar.timeZone
+        formatter.setLocalizedDateFormatFromTemplate("EEEE, MMM d")
+        return formatter.string(from: destinationDate)
+    }
+
+    private func loadSourceMeals() async {
+        do {
+            sourceMeals = try await model.plannedMealsForDay(home: home, date: sourceDay)
+            let availableTypes = Set(sourceMeals.map(\.mealType))
+            selectedTypes.formIntersection(availableTypes)
+        }
+        catch { errorMessage = "Homey couldn't load this day's meals." }
+    }
+
+    private func prepareAssignment() async {
+        guard canAssign else { return }
+        errorMessage = nil
+        if mode == .replace {
+            do {
+                let destinationMeals = try await model.plannedMealsForDay(home: home, date: destinationDate)
+                replaceConflicts = Set(destinationMeals.filter { selectedTypes.contains($0.mealType) }.map(\.mealType))
+                if !replaceConflicts.isEmpty {
+                    showReplaceConfirmation = true
+                    return
+                }
+            } catch {
+                errorMessage = "Homey couldn't check the Leftovers Day. Please try again."
+                return
+            }
+        }
+        await performAssignment()
+    }
+
+    private func performAssignment() async {
+        guard canAssign else { return }
+        isProcessing = true
+        errorMessage = nil
+        do {
+            try await model.assignLeftovers(
+                home: home,
+                sourceDate: sourceDay,
+                destinationDate: destinationDate,
+                mealTypes: selectedTypes,
+                replaceDestination: mode == .replace
+            )
+            isProcessing = false
+            dismiss()
+        } catch {
+            isProcessing = false
+            errorMessage = error.localizedDescription
+            await loadSourceMeals()
+        }
+    }
+
+    private var replaceConfirmationMessage: String {
+        let names = mealTypes.filter { replaceConflicts.contains($0) }.map(\.title)
+        let list = names.formatted(.list(type: .and))
+        return "\(destinationLabel) already has meals planned for \(list). Replacing will remove those meals and add the selected leftovers in their place."
+    }
+}

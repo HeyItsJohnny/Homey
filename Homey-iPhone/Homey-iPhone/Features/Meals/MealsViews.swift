@@ -159,9 +159,96 @@ import Combine
             errorMessage = "No eligible \(names) recipes are available yet."
         }
     }
+    func plannedMealsForDay(home: HomeSummary, date: Date) async throws -> [PlannedMeal] {
+        let calendar = Self.calendar(home)
+        return try await service.plannedMeals(home: home, week: Self.week(containing: date, home: home))
+            .filter { calendar.isDate($0.startsAt, inSameDayAs: date) }
+    }
+
+    func assignLeftovers(
+        home: HomeSummary,
+        sourceDate: Date,
+        destinationDate: Date,
+        mealTypes: Set<MealType>,
+        replaceDestination: Bool
+    ) async throws {
+        let calendar = Self.calendar(home)
+        let sourceDay = calendar.startOfDay(for: sourceDate)
+        let destinationDay = calendar.startOfDay(for: destinationDate)
+        guard destinationDay > sourceDay else { throw LeftoversError.invalidDestination }
+
+        let sourceMeals = try await plannedMealsForDay(home: home, date: sourceDay)
+            .filter { mealTypes.contains($0.mealType) }
+        guard !sourceMeals.isEmpty else { throw LeftoversError.noSelectedMeals }
+        let destinationMeals = try await plannedMealsForDay(home: home, date: destinationDay)
+            .filter { mealTypes.contains($0.mealType) }
+
+        #if DEBUG
+        print("[Leftovers] sourceDate=\(Self.logDate(sourceDay, calendar: calendar))")
+        print("[Leftovers] destinationDate=\(Self.logDate(destinationDay, calendar: calendar))")
+        print("[Leftovers] mode=\(replaceDestination ? "replace" : "add")")
+        for type in [MealType.breakfast, .lunch, .dinner] {
+            print("[Leftovers] \(type.rawValue)Selected=\(mealTypes.contains(type)) count=\(sourceMeals.count { $0.mealType == type })")
+            print("[Leftovers] destination\(type.title)Existing=\(destinationMeals.count { $0.mealType == type })")
+        }
+        #endif
+
+        var createdCount = 0
+        do {
+            // Leftovers are new planned meals. Keep every source event on its
+            // original day and create corresponding destination events first.
+            for item in sourceMeals {
+                #if DEBUG
+                print("[Leftovers] copying sourceEntry=\(item.eventId.uuidString)")
+                #endif
+                try await service.schedule(item.meal, type: item.mealType, day: destinationDay, home: home)
+                createdCount += 1
+            }
+        } catch {
+            await refreshPlan(home: home, containing: sourceDay)
+            throw createdCount > 0 ? LeftoversError.partialAssignment : error
+        }
+
+        if replaceDestination {
+            #if DEBUG
+            for type in mealTypes {
+                print("[Leftovers] replacing destination mealType=\(type.rawValue) count=\(destinationMeals.count { $0.mealType == type })")
+            }
+            #endif
+            do {
+                for item in destinationMeals { try await service.removePlanned(item.eventId) }
+            } catch {
+                await refreshPlan(home: home, containing: sourceDay)
+                throw LeftoversError.partialReplace
+            }
+        }
+
+        await refreshPlan(home: home, containing: sourceDay)
+        #if DEBUG
+        print("[Leftovers] completed")
+        #endif
+    }
+
+    private static func logDate(_ date: Date, calendar: Calendar) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+    }
     func autoPlan(home: HomeSummary, types: Set<MealType>, favoritesOnly: Bool) async { let calendar=Self.calendar(home); let week=Self.week(containing:Date(),home:home); let candidates=(favoritesOnly ? homeRecipes.filter{favoriteIDs.contains($0.id)}:homeRecipes); guard !candidates.isEmpty else { errorMessage="Add recipes to this Home before auto-planning."; return }; var index=0; for offset in 0..<7 { guard let day=calendar.date(byAdding:.day,value:offset,to:week.start), day >= calendar.startOfDay(for:Date()) else { continue }; for type in types { let occupied=planned.contains{calendar.isDate($0.startsAt,inSameDayAs:day) && $0.mealType == type}; guard !occupied else {continue}; let preferred=candidates.filter{$0.mealTypes.isEmpty || $0.mealTypes.contains(type)}; let pool=preferred.isEmpty ? candidates:preferred; do { try await service.schedule(pool[index % pool.count],type:type,day:day,home:home); index += 1 } catch { errorMessage=error.localizedDescription; await refreshPlan(home:home); return } }; await refreshPlan(home:home) } }
     static func calendar(_ home:HomeSummary)->Calendar { var c=Calendar(identifier:.gregorian); c.timeZone=home.timezone.flatMap(TimeZone.init(identifier:)) ?? .current; c.firstWeekday=home.weekStartsOn == 2 ? 2:1; return c }
     static func week(containing date:Date,home:HomeSummary)->DateInterval { let c=calendar(home); return c.dateInterval(of:.weekOfYear,for:date) ?? .init(start:c.startOfDay(for:date),duration:604800) }
+}
+
+enum LeftoversError: LocalizedError {
+    case invalidDestination, noSelectedMeals, partialAssignment, partialReplace
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidDestination: "Choose a leftovers day after the current meal-plan date."
+        case .noSelectedMeals: "Choose at least one meal that exists on this day."
+        case .partialAssignment: "Some leftovers were assigned, but Homey couldn't finish the entire selection."
+        case .partialReplace: "The leftovers were assigned, but Homey couldn't remove every replaced meal."
+        }
+    }
 }
 
 struct MealsRootView: View {
@@ -172,6 +259,7 @@ struct MealsRootView: View {
     @State private var creationPresentation: RecipeCreationPresentation?
     @State private var pendingEditorPresentation: RecipeCreationPresentation?
     @State private var selectedMealPlanDate = Date()
+    @State private var showLeftovers = false
     @State private var comingSoonFeature: String?
 
     var body: some View {
@@ -192,7 +280,8 @@ struct MealsRootView: View {
                                     Task { await model.autoPlanDay(home: home, date: selectedMealPlanDate) }
                                 }
                                 .disabled(model.isAutoPlanning)
-                                Button("Leftovers", systemImage: "takeoutbag.and.cup.and.straw") { comingSoonFeature = "Leftovers" }
+                                Button("Leftovers", systemImage: "takeoutbag.and.cup.and.straw") { showLeftovers = true }
+                                    .disabled(!hasMealsForSelectedDay)
                                 Button("Add to Groceries", systemImage: "cart.badge.plus") { comingSoonFeature = "Add to Groceries" }
                             } label: {
                                 Group {
@@ -270,6 +359,11 @@ struct MealsRootView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showLeftovers) {
+                if let home = session.activeHome {
+                    AssignLeftoversView(home: home, sourceDate: selectedMealPlanDate, model: model)
+                }
+            }
             .task(id: session.activeHome?.id) {
                 if let home = session.activeHome {
                     selectedMealPlanDate = Self.startOfToday(home: home)
@@ -295,6 +389,15 @@ struct MealsRootView: View {
 
     private static func startOfToday(home: HomeSummary) -> Date {
         MealsViewModel.calendar(home).startOfDay(for: Date())
+    }
+
+    private var hasMealsForSelectedDay: Bool {
+        guard let home = session.activeHome else { return false }
+        let calendar = MealsViewModel.calendar(home)
+        return model.planned.contains {
+            calendar.isDate($0.startsAt, inSameDayAs: selectedMealPlanDate)
+                && [.breakfast, .lunch, .dinner].contains($0.mealType)
+        }
     }
 }
 
