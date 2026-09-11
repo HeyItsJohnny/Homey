@@ -198,10 +198,29 @@ import Combine
             // Leftovers are new planned meals. Keep every source event on its
             // original day and create corresponding destination events first.
             for item in sourceMeals {
+                let originalEventID = item.isLeftover
+                    ? (item.leftoverFromCalendarEventID ?? item.eventId)
+                    : item.eventId
                 #if DEBUG
                 print("[Leftovers] copying sourceEntry=\(item.eventId.uuidString)")
+                print("[Leftovers] sourceIsLeftover=\(item.isLeftover)")
+                print("[Leftovers] originalEventID=\(originalEventID.uuidString)")
                 #endif
-                try await service.schedule(item.meal, type: item.mealType, day: destinationDay, home: home)
+                let destinationEventID = try await service.schedule(
+                    item.meal,
+                    type: item.mealType,
+                    day: destinationDay,
+                    home: home,
+                    isLeftover: true,
+                    leftoverFromCalendarEventID: originalEventID
+                )
+                #if DEBUG
+                print("[Leftovers] sourceEventID=\(item.eventId.uuidString)")
+                print("[Leftovers] destinationEventID=\(destinationEventID.uuidString)")
+                print("[Leftovers] mealID=\(item.meal.id.uuidString)")
+                print("[Leftovers] isLeftover=true")
+                print("[Leftovers] leftoverFromEventID=\(originalEventID.uuidString)")
+                #endif
                 createdCount += 1
             }
         } catch {

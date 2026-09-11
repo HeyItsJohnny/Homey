@@ -191,6 +191,13 @@ private struct MealPlanSlotCard<Detail: View>: View {
                                             Label("\(servings.formatted()) servings", systemImage: "person.2")
                                         }
                                     }.font(.caption).foregroundStyle(HomeyColors.secondaryText)
+                                    if item.isLeftover {
+                                        Label("Leftovers", systemImage: "arrow.triangle.2.circlepath")
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(HomeyColors.recipeGreenAccent)
+                                            .padding(.horizontal, 8).padding(.vertical, 4)
+                                            .background(HomeyColors.recipeGreenAccent.opacity(0.12), in: Capsule())
+                                    }
                                 }.frame(maxWidth: .infinity, alignment: .leading)
                             }.contentShape(Rectangle())
                         }.buttonStyle(.plain)

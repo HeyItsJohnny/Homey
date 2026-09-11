@@ -60,9 +60,37 @@ struct RecipeImportResponse: Decodable, Hashable { let importId: UUID; let globa
 struct ImportedRecipePreview: Decodable, Hashable { let title: String; let description, imageUrl: String?; let prepTimeMinutes, cookTimeMinutes, totalTimeMinutes: Int?; let servings, cuisine: String?; let mealTypes, keywords: [String]; let ingredients: [ImportedRecipeIngredient]; let steps: [ImportedRecipeStep]; let source: ImportedRecipeSource }
 struct ImportedRecipeSource: Decodable, Hashable { let originalUrl, normalizedUrl, domain: String; let name: String? }
 
-struct PlannedMeal: Identifiable, Hashable { let eventId: UUID; let occurrenceId: String; let startsAt: Date; let mealType: MealType; let meal: HomeyMeal; var id: String { occurrenceId } }
+struct PlannedMeal: Identifiable, Hashable {
+    let eventId: UUID
+    let occurrenceId: String
+    let startsAt: Date
+    let mealType: MealType
+    let meal: HomeyMeal
+    let isLeftover: Bool
+    let leftoverFromCalendarEventID: UUID?
+    var id: String { occurrenceId }
+}
 struct CalendarMealEvent: Decodable { let eventId: UUID; let occurrenceId: String; let occurrenceStartsAt: Date; enum CodingKeys: String, CodingKey { case eventId = "event_id", occurrenceId = "occurrence_id", occurrenceStartsAt = "occurrence_starts_at" } }
-struct MealEventDetailRow: Decodable { let calendarEventId, mealId: UUID; let mealType: MealType; enum CodingKeys: String, CodingKey { case calendarEventId = "calendar_event_id", mealId = "meal_id", mealType = "meal_type" } }
+struct MealEventDetailRow: Decodable {
+    let calendarEventId, mealId: UUID
+    let mealType: MealType
+    let isLeftover: Bool
+    let leftoverFromCalendarEventID: UUID?
+
+    enum CodingKeys: String, CodingKey {
+        case calendarEventId = "calendar_event_id", mealId = "meal_id", mealType = "meal_type"
+        case isLeftover = "is_leftover", leftoverFromCalendarEventID = "leftover_from_calendar_event_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        calendarEventId = try container.decode(UUID.self, forKey: .calendarEventId)
+        mealId = try container.decode(UUID.self, forKey: .mealId)
+        mealType = try container.decode(MealType.self, forKey: .mealType)
+        isLeftover = try container.decodeIfPresent(Bool.self, forKey: .isLeftover) ?? false
+        leftoverFromCalendarEventID = try container.decodeIfPresent(UUID.self, forKey: .leftoverFromCalendarEventID)
+    }
+}
 
 enum RecipeScope: String, CaseIterable, Identifiable { case home = "Home", community = "Community"; var id: String { rawValue } }
 // Build edits from the complete stored recipe so untouched metadata survives saving.

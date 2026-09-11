@@ -251,16 +251,24 @@ final class MealsService {
     func plannedMeals(home: HomeSummary, week: DateInterval) async throws -> [PlannedMeal] {
         let events: [CalendarMealEvent] = try await client.rpc("get_calendar_events", params: CalendarRange(homeId: home.id, start: week.start, end: week.end)).execute().value
         guard !events.isEmpty else { return [] }
-        let details: [MealEventDetailRow] = try await client.from("meal_event_details").select("calendar_event_id, meal_id, meal_type").execute().value
+        let details: [MealEventDetailRow] = try await client.from("meal_event_details").select("calendar_event_id, meal_id, meal_type, is_leftover, leftover_from_calendar_event_id").execute().value
         let eventIDs = Set(events.map(\.eventId)); let matching = details.filter { eventIDs.contains($0.calendarEventId) }
         let meals = try await homeRecipes(homeId: home.id); let mealByID = Dictionary(uniqueKeysWithValues: meals.map { ($0.id, $0) }); let eventByID = Dictionary(uniqueKeysWithValues: events.map { ($0.eventId, $0) })
-        return matching.compactMap { d in guard let e = eventByID[d.calendarEventId], let m = mealByID[d.mealId] else { return nil }; return PlannedMeal(eventId: e.eventId, occurrenceId: e.occurrenceId, startsAt: e.occurrenceStartsAt, mealType: d.mealType, meal: m) }.sorted {
+        return matching.compactMap { d in guard let e = eventByID[d.calendarEventId], let m = mealByID[d.mealId] else { return nil }; return PlannedMeal(eventId: e.eventId, occurrenceId: e.occurrenceId, startsAt: e.occurrenceStartsAt, mealType: d.mealType, meal: m, isLeftover: d.isLeftover, leftoverFromCalendarEventID: d.leftoverFromCalendarEventID) }.sorted {
             if $0.startsAt != $1.startsAt { return $0.startsAt < $1.startsAt }
             return $0.occurrenceId < $1.occurrenceId
         }
     }
 
-    func schedule(_ meal: HomeyMeal, type: MealType, day: Date, home: HomeSummary) async throws {
+    @discardableResult
+    func schedule(
+        _ meal: HomeyMeal,
+        type: MealType,
+        day: Date,
+        home: HomeSummary,
+        isLeftover: Bool = false,
+        leftoverFromCalendarEventID: UUID? = nil
+    ) async throws -> UUID {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = home.timezone.flatMap(TimeZone.init(identifier:)) ?? .current
         let start = calendar.date(bySettingHour: type.hour, minute: 0, second: 0, of: day) ?? day
 
@@ -294,7 +302,14 @@ final class MealsService {
         }
         do {
             let user = try await client.auth.session.user.id
-            try await client.from("meal_event_details").insert(CreateMealDetail(eventId: eventId, mealId: meal.id, mealType: type, userId: user)).execute()
+            try await client.from("meal_event_details").insert(CreateMealDetail(
+                eventId: eventId,
+                mealId: meal.id,
+                mealType: type,
+                userId: user,
+                isLeftover: isLeftover,
+                leftoverFromCalendarEventID: leftoverFromCalendarEventID
+            )).execute()
         } catch {
             logSchedulingFailure(error, stage: "mealInsert")
             try? await removePlanned(eventId)
@@ -302,7 +317,11 @@ final class MealsService {
         }
         #if DEBUG
         print("[MealPlan] Success")
+        print("[MealPlan] eventID=\(eventId.uuidString)")
+        print("[MealPlan] mealID=\(meal.id.uuidString)")
+        print("[MealPlan] isLeftover=\(isLeftover)")
         #endif
+        return eventId
     }
 
     private func resolveMealCategory(homeId: UUID) async throws -> UUID {
@@ -352,7 +371,19 @@ private struct EnsureMealCategory: Encodable {
     enum CodingKeys: String, CodingKey { case homeId = "requested_home_id" }
 }
 private struct DeleteEvent: Encodable { let eventId: UUID; enum CodingKeys: String, CodingKey { case eventId = "target_event_id" } }
-private struct CreateMealDetail: Encodable { let eventId, mealId: UUID; let mealType: MealType; let shoppingGenerated = false; let userId: UUID; enum CodingKeys: String, CodingKey { case eventId = "calendar_event_id", mealId = "meal_id", mealType = "meal_type", shoppingGenerated = "shopping_generated", userId = "created_by" } }
+private struct CreateMealDetail: Encodable {
+    let eventId, mealId: UUID
+    let mealType: MealType
+    let shoppingGenerated = false
+    let userId: UUID
+    let isLeftover: Bool
+    let leftoverFromCalendarEventID: UUID?
+    enum CodingKeys: String, CodingKey {
+        case eventId = "calendar_event_id", mealId = "meal_id", mealType = "meal_type"
+        case shoppingGenerated = "shopping_generated", userId = "created_by"
+        case isLeftover = "is_leftover", leftoverFromCalendarEventID = "leftover_from_calendar_event_id"
+    }
+}
 private struct CreateEvent: Encodable {
     let homeId: UUID, title: String, start, end, timezone: String, categoryId: UUID?
     init(home: HomeSummary, meal: HomeyMeal, start: Date, categoryId: UUID?) { homeId = home.id; title = meal.name; self.start = ISO8601DateFormatter().string(from: start); end = ISO8601DateFormatter().string(from: start.addingTimeInterval(3600)); timezone = home.timezone ?? TimeZone.current.identifier; self.categoryId = categoryId }
