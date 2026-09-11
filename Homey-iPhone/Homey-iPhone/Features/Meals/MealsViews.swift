@@ -15,11 +15,32 @@ import Combine
         recipesRevision += 1
         homeRecipes = try await service.homeRecipes(homeId: home.id)
     }
-    func refreshPlan(home: HomeSummary, containing date: Date = Date()) async { do { planned = try await service.plannedMeals(home: home, week: Self.week(containing: date, home: home)) } catch { errorMessage=error.localizedDescription } }
+    func refreshPlan(home: HomeSummary, containing date: Date = Date()) async {
+        do {
+            planned = try await service.plannedMeals(home: home, week: Self.week(containing: date, home: home))
+            #if DEBUG
+            let calendar = Self.calendar(home)
+            let selectedDayMeals = planned.filter { calendar.isDate($0.startsAt, inSameDayAs: date) }
+            let dateText = date.formatted(.iso8601.year().month().day())
+            print("[MealPlan] Loaded date=\(dateText) total=\(selectedDayMeals.count)")
+            for type in [MealType.breakfast, .lunch, .dinner] {
+                print("[MealPlan] \(type.rawValue)=\(selectedDayMeals.count { $0.mealType == type })")
+            }
+            #endif
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
     func toggleFavorite(_ meal: HomeyMeal) async { let next = !favoriteIDs.contains(meal.id); do { try await service.setFavorite(mealId:meal.id,isFavorite:next); if next { favoriteIDs.insert(meal.id) } else { favoriteIDs.remove(meal.id) } } catch { errorMessage=error.localizedDescription } }
     @discardableResult func schedule(_ meal: HomeyMeal,type:MealType,day:Date,home:HomeSummary) async -> Bool {
         do {
             try await service.schedule(meal,type:type,day:day,home:home)
+            #if DEBUG
+            print("[MealPlan] Added recipe=\(meal.id.uuidString)")
+            print("[MealPlan] mealType=\(type.rawValue)")
+            print("[MealPlan] date=\(day.formatted(.iso8601.year().month().day()))")
+            print("[MealPlan] refreshing day")
+            #endif
             await refreshPlan(home:home, containing:day)
             return true
         } catch {
@@ -27,6 +48,19 @@ import Combine
             print("Meal plan scheduling failed: \(String(reflecting: error))")
             #endif
             errorMessage = "Homey couldn't add this recipe to your meal plan. Please try again."
+            return false
+        }
+    }
+    @discardableResult func replace(_ item: PlannedMeal, with meal: HomeyMeal, type: MealType, day: Date, home: HomeSummary) async -> Bool {
+        do {
+            // Create first so a failed replacement never removes the existing entry.
+            try await service.schedule(meal, type: type, day: day, home: home)
+            try await service.removePlanned(item.eventId)
+            await refreshPlan(home: home, containing: day)
+            return true
+        } catch {
+            await refreshPlan(home: home, containing: day)
+            errorMessage = "Homey couldn't change this planned recipe. Please try again."
             return false
         }
     }
@@ -44,6 +78,7 @@ struct MealsRootView: View {
     @State private var creationPresentation: RecipeCreationPresentation?
     @State private var pendingEditorPresentation: RecipeCreationPresentation?
     @State private var showAutoPlan = false
+    @State private var comingSoonFeature: String?
 
     var body: some View {
         NavigationStack {
@@ -57,12 +92,18 @@ struct MealsRootView: View {
                             .accessibilityAddTraits(.isHeader)
                         Spacer()
                         if section == 0, session.activeHome != nil {
-                            Button { showAutoPlan = true } label: {
-                                Label("Auto Plan", systemImage: "wand.and.sparkles").font(.subheadline.weight(.semibold))
-                                    .padding(.horizontal, 14).frame(minHeight: 42)
-                                    .foregroundStyle(.white).background(HomeyColors.recipeGreenAccent, in: Capsule())
+                            Menu {
+                                Button("Auto Plan", systemImage: "wand.and.sparkles") { showAutoPlan = true }
+                                Button("Leftovers", systemImage: "takeoutbag.and.cup.and.straw") { comingSoonFeature = "Leftovers" }
+                                Button("Add to Groceries", systemImage: "cart.badge.plus") { comingSoonFeature = "Add to Groceries" }
+                            } label: {
+                                Image(systemName: "ellipsis")
+                                    .font(.title3.weight(.semibold))
+                                    .foregroundStyle(HomeyColors.primary)
+                                    .frame(width: 44, height: 44)
+                                    .background(HomeyColors.field, in: Circle())
                             }
-                            .buttonStyle(.plain).accessibilityLabel("Auto Plan meals")
+                            .accessibilityLabel("Meal plan actions")
                         } else if section == 1 {
                             Button { showAdd = true } label: {
                                 Image(systemName: "plus")
@@ -141,6 +182,14 @@ struct MealsRootView: View {
             .alert("Meals", isPresented: .init(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(model.errorMessage ?? "") }
+            .alert(
+                "\(comingSoonFeature ?? "Feature") Coming Soon",
+                isPresented: .init(get: { comingSoonFeature != nil }, set: { if !$0 { comingSoonFeature = nil } })
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("This feature is coming soon.")
+            }
         }
     }
 }

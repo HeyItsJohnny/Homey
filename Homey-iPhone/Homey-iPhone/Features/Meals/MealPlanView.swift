@@ -28,9 +28,9 @@ struct MealPlanView: View {
                 ZStack {
                     LazyVStack(spacing: 16) {
                         ForEach(visibleTypes) { type in
-                            MealPlanSlotCard(type: type, item: plannedMeal(for: type),
+                            MealPlanSlotCard(type: type, items: plannedMeals(for: type),
                                 add: { pickerSlot = MealPlanSlot(day: selectedDay, type: type) },
-                                change: { pickerSlot = MealPlanSlot(day: selectedDay, type: type) },
+                                change: { item in pickerSlot = MealPlanSlot(day: selectedDay, type: type, replacing: item) },
                                 moveDates: moveDates,
                                 move: { item, date in Task { await move(item, to: date) } },
                                 remove: { item in Task { await model.remove(item, home: home, containing: selectedDay) } },
@@ -61,7 +61,10 @@ struct MealPlanView: View {
         .sheet(item: $pickerSlot) { slot in
             RecipePickerView(recipes: model.homeRecipes, favorites: model.favoriteIDs,
                 mealTypeFilter: slot.type, isLoading: model.isLoading) { meal in
-                await model.schedule(meal, type: slot.type, day: slot.day, home: home)
+                if let replacedMeal = slot.replacing {
+                    return await model.replace(replacedMeal, with: meal, type: slot.type, day: slot.day, home: home)
+                }
+                return await model.schedule(meal, type: slot.type, day: slot.day, home: home)
             }
         }
         .task(id: dayIdentifier) { await model.refreshPlan(home: home, containing: selectedDay) }
@@ -116,8 +119,13 @@ struct MealPlanView: View {
         let week = MealsViewModel.week(containing: selectedDay, home: home)
         return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: week.start) }
     }
-    private func plannedMeal(for type: MealType) -> PlannedMeal? {
-        model.planned.first { calendar.isDate($0.startsAt, inSameDayAs: selectedDay) && $0.mealType == type }
+    private func plannedMeals(for type: MealType) -> [PlannedMeal] {
+        model.planned.filter {
+            calendar.isDate($0.startsAt, inSameDayAs: selectedDay) && $0.mealType == type
+        }.sorted {
+            if $0.startsAt != $1.startsAt { return $0.startsAt < $1.startsAt }
+            return $0.id < $1.id
+        }
     }
     private func changeDay(by days: Int) {
         guard let date = calendar.date(byAdding: .day, value: days, to: selectedDay) else { return }
@@ -138,14 +146,15 @@ struct MealPlanView: View {
 private struct MealPlanSlot: Identifiable {
     let day: Date
     let type: MealType
+    var replacing: PlannedMeal? = nil
     var id: String { "\(day.timeIntervalSinceReferenceDate)-\(type.rawValue)" }
 }
 
 private struct MealPlanSlotCard<Detail: View>: View {
     let type: MealType
-    let item: PlannedMeal?
+    let items: [PlannedMeal]
     let add: () -> Void
-    let change: () -> Void
+    let change: (PlannedMeal) -> Void
     let moveDates: [Date]
     let move: (PlannedMeal, Date) -> Void
     let remove: (PlannedMeal) -> Void
@@ -164,45 +173,49 @@ private struct MealPlanSlotCard<Detail: View>: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
                 RecipeDetailIcon(symbol: type.symbol, color: accent)
-                Text(type.title).font(HomeyTypography.headline).frame(maxWidth: .infinity, alignment: .leading)
-                if item == nil {
-                    Button(action: add) { Label("Add Recipe", systemImage: "plus").font(.subheadline.weight(.semibold)) }
-                        .buttonStyle(.plain).foregroundStyle(HomeyColors.recipeGreenAccent)
-                }
+                Text(type.title).font(HomeyTypography.headline)
+                Spacer()
+                Button(action: add) { Label("Add Recipe", systemImage: "plus").font(.subheadline.weight(.semibold)) }
+                    .buttonStyle(.plain).foregroundStyle(HomeyColors.recipeGreenAccent)
             }
-            if let item {
+            if !items.isEmpty {
                 Divider().overlay(HomeyColors.border.opacity(0.2))
-                HStack(alignment: .top, spacing: 12) {
-                    NavigationLink(destination: detail(item.meal)) {
-                        HStack(alignment: .top, spacing: 12) {
-                            HomeRecipeThumbnail(path: item.meal.primaryPhotoPath).frame(width: 94, height: 94)
-                                .clipShape(RoundedRectangle(cornerRadius: 18))
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(item.meal.name).font(.headline).foregroundStyle(HomeyColors.text).lineLimit(2)
-                                RecipeBadgeFlow(spacing: 7) {
-                                    let total = (item.meal.prepTimeMinutes ?? 0) + (item.meal.cookTimeMinutes ?? 0)
-                                    if total > 0 { Label("\(total) min", systemImage: "clock") }
-                                    if let servings = item.meal.servings, servings > 0 {
-                                        Label("\(servings.formatted()) servings", systemImage: "person.2")
-                                    }
-                                }.font(.caption).foregroundStyle(HomeyColors.secondaryText)
-                            }.frame(maxWidth: .infinity, alignment: .leading)
-                        }.contentShape(Rectangle())
-                    }.buttonStyle(.plain)
-                    Menu {
-                        NavigationLink(destination: detail(item.meal)) { Label("View Recipe", systemImage: "book") }
-                        Button("Change Recipe", systemImage: "arrow.triangle.2.circlepath", action: change)
-                        Menu("Move / Reschedule", systemImage: "calendar") {
-                            ForEach(moveDates, id: \.self) { date in
-                                Button(date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())) { move(item, date) }
+                ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 {
+                        Divider().overlay(HomeyColors.border.opacity(0.16))
+                    }
+                    HStack(alignment: .top, spacing: 12) {
+                        NavigationLink(destination: detail(item.meal)) {
+                            HStack(alignment: .top, spacing: 12) {
+                                HomeRecipeThumbnail(path: item.meal.primaryPhotoPath).frame(width: 94, height: 94)
+                                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(item.meal.name).font(.headline).foregroundStyle(HomeyColors.text).lineLimit(2)
+                                    RecipeBadgeFlow(spacing: 7) {
+                                        let total = (item.meal.prepTimeMinutes ?? 0) + (item.meal.cookTimeMinutes ?? 0)
+                                        if total > 0 { Label("\(total) min", systemImage: "clock") }
+                                        if let servings = item.meal.servings, servings > 0 {
+                                            Label("\(servings.formatted()) servings", systemImage: "person.2")
+                                        }
+                                    }.font(.caption).foregroundStyle(HomeyColors.secondaryText)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                            }.contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                        Menu {
+                            NavigationLink(destination: detail(item.meal)) { Label("View Recipe", systemImage: "book") }
+                            Button("Change Recipe", systemImage: "arrow.triangle.2.circlepath") { change(item) }
+                            Menu("Move / Reschedule", systemImage: "calendar") {
+                                ForEach(moveDates, id: \.self) { date in
+                                    Button(date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())) { move(item, date) }
+                                }
                             }
+                            Divider()
+                            Button("Remove from Meal Plan", systemImage: "trash", role: .destructive) { remove(item) }
+                        } label: {
+                            Image(systemName: "ellipsis").rotationEffect(.degrees(90)).foregroundStyle(HomeyColors.secondaryText)
+                                .frame(width: 44, height: 44)
+                        }.accessibilityLabel("Actions for \(item.meal.name)")
                         }
-                        Divider()
-                        Button("Remove from Meal Plan", systemImage: "trash", role: .destructive) { remove(item) }
-                    } label: {
-                        Image(systemName: "ellipsis").rotationEffect(.degrees(90)).foregroundStyle(HomeyColors.secondaryText)
-                            .frame(width: 44, height: 44)
-                    }.accessibilityLabel("Actions for \(item.meal.name)")
                 }
             }
         }
