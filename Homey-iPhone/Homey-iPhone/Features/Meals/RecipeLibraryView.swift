@@ -139,6 +139,7 @@ struct RecipeLibraryView: View {
             pendingFavorites[meal.id] = nil // The model retains its original value if the request fails.
         }
     }
+
 }
 
 private struct RecipeListEditPresentation: Identifiable {

@@ -20,6 +20,7 @@ struct RecipeEditorView: View {
     @State private var error: String?
     @State private var savedHomeID: UUID?
     @State private var savedCommunityID: UUID?
+    @State private var communityContributionComplete = false
     @State private var savedPhotoPath: String?
     @State private var destinationsComplete = false
     @State private var photoSelection: PhotosPickerItem?
@@ -373,11 +374,19 @@ struct RecipeEditorView: View {
                 print("[RecipeImageFlow] communityImagePayload=\(RecipeImageReference.safeLog(SaveCommunityParams(draft: draft).imageURL))")
                 #endif
 
-                if existingMeal == nil && draft.shareWithCommunity && savedCommunityID == nil {
+                if existingMeal == nil && draft.shareWithCommunity && !communityContributionComplete {
                     stage = "communityRecipe"
                     RecipeSaveDiagnostics.log("Saving Community recipe…")
-                    savedCommunityID = try await service.share(draft, homeRecipeID: homeID, homePhotoPath: savedPhotoPath)
-                    RecipeSaveDiagnostics.log("Community recipe succeeded: \(savedCommunityID!.uuidString)")
+                    let contribution = try await service.share(draft, homeRecipeID: homeID, homePhotoPath: savedPhotoPath)
+                    switch contribution {
+                    case .created(let id):
+                        savedCommunityID = id
+                        RecipeSaveDiagnostics.log("Community recipe succeeded: \(id.uuidString)")
+                    case .alreadyExists(let id):
+                        savedCommunityID = id
+                        RecipeSaveDiagnostics.log("Community recipe already exists; continuing successfully")
+                    }
+                    communityContributionComplete = true
                 }
                 destinationsComplete = true
             }
@@ -392,7 +401,7 @@ struct RecipeEditorView: View {
             if destinationsComplete {
                 self.error = "Your recipe was saved, but Homey couldn’t refresh the recipe list. Tap Retry Refresh to try again."
             } else if stage == "communityRecipe", savedHomeID != nil {
-                self.error = "Saved to Home Recipes, but Community sharing failed. Try Save again to retry sharing, or turn off Contribute to Community to finish."
+                self.error = "Recipe saved to Home Recipes, but couldn't be shared with the Community. Try Save again to retry sharing, or turn off Contribute to Community to finish."
             } else if stage == "imageUpload" || stage == "imageAttachment" {
                 self.error = "Saved to Home Recipes, but the photo couldn’t be saved. Please try Save again."
             } else if let validation = error as? MealsError {

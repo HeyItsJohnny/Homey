@@ -9,8 +9,8 @@ struct MainTabView: View {
             NavigationStack { HomeView(navigate: navigate) }.tabItem { Label("Home", systemImage: "house.fill") }.tag(MainTab.home)
             tab("Calendar", "calendar").tabItem { Label("Calendar", systemImage: "calendar") }.tag(MainTab.calendar)
             MealsRootView().tabItem { Label("Meals", systemImage: "fork.knife") }.tag(MainTab.meals)
-            tab("Chores", "checklist").tabItem { Label("Chores", systemImage: "checklist") }.tag(MainTab.chores)
-            tab("Groceries", "cart").tabItem { Label("Groceries", systemImage: "cart") }.tag(MainTab.groceries)
+            ChoresRootView().tabItem { Label("Chores", systemImage: "checklist") }.tag(MainTab.chores)
+            NavigationStack { GroceriesView(isActive: selection == .groceries) }.tabItem { Label("Groceries", systemImage: "cart") }.tag(MainTab.groceries)
         }.tint(HomeyColors.primary)
     }
     private func tab(_ title: String, _ symbol: String) -> some View { NavigationStack { FeaturePlaceholderView(title: title, symbol: symbol) } }

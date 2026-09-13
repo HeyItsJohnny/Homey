@@ -9,8 +9,10 @@ import Combine
     @Published var planned: [PlannedMeal] = []
     @Published var isLoading = false
     @Published private(set) var isAutoPlanning = false
+    @Published private(set) var isAddingMealPlanToGroceries = false
     @Published var errorMessage: String?
     private let service = MealsService()
+    private let groceryRepository = GroceryRepository()
     func load(home: HomeSummary) async { isLoading=true; defer{isLoading=false}; do { async let h=service.homeRecipes(homeId:home.id); async let f=service.favoriteIDs(); let week=Self.week(containing:Date(),home:home); async let p=service.plannedMeals(home:home,week:week); (homeRecipes,favoriteIDs,planned)=try await(h,f,p); recipesRevision += 1 } catch { errorMessage=error.localizedDescription } }
     func refreshRecipesAfterSave(home: HomeSummary) async throws {
         recipesRevision += 1
@@ -165,6 +167,64 @@ import Combine
             .filter { calendar.isDate($0.startsAt, inSameDayAs: date) }
     }
 
+    func addMealPlanDayToGroceries(home: HomeSummary, date: Date) async -> String {
+        guard !isAddingMealPlanToGroceries else { return "Groceries are already being added." }
+        isAddingMealPlanToGroceries = true
+        defer { isAddingMealPlanToGroceries = false }
+        let calendar = Self.calendar(home)
+        let selectedDay = calendar.startOfDay(for: date)
+
+        do {
+            let dayMeals = try await plannedMealsForDay(home: home, date: selectedDay)
+                .filter { [.breakfast, .lunch, .dinner].contains($0.mealType) }
+            guard !dayMeals.isEmpty else { return "No meals are planned for this day." }
+            let inputs = dayMeals.map {
+                GroceryMealEventInput(
+                    eventID: $0.eventId,
+                    mealID: $0.meal.id,
+                    label: $0.meal.name,
+                    isLeftover: $0.isLeftover
+                )
+            }
+            let result = try await groceryRepository.addMealPlanDay(
+                inputs,
+                selectedDate: selectedDay,
+                homeID: home.id,
+                calendar: calendar
+            )
+            if result.leftoverCount == dayMeals.count {
+                return "No new groceries are needed for this day."
+            }
+            if result.addedCount == 0, result.failureCount == 0 {
+                return "No new groceries to add."
+            }
+
+            var messages: [String] = []
+            if result.addedCount > 0 {
+                messages.append("Added groceries for \(result.addedCount) meal\(result.addedCount == 1 ? "" : "s").")
+            }
+            if result.alreadyProcessedCount > 0 {
+                messages.append("\(result.alreadyProcessedCount) \(result.alreadyProcessedCount == 1 ? "was" : "were") already added.")
+            }
+            if result.leftoverCount > 0 {
+                messages.append("\(result.leftoverCount) leftover\(result.leftoverCount == 1 ? " was" : "s were") skipped.")
+            }
+            if result.noIngredientsCount > 0 {
+                messages.append("\(result.noIngredientsCount) meal\(result.noIngredientsCount == 1 ? " has" : "s have") no ingredients.")
+            }
+            if result.failureCount > 0 {
+                messages.append("Some groceries couldn't be added. Please try again.")
+            }
+            return messages.joined(separator: " ")
+        } catch {
+            #if DEBUG
+            print("[Groceries] FAILED Add Meal Plan Day")
+            print("[Groceries] error=\(String(reflecting: error))")
+            #endif
+            return "Groceries couldn't be added for this day. Please try again."
+        }
+    }
+
     func assignLeftovers(
         home: HomeSummary,
         sourceDate: Date,
@@ -279,7 +339,7 @@ struct MealsRootView: View {
     @State private var pendingEditorPresentation: RecipeCreationPresentation?
     @State private var selectedMealPlanDate = Date()
     @State private var showLeftovers = false
-    @State private var comingSoonFeature: String?
+    @State private var dayGroceryMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -301,10 +361,16 @@ struct MealsRootView: View {
                                 .disabled(model.isAutoPlanning)
                                 Button("Leftovers", systemImage: "takeoutbag.and.cup.and.straw") { showLeftovers = true }
                                     .disabled(!hasMealsForSelectedDay)
-                                Button("Add to Groceries", systemImage: "cart.badge.plus") { comingSoonFeature = "Add to Groceries" }
+                                Button("Add to Groceries", systemImage: "cart.badge.plus") {
+                                    guard let home = session.activeHome else { return }
+                                    Task {
+                                        dayGroceryMessage = await model.addMealPlanDayToGroceries(home: home, date: selectedMealPlanDate)
+                                    }
+                                }
+                                .disabled(model.isAddingMealPlanToGroceries)
                             } label: {
                                 Group {
-                                    if model.isAutoPlanning { ProgressView().tint(HomeyColors.primary) }
+                                    if model.isAutoPlanning || model.isAddingMealPlanToGroceries { ProgressView().tint(HomeyColors.primary) }
                                     else { Image(systemName: "ellipsis").font(.title3.weight(.semibold)) }
                                 }
                                 .foregroundStyle(HomeyColors.primary)
@@ -395,13 +461,10 @@ struct MealsRootView: View {
             .alert("Meals", isPresented: .init(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(model.errorMessage ?? "") }
-            .alert(
-                "\(comingSoonFeature ?? "Feature") Coming Soon",
-                isPresented: .init(get: { comingSoonFeature != nil }, set: { if !$0 { comingSoonFeature = nil } })
-            ) {
+            .alert("Groceries", isPresented: .init(get: { dayGroceryMessage != nil }, set: { if !$0 { dayGroceryMessage = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: {
-                Text("This feature is coming soon.")
+                Text(dayGroceryMessage ?? "")
             }
         }
     }

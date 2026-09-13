@@ -7,7 +7,8 @@ struct RecipeDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var detail: HomeyRecipeDetail?
     @State private var showPlan = false
-    @State private var showGrocery = false
+    @State private var groceryMessage: String?
+    @State private var addingToGroceries = false
     @State private var showEditor = false
     @State private var loadError: String?
     @State private var loading = true
@@ -17,6 +18,7 @@ struct RecipeDetailView: View {
     @State private var removing = false
     @State private var removalError: String?
     private let service = MealsService()
+    private let groceryRepository = GroceryRepository()
     private var currentMeal: HomeyMeal { model.homeRecipes.first { $0.id == meal.id } ?? meal }
     private var favorite: Bool { pendingFavorite ?? model.favoriteIDs.contains(meal.id) }
     private var canRemove: Bool { home.role == .owner || home.role == .admin }
@@ -49,16 +51,25 @@ struct RecipeDetailView: View {
                 Menu {
                     Button("Edit", systemImage: "pencil") { showEditor = true }
                     Button("Add to Plan", systemImage: "calendar.badge.plus") { showPlan = true }
-                    Button("Add to Groceries", systemImage: "cart") { showGrocery = true }
+                    Button {
+                        Task { await addToGroceries() }
+                    } label: {
+                        Label(addingToGroceries ? "Adding to Groceries…" : "Add to Groceries", systemImage: "cart")
+                    }
+                    .disabled(addingToGroceries)
                     if canRemove {
                         Divider()
                         Button("Remove Recipe", systemImage: "trash", role: .destructive) { confirmsRemoval = true }
                     }
                 } label: {
-                    Image(systemName: "ellipsis").font(.headline).frame(width: 44, height: 44)
+                    Group {
+                        if addingToGroceries { ProgressView().tint(HomeyColors.recipeGreenAccent) }
+                        else { Image(systemName: "ellipsis").font(.headline) }
+                    }
+                        .frame(width: 44, height: 44)
                         .background(HomeyColors.recipeCardBackground, in: Circle())
                 }
-                .disabled(detail == nil || loading || removing)
+                .disabled(detail == nil || loading || removing || addingToGroceries)
                 .accessibilityLabel("Recipe actions")
             }.buttonStyle(.plain).foregroundStyle(HomeyColors.recipeGreenAccent)
                 .padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 12)
@@ -107,9 +118,9 @@ struct RecipeDetailView: View {
             }
         }
         .sheet(isPresented: $showPlan) { RecipePlanSheet(meal: currentMeal, home: home, model: model) }
-        .alert("Groceries", isPresented: $showGrocery) { Button("OK") {} } message: {
-            Text("Coming Soon")
-        }
+        .alert("Groceries", isPresented: .init(get: { groceryMessage != nil }, set: { if !$0 { groceryMessage = nil } })) {
+            Button("OK") {}
+        } message: { Text(groceryMessage ?? "") }
         .confirmationDialog("Remove Recipe?", isPresented: $confirmsRemoval, titleVisibility: .visible) {
             Button("Remove Recipe", role: .destructive) { Task { await removeRecipe() } }
             Button("Cancel", role: .cancel) {}
@@ -146,6 +157,36 @@ struct RecipeDetailView: View {
         Task {
             await model.toggleFavorite(currentMeal)
             pendingFavorite = nil
+        }
+    }
+
+    private func addToGroceries() async {
+        guard !addingToGroceries else { return }
+        addingToGroceries = true
+        defer { addingToGroceries = false }
+        do {
+            let result = try await groceryRepository.addHomeRecipeToDefaultList(
+                mealID: currentMeal.id,
+                recipeName: currentMeal.name,
+                homeID: home.id
+            )
+            if !result.hasIngredients {
+                groceryMessage = "This recipe doesn't have any ingredients to add."
+            } else if result.isPartialSuccess {
+                groceryMessage = "Some ingredients were added, but Homey couldn't add the entire recipe."
+            } else if result.failureCount > 0 {
+                groceryMessage = "Homey couldn't add this recipe to Groceries. Please try again."
+            } else if result.wasAlreadyFullyAdded {
+                groceryMessage = "\(currentMeal.name) is already on your grocery list."
+            } else {
+                groceryMessage = "Added \(currentMeal.name) to Groceries."
+            }
+        } catch {
+            #if DEBUG
+            print("[Groceries] FAILED mealID=\(currentMeal.id.uuidString)")
+            print("[Groceries] error=\(String(reflecting: error))")
+            #endif
+            groceryMessage = "Homey couldn't add this recipe to Groceries. Please try again."
         }
     }
 

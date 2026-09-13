@@ -43,10 +43,24 @@ final class MealsService {
         return try await client.rpc("save_meal_recipe", params: params).execute().value
     }
 
-    func share(_ draft: RecipeDraft, homeRecipeID: UUID, homePhotoPath: String?) async throws -> UUID {
-        _ = try await client.auth.session
-        let params = SaveCommunityParams(draft: draft)
+    func share(_ draft: RecipeDraft, homeRecipeID: UUID, homePhotoPath: String?) async throws -> CommunityContributionResult {
+        let session = try await client.auth.session
+        if let existingID = draft.imported?.globalRecipeId {
+            #if DEBUG
+            print("[CommunityRecipeSave] existing globalRecipeId=\(existingID.uuidString); skipping duplicate save")
+            #endif
+            return .alreadyExists(existingID)
+        }
+        let params = SaveCommunityParams(draft: draft, imageURL: homePhotoPath ?? draft.importImageURL)
         #if DEBUG
+        print("[CommunityRecipeSave]")
+        print("title=\(params.title)")
+        print("sourceURL=\(RecipeImportInput.safeLogURL(params.sourceURL ?? ""))")
+        print("sourceType=\(params.sourceType)")
+        print("ingredientCount=\(params.ingredients.count)")
+        print("photoPath/reference=\(RecipeImageReference.safeLog(params.imageURL))")
+        print("creatorID=\(session.user.id.uuidString)")
+        print("starting save")
         print("[RecipeImageFlow] homeRecipeID=\(homeRecipeID.uuidString)")
         print("[RecipeImageFlow] uploadedPath=\(homePhotoPath ?? "nil")")
         print("[RecipeImageFlow] homeImageField=\(homePhotoPath ?? "nil")")
@@ -56,7 +70,37 @@ final class MealsService {
         print("[CommunityRecipe] sourceURL=\(params.sourceURL ?? "nil")")
         print("[CommunityRecipe] imported=\(draft.imported != nil)")
         #endif
-        return try await client.rpc("save_global_recipe", params: params).execute().value
+        do {
+            let createdID: UUID = try await client.rpc("save_global_recipe", params: params).execute().value
+            #if DEBUG
+            print("[CommunityRecipeSave] created")
+            #endif
+            return .created(createdID)
+        } catch {
+            if let error = error as? PostgrestError,
+               CommunityRecipeDuplicateClassifier.isDuplicate(
+                   code: error.code,
+                   message: error.message,
+                   details: error.detail
+               ) {
+                #if DEBUG
+                print("[CommunityRecipeSave] alreadyExists - continuing as success")
+                #endif
+                return .alreadyExists(nil)
+            }
+            #if DEBUG
+            print("[CommunityRecipeSave] FAILED")
+            if let error = error as? PostgrestError {
+                print("code=\(error.code ?? "nil")")
+                print("message=\(error.message)")
+                print("details=\(error.detail ?? "nil")")
+                print("hint=\(error.hint ?? "nil")")
+            } else {
+                print("error=\(String(reflecting: error))")
+            }
+            #endif
+            throw error
+        }
     }
 
     func validateSave(_ draft: RecipeDraft, homeId: UUID) throws {
@@ -103,6 +147,7 @@ final class MealsService {
 
     private func copyCommunityRecipeToHome(_ recipe: CommunityRecipe, homeId: UUID) async throws -> UUID {
         let homeMealID: UUID = try await client.rpc("add_global_meal_to_home", params: AddGlobalParams(globalId: recipe.id, homeId: homeId)).execute().value
+        try await normalizeCommunityIngredientsAfterCopy(recipe.ingredients, homeMealID: homeMealID)
         #if DEBUG
         print("[RecipeImageFlow] source=community")
         print("[RecipeImageFlow] globalRecipeID=\(recipe.id.uuidString)")
@@ -148,6 +193,55 @@ final class MealsService {
         } catch {
             RecipeSaveDiagnostics.failure(error, stage: "communityPhotoCopy")
             throw MealsError.message("The recipe was added to your Home, but its photo couldn't be copied. Tap Add to My Home again to retry.")
+        }
+    }
+
+    private func normalizeCommunityIngredientsAfterCopy(
+        _ communityIngredients: [CommunityIngredient],
+        homeMealID: UUID
+    ) async throws {
+        struct RecipeRow: Decodable { let id: UUID }
+        struct IngredientRow: Decodable {
+            let id: UUID
+            let sortOrder: Int
+            enum CodingKeys: String, CodingKey { case id, sortOrder = "sort_order" }
+        }
+        struct StructuredUpdate: Encodable {
+            let ingredientName: String
+            let quantity: Decimal?
+            let unit: String?
+            enum CodingKeys: String, CodingKey {
+                case ingredientName = "ingredient_name", quantity, unit
+            }
+        }
+
+        let recipes: [RecipeRow] = try await client.from("meal_recipes").select("id")
+            .eq("meal_id", value: homeMealID.uuidString).limit(1).execute().value
+        guard let recipeID = recipes.first?.id else { return }
+        let homeIngredients: [IngredientRow] = try await client.from("recipe_ingredients")
+            .select("id,sort_order").eq("recipe_id", value: recipeID.uuidString)
+            .order("sort_order").execute().value
+        let communityByOrder = Dictionary(uniqueKeysWithValues: communityIngredients.map { ($0.sortOrder, $0) })
+
+        for homeIngredient in homeIngredients {
+            guard let community = communityByOrder[homeIngredient.sortOrder],
+                  let quantity = community.quantity?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !quantity.isEmpty
+            else { continue }
+            let parsed = WebsiteIngredientParser.parse("\(quantity) \(community.ingredientName)")
+            guard parsed.safety == .safe else {
+                #if DEBUG
+                print("[CommunityToHome] needsReview sortOrder=\(homeIngredient.sortOrder) value=\(quantity) \(community.ingredientName)")
+                #endif
+                continue
+            }
+            try await client.from("recipe_ingredients")
+                .update(StructuredUpdate(
+                    ingredientName: parsed.ingredientName,
+                    quantity: parsed.quantity,
+                    unit: parsed.unit
+                ))
+                .eq("id", value: homeIngredient.id.uuidString).execute()
         }
     }
 
@@ -399,12 +493,78 @@ struct SaveMealParams: Encodable {
     enum CodingKeys: String, CodingKey { case homeId = "requested_home_id", mealId = "requested_meal_id", name = "requested_name", description = "requested_description", mealTypes = "requested_meal_types", cuisine = "requested_cuisine", difficulty = "requested_difficulty", prep = "requested_prep_time_minutes", cook = "requested_cook_time_minutes", servings = "requested_servings", sourceName = "requested_source_name", sourceURL = "requested_source_url", notes = "requested_notes", tags = "requested_tags", ingredients = "requested_ingredients", steps = "requested_steps" }
     func encode(to encoder: Encoder) throws { var c = encoder.container(keyedBy: CodingKeys.self); try c.encode(homeId, forKey: .homeId); try c.encode(mealId, forKey: .mealId); try c.encode(name, forKey: .name); try c.encode(description, forKey: .description); try c.encode(mealTypes, forKey: .mealTypes); try c.encode(cuisine, forKey: .cuisine); try c.encode(difficulty, forKey: .difficulty); try c.encode(prep, forKey: .prep); try c.encode(cook, forKey: .cook); try c.encode(servings, forKey: .servings); try c.encode(sourceName, forKey: .sourceName); try c.encode(sourceURL, forKey: .sourceURL); try c.encode(notes, forKey: .notes); try c.encode(tags, forKey: .tags); try c.encode(ingredients, forKey: .ingredients); try c.encode(steps, forKey: .steps); var d = encoder.container(keyedBy: DynamicKey.self); try d.encode(false, forKey: .init("requested_is_draft")); try d.encode(photoPath, forKey: .init("requested_primary_photo_path")) }
     struct DynamicKey: CodingKey { let stringValue: String; let intValue: Int? = nil; init(_ value: String) { stringValue = value }; init?(stringValue: String) { self.init(stringValue) }; init?(intValue: Int) { return nil } }
-    struct Ingredient: Encodable { let sectionName, ingredientName, unit, preparation, notes: String?; let quantity: Decimal?; let sortOrder: Int; let isOptional: Bool; init(_ d: IngredientDraft, order: Int) throws { preparation=d.preparation; notes=d.notes; sectionName=d.section.nilIfBlank; ingredientName=d.name; quantity=try RecipeQuantity.decimal(d.quantity); unit=d.unit.nilIfBlank; sortOrder=order; isOptional=d.optional }; enum CodingKeys: String, CodingKey { case quantity, unit, preparation, notes; case sectionName="section_name", ingredientName="ingredient_name", sortOrder="sort_order", isOptional="is_optional" } }
+    struct Ingredient: Encodable {
+        let sectionName, unit, preparation, notes: String?
+        let ingredientName: String
+        let quantity: Decimal?
+        let sortOrder: Int
+        let isOptional: Bool
+
+        init(_ draft: IngredientDraft, order: Int) throws {
+            preparation = draft.preparation
+            notes = draft.notes
+            sectionName = draft.section.nilIfBlank
+            ingredientName = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            quantity = try RecipeQuantity.decimal(draft.quantity)
+            unit = draft.unit.nilIfBlank
+            sortOrder = order
+            isOptional = draft.optional
+            #if DEBUG
+            print("[RecipeIngredientSave]")
+            print("ingredientName=\(ingredientName)")
+            print("quantity=\(quantity.map { NSDecimalNumber(decimal: $0).stringValue } ?? "nil")")
+            print("unit=\(unit ?? "nil")")
+            print("preparation=\(preparation ?? "nil")")
+            #endif
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case quantity, unit, preparation, notes
+            case sectionName = "section_name", ingredientName = "ingredient_name"
+            case sortOrder = "sort_order", isOptional = "is_optional"
+        }
+    }
     struct Step: Encodable { let stepNumber: Int; let instruction: String; let timerMinutes: Int?; init(_ d: StepDraft, order: Int) { stepNumber=order; instruction=d.text; timerMinutes=d.timerMinutes }; enum CodingKeys: String, CodingKey { case instruction; case stepNumber="step_number", timerMinutes="timer_minutes" } }
 }
 struct SaveCommunityParams: Encodable {
     let title: String; let imageURL: String?; let sourceType: String; let description, cuisine, servings, sourceName, sourceURL: String?; let prep, cook, total: Int?; let mealTypes, keywords: [String]; let ingredients: [CommunityIngredient]; let steps: [CommunityStep]
-    init(draft: RecipeDraft) { imageURL=draft.importImageURL; sourceType=CommunityRecipeSourceType.forDraft(draft).rawValue; title=draft.name.trimmingCharacters(in: .whitespacesAndNewlines); description=draft.description.nilIfBlank; cuisine=draft.cuisine.nilIfBlank; servings=draft.servings.map { String($0) }; sourceName=draft.sourceName.nilIfBlank; sourceURL=draft.sourceURL.nilIfBlank; prep=draft.prepMinutes; cook=draft.cookMinutes; total=draft.imported?.recipe.totalTimeMinutes ?? (((draft.prepMinutes ?? 0)+(draft.cookMinutes ?? 0)) > 0 ? (draft.prepMinutes ?? 0)+(draft.cookMinutes ?? 0) : nil); mealTypes=draft.mealTypes.map(\.rawValue); keywords=draft.tagsText.split(separator:",").map{String($0).trimmingCharacters(in:.whitespaces)}; ingredients=draft.ingredients.enumerated().filter{!$0.element.name.isEmpty}.map{CommunityIngredient(quantity:$0.element.quantity.nilIfBlank,sortOrder:$0.offset,isOptional:$0.element.optional,sectionName:$0.element.section.nilIfBlank,ingredientName:$0.element.name)}; steps=draft.steps.enumerated().filter{!$0.element.text.isEmpty}.map{CommunityStep(stepText:$0.element.text,sortOrder:$0.offset,sectionName:nil)} }
+    init(draft: RecipeDraft, imageURL: String? = nil) {
+        self.imageURL = imageURL ?? draft.importImageURL
+        sourceType = CommunityRecipeSourceType.forDraft(draft).rawValue
+        title = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        description = draft.description.nilIfBlank
+        cuisine = draft.cuisine.nilIfBlank
+        servings = draft.servings.map { String($0) }
+        sourceName = draft.sourceName.nilIfBlank
+        sourceURL = draft.sourceURL.nilIfBlank
+        prep = draft.prepMinutes
+        cook = draft.cookMinutes
+        total = draft.imported?.recipe.totalTimeMinutes ?? (((draft.prepMinutes ?? 0) + (draft.cookMinutes ?? 0)) > 0 ? (draft.prepMinutes ?? 0) + (draft.cookMinutes ?? 0) : nil)
+        mealTypes = draft.mealTypes.map(\.rawValue)
+        keywords = draft.tagsText.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+        ingredients = draft.ingredients.enumerated().filter { !$0.element.name.isEmpty }.map { index, ingredient in
+            CommunityIngredient(
+                quantity: Self.communityQuantity(for: ingredient),
+                sortOrder: index,
+                isOptional: ingredient.optional,
+                sectionName: ingredient.section.nilIfBlank,
+                ingredientName: ingredient.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+        steps = draft.steps.enumerated().filter { !$0.element.text.isEmpty }.map {
+            CommunityStep(stepText: $0.element.text, sortOrder: $0.offset, sectionName: nil)
+        }
+    }
+
+    private static func communityQuantity(for ingredient: IngredientDraft) -> String? {
+        let quantity: Decimal?
+        if let text = ingredient.quantity.nilIfBlank {
+            quantity = (try? RecipeQuantity.decimal(text)) ?? nil
+        } else {
+            quantity = nil
+        }
+        return CommunityIngredientQuantityFormatter.string(quantity: quantity, unit: ingredient.unit.nilIfBlank)
+    }
     enum CodingKeys: String, CodingKey { case title="requested_title", description="requested_description", prep="requested_prep_time_minutes", cook="requested_cook_time_minutes", total="requested_total_time_minutes", servings="requested_servings", cuisine="requested_cuisine", mealTypes="requested_meal_types", keywords="requested_keywords", ingredients="requested_ingredients", steps="requested_steps", sourceName="requested_source_name", sourceURL="requested_source_url" }
     func encode(to encoder: Encoder) throws { var c=encoder.container(keyedBy:CodingKeys.self); try c.encode(title,forKey:.title); try c.encode(description,forKey:.description); try c.encode(prep,forKey:.prep); try c.encode(cook,forKey:.cook); try c.encode(total,forKey:.total); try c.encode(servings,forKey:.servings); try c.encode(cuisine,forKey:.cuisine); try c.encode(mealTypes,forKey:.mealTypes); try c.encode(keywords,forKey:.keywords); try c.encode(ingredients,forKey:.ingredients); try c.encode(steps,forKey:.steps); try c.encode(sourceName,forKey:.sourceName); try c.encode(sourceURL,forKey:.sourceURL); var d=encoder.container(keyedBy:DynamicKey.self); try d.encode(imageURL,forKey:.init("requested_image_url")); try d.encode(sourceType,forKey:.init("requested_source_type")) }
     struct DynamicKey: CodingKey { let stringValue:String; let intValue:Int?=nil; init(_ v:String){stringValue=v}; init?(stringValue:String){self.init(stringValue)}; init?(intValue:Int){return nil} }
@@ -429,5 +589,27 @@ enum CommunityRecipeSourceType: String {
 
     static func forDraft(_ draft: RecipeDraft) -> Self {
         draft.imported == nil ? .community : .url
+    }
+}
+
+enum CommunityContributionResult: Equatable {
+    case created(UUID)
+    case alreadyExists(UUID?)
+}
+
+enum CommunityRecipeDuplicateClassifier {
+    static func isDuplicate(code: String?, message: String, details: String?) -> Bool {
+        if code == "23505" { return true }
+        guard code == "P0001" else { return false }
+        let text = [message, details].compactMap { $0 }.joined(separator: " ").lowercased()
+        return text.contains("already exists") || text.contains("duplicate")
+    }
+}
+
+enum CommunityIngredientQuantityFormatter {
+    static func string(quantity: Decimal?, unit: String?) -> String? {
+        let amount = quantity.map { NSDecimalNumber(decimal: $0).stringValue }
+        return [amount, unit?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfBlank]
+            .compactMap { $0 }.joined(separator: " ").nilIfBlank
     }
 }
