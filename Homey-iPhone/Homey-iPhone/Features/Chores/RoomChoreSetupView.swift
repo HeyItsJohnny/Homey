@@ -41,7 +41,8 @@ private enum SetupFrequency: String, CaseIterable, Identifiable {
     var backendFrequency: String {
         switch self {
         case .oneTime: "none"
-        case .annually, .biannually: "yearly"
+        case .biannually: "monthly"
+        case .annually: "yearly"
         default: rawValue == "everyTwoWeeks" ? "weekly" : rawValue
         }
     }
@@ -223,7 +224,13 @@ struct RoomChoreSetupView: View {
     private var roomTypeStep: some View { card {
         VStack(alignment: .leading, spacing: 20) {
             intro("Verify Room Type", "Homey uses this to suggest the right chores. You always have final control.")
-            Picker("Room Type", selection: $draft.roomType) { ForEach(SetupRoomType.allCases) { Text($0.name).tag($0) } }.pickerStyle(.menu).padding().background(HomeyColors.field, in: RoundedRectangle(cornerRadius: 14))
+            schedulePickerField(title: "Room Type") {
+                Picker("Room Type", selection: $draft.roomType) {
+                    ForEach(SetupRoomType.allCases) { Text($0.name).tag($0) }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+            }
             LabeledContent("Room", value: draft.roomName)
         }
     } }
@@ -244,8 +251,63 @@ struct RoomChoreSetupView: View {
     } }
     private var scheduleStep: some View { VStack(spacing: 12) {
         intro("Chore Schedule", "Each suggestion starts with the room's preferred day and can be changed.").padding(.horizontal, 4)
-        ForEach($draft.chores) { $chore in if chore.isSelected { card { VStack(alignment: .leading, spacing: 12) { Text(chore.name).font(.headline); Picker("Repeats", selection: $chore.frequency) { ForEach(SetupFrequency.allCases) { Text($0.name).tag($0) } }; if chore.frequency.usesWeekday { Picker("Day", selection: $chore.weekday) { ForEach(SetupWeekday.allCases) { Text($0.name).tag($0) } } } } } } }
+        ForEach($draft.chores) { $chore in
+            if chore.isSelected {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(chore.name)
+                        .font(.headline)
+                        .foregroundStyle(HomeyColors.text)
+
+                    HStack(spacing: 10) {
+                        schedulePickerField(title: "Repeats") {
+                            Picker("Repeats", selection: $chore.frequency) {
+                                ForEach(SetupFrequency.allCases) { Text($0.name).tag($0) }
+                            }
+                            .labelsHidden()
+                            .pickerStyle(.menu)
+                        }
+
+                        if chore.frequency.usesWeekday {
+                            schedulePickerField(title: "Day") {
+                                Picker("Day", selection: $chore.weekday) {
+                                    ForEach(SetupWeekday.allCases) { Text($0.name).tag($0) }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                            }
+                        }
+                    }
+                }
+                .padding(18)
+                .background(.white.opacity(0.96), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(HomeyColors.primary.opacity(0.28), lineWidth: 1.5)
+                }
+                .shadow(color: HomeyColors.primary.opacity(0.08), radius: 14, y: 7)
+            }
+        }
     } }
+
+    private func schedulePickerField<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title.uppercased())
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(HomeyColors.secondaryText)
+            content()
+                .font(.subheadline.weight(.semibold))
+                .tint(HomeyColors.primary)
+                .frame(maxWidth: .infinity, minHeight: 26, alignment: .leading)
+        }
+        .padding(.horizontal, 13)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(HomeyColors.field, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(HomeyColors.primary.opacity(0.42), lineWidth: 1)
+        }
+    }
     private var pointsStep: some View { card {
         VStack(alignment: .leading, spacing: 16) {
             intro("Reward Points", "Review the iPad setup's suggested rewards and adjust them if needed.")
@@ -414,11 +476,56 @@ private struct SaveTemplateParams: Encodable {
         requestedStartDate = startDate; requestedWeekdays = chore.frequency.usesWeekday ? [chore.weekday.postgresValue] : []
         let day = Int(startDate.suffix(2)); let month = Int(startDate.dropFirst(5).prefix(2))
         requestedDayOfMonth = [.monthly, .annually, .biannually].contains(chore.frequency) ? day : nil
-        requestedMonthOfYear = [.annually, .biannually].contains(chore.frequency) ? month : nil
+        requestedMonthOfYear = chore.frequency == .annually ? month : nil
         requestedEndType = chore.frequency == .oneTime ? "after_count" : "never"; requestedOccurrenceCount = chore.frequency == .oneTime ? 1 : nil
         requestedTimezone = timezone; requestedAssigneeIDs = chore.isOpen ? [] : Array(chore.assigneeIDs)
     }
     enum CodingKeys: String, CodingKey {
         case requestedHomeID = "requested_home_id", requestedTemplateID = "requested_template_id", requestedTitle = "requested_title", requestedDescription = "requested_description", requestedInstructions = "requested_instructions", requestedCategoryID = "requested_category_id", requestedRoomID = "requested_room_id", requestedAssignmentMode = "requested_assignment_mode", requestedCompletionMode = "requested_completion_mode", requestedPointsValue = "requested_points_value", requestedRequiresApproval = "requested_requires_approval", requestedRequiresPhoto = "requested_requires_photo", requestedFrequency = "requested_frequency", requestedIntervalValue = "requested_interval_value", requestedStartDate = "requested_start_date", requestedDueTime = "requested_due_time", requestedDurationMinutes = "requested_duration_minutes", requestedIsAllDay = "requested_is_all_day", requestedWeekdays = "requested_weekdays", requestedDayOfMonth = "requested_day_of_month", requestedMonthOfYear = "requested_month_of_year", requestedEndType = "requested_end_type", requestedEndsOn = "requested_ends_on", requestedOccurrenceCount = "requested_occurrence_count", requestedTimezone = "requested_timezone", requestedAssigneeIDs = "requested_assignee_ids"
+    }
+
+    // PostgREST resolves RPC overloads from the complete set of JSON keys. Match
+    // the iPad SaveChoreTemplateRPCParameters encoder and write explicit nulls
+    // instead of allowing synthesized Encodable to omit optional parameters.
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(requestedHomeID, forKey: .requestedHomeID)
+        try encodeOptional(requestedTemplateID, forKey: .requestedTemplateID, into: &container)
+        try container.encode(requestedTitle, forKey: .requestedTitle)
+        try encodeOptional(requestedDescription, forKey: .requestedDescription, into: &container)
+        try encodeOptional(requestedInstructions, forKey: .requestedInstructions, into: &container)
+        try encodeOptional(requestedCategoryID, forKey: .requestedCategoryID, into: &container)
+        try container.encode(requestedRoomID, forKey: .requestedRoomID)
+        try container.encode(requestedAssignmentMode, forKey: .requestedAssignmentMode)
+        try container.encode(requestedCompletionMode, forKey: .requestedCompletionMode)
+        try container.encode(requestedPointsValue, forKey: .requestedPointsValue)
+        try container.encode(requestedRequiresApproval, forKey: .requestedRequiresApproval)
+        try container.encode(requestedRequiresPhoto, forKey: .requestedRequiresPhoto)
+        try container.encode(requestedFrequency, forKey: .requestedFrequency)
+        try container.encode(requestedIntervalValue, forKey: .requestedIntervalValue)
+        try container.encode(requestedStartDate, forKey: .requestedStartDate)
+        try encodeOptional(requestedDueTime, forKey: .requestedDueTime, into: &container)
+        try container.encode(requestedDurationMinutes, forKey: .requestedDurationMinutes)
+        try container.encode(requestedIsAllDay, forKey: .requestedIsAllDay)
+        try container.encode(requestedWeekdays, forKey: .requestedWeekdays)
+        try encodeOptional(requestedDayOfMonth, forKey: .requestedDayOfMonth, into: &container)
+        try encodeOptional(requestedMonthOfYear, forKey: .requestedMonthOfYear, into: &container)
+        try container.encode(requestedEndType, forKey: .requestedEndType)
+        try encodeOptional(requestedEndsOn, forKey: .requestedEndsOn, into: &container)
+        try encodeOptional(requestedOccurrenceCount, forKey: .requestedOccurrenceCount, into: &container)
+        try container.encode(requestedTimezone, forKey: .requestedTimezone)
+        try container.encode(requestedAssigneeIDs, forKey: .requestedAssigneeIDs)
+    }
+
+    private func encodeOptional<Value: Encodable>(
+        _ value: Value?,
+        forKey key: CodingKeys,
+        into container: inout KeyedEncodingContainer<CodingKeys>
+    ) throws {
+        if let value {
+            try container.encode(value, forKey: key)
+        } else {
+            try container.encodeNil(forKey: key)
+        }
     }
 }
