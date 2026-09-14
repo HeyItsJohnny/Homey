@@ -10,8 +10,10 @@ enum ChoresSection: String, CaseIterable, Identifiable {
 }
 
 struct ChoresRootView: View {
+    @EnvironmentObject private var appSession: AppSession
     @State private var section: ChoresSection = .chores
     @State private var creationDestination: ChoreCreationPlaceholder?
+    @State private var refreshToken = UUID()
 
     var body: some View {
         NavigationStack {
@@ -36,7 +38,17 @@ struct ChoresRootView: View {
             .navigationTitle("Chores")
             .toolbar(.hidden, for: .navigationBar)
             .sheet(item: $creationDestination) { destination in
-                ChoreCreationPlaceholderView(destination: destination)
+                if destination == .roomAndChores {
+                    RoomChoreSetupView(
+                        homeID: appSession.activeHome?.id,
+                        role: appSession.activeRole,
+                        timezone: appSession.activeTimezone.identifier
+                    ) {
+                        refreshToken = UUID()
+                    }
+                } else {
+                    ChoreCreationPlaceholderView(destination: destination)
+                }
             }
         }
     }
@@ -85,6 +97,7 @@ struct ChoresRootView: View {
         switch section {
         case .chores:
             ChoresMainView()
+                .id(refreshToken)
         case .approvals:
             ChoreApprovalsView()
         case .rewards:
