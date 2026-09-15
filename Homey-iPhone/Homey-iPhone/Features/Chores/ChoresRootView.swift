@@ -62,19 +62,26 @@ struct ChoresRootView: View {
 
             Spacer()
 
-            if section == .chores {
-                Menu {
+            Menu {
                     Section("Automation") {
                         Button("Add Room and Chores", systemImage: "wand.and.sparkles") {
                             creationDestination = .roomAndChores
                         }
                     }
-                    Section("Manual") {
+                    Section("Chores & Rooms") {
                         Button("Add Chore", systemImage: "checkmark.circle") {
                             creationDestination = .chore
                         }
                         Button("Add Room", systemImage: "door.left.hand.open") {
                             creationDestination = .room
+                        }
+                    }
+                    Section("Rewards") {
+                        Button("Add Reward", systemImage: "gift") {
+                            creationDestination = .reward
+                        }
+                        Button("Adjustments", systemImage: "plusminus.circle") {
+                            creationDestination = .adjustments
                         }
                     }
                 } label: {
@@ -83,9 +90,8 @@ struct ChoresRootView: View {
                         .foregroundStyle(HomeyColors.primary)
                         .frame(width: 44, height: 44)
                         .background(HomeyColors.field, in: Circle())
-                }
-                .accessibilityLabel("Chore actions")
             }
+            .accessibilityLabel("Chore actions")
         }
         .frame(minHeight: 44)
         .padding(.horizontal, 16)
@@ -112,6 +118,8 @@ private enum ChoreCreationPlaceholder: String, Identifiable {
     case roomAndChores = "Add Room and Chores"
     case chore = "Add Chore"
     case room = "Add Room"
+    case reward = "Add Reward"
+    case adjustments = "Adjustments"
 
     var id: Self { self }
     var symbol: String {
@@ -119,6 +127,8 @@ private enum ChoreCreationPlaceholder: String, Identifiable {
         case .roomAndChores: "wand.and.sparkles"
         case .chore: "checkmark.circle"
         case .room: "door.left.hand.open"
+        case .reward: "gift"
+        case .adjustments: "plusminus.circle"
         }
     }
 }

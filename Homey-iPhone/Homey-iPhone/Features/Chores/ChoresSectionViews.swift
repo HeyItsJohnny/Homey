@@ -89,7 +89,6 @@ private final class PhoneChoresViewModel: ObservableObject {
         do {
             // Match the working iPad ChoresRepository.fetchRooms contract and
             // query only the deployed room fields this screen displays.
-            debugLog("loading rooms")
             let loadedRooms: [PhoneChoreRoom] = try await client
                 .from("chore_rooms")
                 .select("id,name,room_type,preferred_cleaning_weekday")
@@ -97,11 +96,8 @@ private final class PhoneChoresViewModel: ObservableObject {
                 .order("sort_order")
                 .execute()
                 .value
-            debugLog("loaded \(loadedRooms.count) rooms")
-
             // Match ChoresRepository.fetchTemplates: the deployed relation is
             // queried by home and ordered without a server-side archive filter.
-            debugLog("loading templates")
             let loadedTemplates: [PhoneChoreTemplate] = try await client
                 .from("chore_templates")
                 .select("id,room_id,title,points_value")
@@ -109,8 +105,6 @@ private final class PhoneChoresViewModel: ObservableObject {
                 .order("title")
                 .execute()
                 .value
-            debugLog("loaded \(loadedTemplates.count) templates")
-
             rooms = loadedRooms
             templates = loadedTemplates
         } catch {
@@ -119,12 +113,6 @@ private final class PhoneChoresViewModel: ObservableObject {
             print("[Homey] LOAD PHONE CHORES: \(String(reflecting: error))")
             #endif
         }
-    }
-
-    private func debugLog(_ message: String) {
-        #if DEBUG
-        print("[Homey] PHONE CHORES: \(message)")
-        #endif
     }
 }
 

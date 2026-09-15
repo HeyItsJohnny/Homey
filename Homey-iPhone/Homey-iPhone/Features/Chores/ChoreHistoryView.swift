@@ -466,12 +466,10 @@ private final class PhoneChoreHistoryViewModel: ObservableObject {
             let page: [PhoneChoreHistoryActivity]
 
             if isAllUsersRequest {
-                debugLog("get_home_chore_history home=\(homeID) role=\(activeRole?.rawValue ?? "unknown") filter=all offset=\(nextOffset)")
                 page = try await repository.fetchHomeHistory(homeID: homeID, limit: pageSize, offset: nextOffset)
             } else {
                 let requestedUserID = hasHouseholdAccess ? selectedMemberID : currentUserID
                 guard let requestedUserID else { return }
-                debugLog("get_chore_history home=\(homeID) role=\(activeRole?.rawValue ?? "unknown") filter=\(requestedUserID) offset=\(nextOffset)")
                 page = try await repository.fetchHistory(homeID: homeID, userID: requestedUserID, limit: pageSize, offset: nextOffset)
             }
 
@@ -494,12 +492,6 @@ private final class PhoneChoreHistoryViewModel: ObservableObject {
         errorMessage = message
         #if DEBUG
         print("[Homey] CHORE HISTORY ERROR home=\(activeHomeID?.uuidString ?? "none") role=\(activeRole?.rawValue ?? "unknown") filter=\(selectedMemberID?.uuidString ?? (canViewAllUsers ? "all" : "self")): \(String(reflecting: error))")
-        #endif
-    }
-
-    private func debugLog(_ message: String) {
-        #if DEBUG
-        print("[Homey] CHORE HISTORY: \(message)")
         #endif
     }
 
