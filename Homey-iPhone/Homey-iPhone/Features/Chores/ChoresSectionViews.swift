@@ -148,16 +148,6 @@ struct ChoreRewardsView: View {
     }
 }
 
-struct ChoreHistoryView: View {
-    var body: some View {
-        ChorePlaceholderView(
-            title: "History",
-            message: "Completed chore history will appear here.",
-            symbol: "clock.arrow.circlepath"
-        )
-    }
-}
-
 struct ChorePlaceholderView: View {
     let title: String
     let message: String
