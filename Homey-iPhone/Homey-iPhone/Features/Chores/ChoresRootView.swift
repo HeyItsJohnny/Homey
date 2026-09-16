@@ -2,8 +2,8 @@ import SwiftUI
 
 enum ChoresSection: String, CaseIterable, Identifiable {
     case chores = "Chores"
-    case approvals = "Approvals"
     case rewards = "Rewards"
+    case approvals = "Approvals"
     case history = "History"
 
     var id: Self { self }
@@ -24,7 +24,7 @@ struct ChoresRootView: View {
                     header
 
                     Picker("Chores", selection: $section) {
-                        ForEach(ChoresSection.allCases) { section in
+                        ForEach(availableSections) { section in
                             Text(section.rawValue).tag(section)
                         }
                     }
@@ -37,6 +37,14 @@ struct ChoresRootView: View {
             }
             .navigationTitle("Chores")
             .toolbar(.hidden, for: .navigationBar)
+            .onChange(of: navigationScope) { _, _ in
+                if section == .approvals && !canAccessApprovals {
+                    section = .chores
+                }
+                if creationDestination == .adjustments {
+                    creationDestination = nil
+                }
+            }
             .sheet(item: $creationDestination) { destination in
                 if destination == .roomAndChores {
                     RoomChoreSetupView(
@@ -46,11 +54,42 @@ struct ChoresRootView: View {
                     ) {
                         refreshToken = UUID()
                     }
+                } else if destination == .reward {
+                    PhoneRewardEditorView(
+                        homeID: appSession.activeHome?.id,
+                        currentUserID: appSession.currentUser?.id,
+                        role: appSession.activeRole,
+                        reward: nil
+                    ) {
+                        refreshToken = UUID()
+                        NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: nil)
+                    }
+                } else if destination == .adjustments {
+                    PhonePointAdjustmentView(
+                        homeID: appSession.activeHome?.id,
+                        currentUserID: appSession.currentUser?.id,
+                        role: appSession.activeRole
+                    ) {
+                        refreshToken = UUID()
+                        NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: nil)
+                    }
                 } else {
                     ChoreCreationPlaceholderView(destination: destination)
                 }
             }
         }
+    }
+
+    private var canAccessApprovals: Bool {
+        appSession.activeRole == .owner || appSession.activeRole == .admin
+    }
+
+    private var availableSections: [ChoresSection] {
+        ChoresSection.allCases.filter { $0 != .approvals || canAccessApprovals }
+    }
+
+    private var navigationScope: String {
+        "\(appSession.activeHome?.id.uuidString ?? "no-home")-\(appSession.activeRole?.rawValue ?? "no-role")"
     }
 
     private var header: some View {
@@ -76,12 +115,14 @@ struct ChoresRootView: View {
                             creationDestination = .room
                         }
                     }
-                    Section("Rewards") {
-                        Button("Add Reward", systemImage: "gift") {
-                            creationDestination = .reward
-                        }
-                        Button("Adjustments", systemImage: "plusminus.circle") {
-                            creationDestination = .adjustments
+                    if canAccessApprovals {
+                        Section("Rewards") {
+                            Button("Add Reward", systemImage: "gift") {
+                                creationDestination = .reward
+                            }
+                            Button("Adjustments", systemImage: "plusminus.circle") {
+                                creationDestination = .adjustments
+                            }
                         }
                     }
                 } label: {
@@ -105,9 +146,15 @@ struct ChoresRootView: View {
             ChoresMainView()
                 .id(refreshToken)
         case .approvals:
-            ChoreApprovalsView()
+            if canAccessApprovals {
+                ChoreApprovalsView()
+            } else {
+                ChoresMainView()
+                    .id(refreshToken)
+            }
         case .rewards:
             ChoreRewardsView()
+                .id(refreshToken)
         case .history:
             ChoreHistoryView()
         }

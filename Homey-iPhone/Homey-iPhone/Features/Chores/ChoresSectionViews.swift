@@ -1347,13 +1347,1061 @@ private struct PhoneApprovalAssigneeKey: Hashable {
 }
 
 struct ChoreRewardsView: View {
+    @EnvironmentObject private var appSession: AppSession
+    @StateObject private var model = PhoneRewardsViewModel()
+    @State private var rewardToRedeem: PhoneChoreReward?
+    @State private var rewardToEdit: PhoneChoreReward?
+
     var body: some View {
-        ChorePlaceholderView(
-            title: "Rewards",
-            message: "Rewards will appear here.",
-            symbol: "gift"
+        Group {
+            if (model.isLoading || model.isLoadingUserState) && model.pointBalance == nil {
+                ProgressView("Loading rewards…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let errorMessage = model.errorMessage, model.pointBalance == nil {
+                ScrollView {
+                    VStack(spacing: 14) {
+                        HomeyErrorView(message: errorMessage)
+                        Button("Try Again") { Task { await load() } }
+                            .buttonStyle(HomeyButtonStyle())
+                    }
+                    .padding(20)
+                    .homeyCard()
+                    .padding()
+                }
+            } else if model.rewards.isEmpty {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        if canManageRewards { userFilterCard }
+                        pointsCard
+                        VStack(spacing: 12) {
+                            Image(systemName: "gift")
+                                .font(.system(size: 30, weight: .medium))
+                                .foregroundStyle(HomeyColors.primary)
+                                .frame(width: 72, height: 72)
+                                .background(HomeyColors.field, in: Circle())
+                            Text("No rewards yet")
+                                .font(HomeyTypography.headline)
+                                .foregroundStyle(HomeyColors.text)
+                            Text("Rewards added to your Home will appear here.")
+                                .font(.subheadline)
+                                .foregroundStyle(HomeyColors.secondaryText)
+                                .multilineTextAlignment(.center)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 40)
+                        .homeyCard()
+                    }
+                    .padding(16)
+                }
+                .refreshable { await load() }
+            } else {
+                List {
+                    if canManageRewards {
+                        userFilterCard
+                            .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                    }
+                    Section { pointsCard }
+                    rewardListSection(
+                        title: "Can Afford",
+                        rewards: model.affordableRewards,
+                        emptyMessage: "Keep earning! You don't have enough points for a reward yet.",
+                        isAffordable: true
+                    )
+                    rewardListSection(
+                        title: "All Rewards",
+                        rewards: model.unaffordableRewards,
+                        emptyMessage: "You can afford every available reward!",
+                        isAffordable: false
+                    )
+                    if canManageRewards, !model.inactiveRewards.isEmpty {
+                        rewardListSection(
+                            title: "Inactive",
+                            rewards: model.inactiveRewards,
+                            emptyMessage: "",
+                            isAffordable: false,
+                            isManagementSection: true
+                        )
+                    }
+                }
+                .listStyle(.insetGrouped)
+                .scrollContentBackground(.hidden)
+                .background(HomeyColors.background)
+                .refreshable { await load() }
+            }
+        }
+        .task(id: loadTaskID) { await load() }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyChoresDidChange"))) { notification in
+            guard notification.object as? PhoneRewardsViewModel !== model else { return }
+            Task { await load() }
+        }
+        .confirmationDialog(
+            rewardToRedeem.map { "Redeem \($0.name)?" } ?? "Redeem Reward?",
+            isPresented: Binding(
+                get: { rewardToRedeem != nil },
+                set: { if !$0 { rewardToRedeem = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let rewardToRedeem {
+                Button("Redeem for \(rewardToRedeem.pointCost) points") {
+                    let reward = rewardToRedeem
+                    self.rewardToRedeem = nil
+                    Task { await model.redeem(reward) }
+                }
+            }
+            Button("Cancel", role: .cancel) { rewardToRedeem = nil }
+        } message: {
+            Text("This will spend points and create a pending reward request.")
+        }
+        .sheet(item: $rewardToEdit) { reward in
+            PhoneRewardEditorView(
+                homeID: appSession.activeHome?.id,
+                currentUserID: appSession.currentUser?.id,
+                role: appSession.activeRole,
+                reward: reward
+            ) {
+                Task { await load() }
+            }
+        }
+        .alert("Unable to Redeem Reward", isPresented: Binding(
+            get: { model.actionErrorMessage != nil },
+            set: { if !$0 { model.actionErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { model.actionErrorMessage = nil }
+        } message: {
+            Text(model.actionErrorMessage ?? "Please try again.")
+        }
+    }
+
+    private var pointsCard: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(model.selectedRewardUserID == appSession.currentUser?.id ? "My Points" : "Available Points")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(HomeyColors.secondaryText)
+                Text(model.selectedRewardUserID == appSession.currentUser?.id
+                     ? "Available to spend"
+                     : model.selectedRewardUserName)
+                    .font(.caption)
+                    .foregroundStyle(HomeyColors.secondaryText)
+            }
+            Spacer()
+            Text("\(model.pointBalance ?? 0) pts")
+                .font(.title2.bold())
+                .foregroundStyle(HomeyColors.primary)
+        }
+        .homeyCard()
+    }
+
+    private var userFilterCard: some View {
+        Menu {
+            ForEach(model.members, id: \.userID) { member in
+                Button {
+                    Task { await model.selectRewardUser(member.userID) }
+                } label: {
+                    Label(
+                        member.displayName,
+                        systemImage: member.userID == model.selectedRewardUserID ? "checkmark" : "person"
+                    )
+                }
+            }
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "person.2.fill")
+                    .foregroundStyle(HomeyColors.primary)
+                Text(model.selectedRewardUserLabel)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(HomeyColors.text)
+                    .lineLimit(1)
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(HomeyColors.secondaryText)
+            }
+            .padding(.horizontal, 16)
+            .frame(minHeight: 52)
+            .background(HomeyColors.field, in: RoundedRectangle(cornerRadius: HomeyCornerRadius.field))
+            .overlay {
+                RoundedRectangle(cornerRadius: HomeyCornerRadius.field)
+                    .stroke(HomeyColors.border, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isLoadingUserState)
+        .accessibilityLabel("Filter rewards by user")
+        .accessibilityValue(model.selectedRewardUserLabel)
+    }
+
+    @ViewBuilder
+    private func rewardListSection(
+        title: String,
+        rewards: [PhoneChoreReward],
+        emptyMessage: String,
+        isAffordable: Bool,
+        isManagementSection: Bool = false
+    ) -> some View {
+        Section {
+            if rewards.isEmpty {
+                Text(emptyMessage)
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyColors.secondaryText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(rewards) { reward in
+                    PhoneRewardRow(
+                        reward: reward,
+                        isMuted: !isAffordable,
+                        isPending: model.pendingRewardIDs.contains(reward.id),
+                        isProcessing: model.redeemingRewardID == reward.id,
+                        pointsNeeded: isManagementSection ? nil : model.pointsNeeded(for: reward),
+                        onSelect: canManageRewards ? { rewardToEdit = reward } : nil
+                    )
+                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                        if isAffordable && !model.pendingRewardIDs.contains(reward.id) {
+                            Button {
+                                rewardToRedeem = reward
+                            } label: {
+                                Label("Redeem", systemImage: "gift.fill")
+                            }
+                            .tint(HomeyColors.primary)
+                            .disabled(model.redeemingRewardID == reward.id)
+                        }
+                    }
+                }
+            }
+        } header: {
+            HStack {
+                Text(title).font(HomeyTypography.headline)
+                Spacer()
+                Text("\(rewards.count)")
+                    .font(.headline)
+                    .foregroundStyle(HomeyColors.primary)
+            }
+            .textCase(nil)
+        }
+    }
+
+    private var canManageRewards: Bool {
+        appSession.activeRole == .owner || appSession.activeRole == .admin
+    }
+
+    private var loadTaskID: String {
+        "\(appSession.activeHome?.id.uuidString ?? "no-home")-\(appSession.currentUser?.id.uuidString ?? "no-user")-\(appSession.activeRole?.rawValue ?? "no-role")"
+    }
+
+    private func load() async {
+        await model.load(
+            homeID: appSession.activeHome?.id,
+            currentUserID: appSession.currentUser?.id,
+            role: appSession.activeRole
         )
     }
+}
+
+struct PhoneChoreReward: Decodable, Identifiable {
+    let id: UUID
+    let homeID: UUID
+    let name: String
+    let description: String?
+    let pointCost: Int
+    let isActive: Bool
+    let isArchived: Bool
+    enum CodingKeys: String, CodingKey {
+        case id, name, description
+        case homeID = "home_id"
+        case pointCost = "point_cost"
+        case isActive = "is_active"
+        case isArchived = "is_archived"
+    }
+}
+
+private struct PhonePointDelta: Decodable {
+    let points: Int
+}
+
+private struct PhonePendingRewardRedemption: Decodable {
+    let rewardID: UUID
+    enum CodingKeys: String, CodingKey { case rewardID = "reward_id" }
+}
+
+private struct PhoneRedeemRewardParameters: Encodable {
+    let homeID: UUID
+    let rewardID: UUID
+    enum CodingKeys: String, CodingKey {
+        case homeID = "requested_home_id"
+        case rewardID = "requested_reward_id"
+    }
+}
+
+private struct PhoneRedeemRewardAsAdminParameters: Encodable {
+    let homeID: UUID
+    let rewardID: UUID
+    let userID: UUID
+    enum CodingKeys: String, CodingKey {
+        case homeID = "requested_home_id"
+        case rewardID = "requested_reward_id"
+        case userID = "requested_user_id"
+    }
+}
+
+private struct PhoneRewardRedemptionRepository {
+    private let client = SupabaseManager.shared.client
+
+    func redeemReward(homeID: UUID, rewardID: UUID) async throws -> UUID {
+        try await client.rpc(
+            "redeem_chore_reward",
+            params: PhoneRedeemRewardParameters(homeID: homeID, rewardID: rewardID)
+        ).execute().value
+    }
+
+    func redeemRewardAsAdmin(homeID: UUID, rewardID: UUID, userID: UUID) async throws -> UUID {
+        try await client.rpc(
+            "redeem_chore_reward_as_admin",
+            params: PhoneRedeemRewardAsAdminParameters(
+                homeID: homeID,
+                rewardID: rewardID,
+                userID: userID
+            )
+        ).execute().value
+    }
+}
+
+private struct PhoneRewardCreatePayload: Encodable {
+    let homeID: UUID
+    let name: String
+    let description: String?
+    let pointCost: Int
+    let isActive: Bool
+    let isArchived = false
+    let createdBy: UUID
+    enum CodingKeys: String, CodingKey {
+        case homeID = "home_id"
+        case name, description
+        case pointCost = "point_cost"
+        case isActive = "is_active"
+        case isArchived = "is_archived"
+        case createdBy = "created_by"
+    }
+}
+
+private struct PhoneRewardUpdatePayload: Encodable {
+    let name: String
+    let description: String?
+    let pointCost: Int
+    let isActive: Bool
+    enum CodingKeys: String, CodingKey {
+        case name, description
+        case pointCost = "point_cost"
+        case isActive = "is_active"
+    }
+}
+
+private struct PhoneRewardRow: View {
+    let reward: PhoneChoreReward
+    let isMuted: Bool
+    let isPending: Bool
+    let isProcessing: Bool
+    let pointsNeeded: Int?
+    let onSelect: (() -> Void)?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Group {
+                if isProcessing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "gift.fill")
+                        .foregroundStyle(isMuted ? HomeyColors.secondaryText : HomeyColors.primary)
+                }
+            }
+            .frame(width: 22, height: 24)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(reward.name)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(isMuted ? HomeyColors.secondaryText : HomeyColors.text)
+                if let description = reward.description, !description.isEmpty {
+                    Text(description)
+                        .font(.caption)
+                        .foregroundStyle(HomeyColors.secondaryText)
+                        .lineLimit(2)
+                }
+                if isPending {
+                    Text("Redemption pending")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.orange)
+                } else if let pointsNeeded, pointsNeeded > 0 {
+                    Text("\(pointsNeeded) more points needed")
+                        .font(.caption)
+                        .foregroundStyle(HomeyColors.secondaryText)
+                } else if !reward.isActive {
+                    Text("Inactive")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(HomeyColors.secondaryText)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            Text("\(reward.pointCost) pts")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(isMuted ? HomeyColors.secondaryText : HomeyColors.text)
+        }
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+        .onTapGesture { onSelect?() }
+        .opacity(isProcessing ? 0.65 : 1)
+        .accessibilityAction(named: "Edit") { onSelect?() }
+    }
+}
+
+@MainActor
+private final class PhoneRewardsViewModel: ObservableObject {
+    @Published private(set) var rewards: [PhoneChoreReward] = []
+    @Published private(set) var members: [PhoneChoreMember] = []
+    @Published private(set) var selectedRewardUserID: UUID?
+    @Published private(set) var pointBalance: Int?
+    @Published private(set) var pendingRewardIDs: Set<UUID> = []
+    @Published private(set) var isLoading = false
+    @Published private(set) var isLoadingUserState = false
+    @Published private(set) var redeemingRewardID: UUID?
+    @Published private(set) var errorMessage: String?
+    @Published var actionErrorMessage: String?
+
+    private let client = SupabaseManager.shared.client
+    private let redemptionRepository = PhoneRewardRedemptionRepository()
+    private var activeHomeID: UUID?
+    private var activeCurrentUserID: UUID?
+    private var activeRole: HomeMemberRole?
+    private var activeLoadID = UUID()
+    private var activeUserLoadID = UUID()
+
+    var activeRewards: [PhoneChoreReward] { rewards.filter(\.isActive) }
+    var inactiveRewards: [PhoneChoreReward] { rewards.filter { !$0.isActive } }
+    var affordableRewards: [PhoneChoreReward] {
+        activeRewards.filter { (pointBalance ?? 0) >= $0.pointCost }.sorted(by: Self.rewardSort)
+    }
+    var unaffordableRewards: [PhoneChoreReward] {
+        activeRewards.filter { (pointBalance ?? 0) < $0.pointCost }.sorted(by: Self.rewardSort)
+    }
+
+    func pointsNeeded(for reward: PhoneChoreReward) -> Int? {
+        guard let pointBalance else { return nil }
+        return max(reward.pointCost - pointBalance, 0)
+    }
+
+    var selectedRewardUserName: String {
+        members.first { $0.userID == selectedRewardUserID }?.displayName ?? "Selected member"
+    }
+
+    var selectedRewardUserLabel: String { selectedRewardUserName }
+
+    func load(homeID: UUID?, currentUserID: UUID?, role: HomeMemberRole?) async {
+        let loadID = UUID()
+        activeLoadID = loadID
+        let scopeChanged = activeHomeID != homeID || activeCurrentUserID != currentUserID || activeRole != role
+        if scopeChanged {
+            rewards = []
+            members = []
+            selectedRewardUserID = currentUserID
+            pointBalance = nil
+            pendingRewardIDs = []
+        }
+        activeHomeID = homeID
+        activeCurrentUserID = currentUserID
+        activeRole = role
+
+        guard let homeID, let currentUserID else {
+            rewards = []
+            members = []
+            selectedRewardUserID = nil
+            pointBalance = nil
+            pendingRewardIDs = []
+            return
+        }
+
+        isLoading = true
+        errorMessage = nil
+        defer { if activeLoadID == loadID { isLoading = false } }
+
+        do {
+            let canManageRewards = role == .owner || role == .admin
+            if canManageRewards {
+                let loadedMembers: [PhoneChoreMember] = try await client
+                    .rpc("get_home_members", params: PhoneGetChoreMembersParameters(homeID: homeID))
+                    .execute()
+                    .value
+                guard activeLoadID == loadID else { return }
+                members = loadedMembers.sorted {
+                    $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+                }
+                if selectedRewardUserID == nil || !members.contains(where: { $0.userID == selectedRewardUserID }) {
+                    selectedRewardUserID = currentUserID
+                }
+            } else {
+                members = []
+                selectedRewardUserID = currentUserID
+            }
+
+            var rewardQuery = client
+                .from("chore_rewards")
+                .select("id,home_id,name,description,point_cost,is_active,is_archived")
+                .eq("home_id", value: homeID.uuidString)
+                .eq("is_archived", value: false)
+            if role != .owner && role != .admin {
+                rewardQuery = rewardQuery.eq("is_active", value: true)
+            }
+
+            let loadedRewards: [PhoneChoreReward] = try await rewardQuery
+                .order("point_cost", ascending: true)
+                .order("name", ascending: true)
+                .execute()
+                .value
+            guard activeLoadID == loadID else { return }
+            rewards = loadedRewards
+            guard let rewardUserID = selectedRewardUserID else { return }
+            await loadUserState(for: rewardUserID)
+        } catch {
+            guard activeLoadID == loadID else { return }
+            rewards = []
+            members = []
+            pointBalance = nil
+            pendingRewardIDs = []
+            errorMessage = "We couldn't load rewards."
+            #if DEBUG
+            print("[Homey] CHORE REWARDS ERROR: \(String(reflecting: error))")
+            #endif
+        }
+    }
+
+    func selectRewardUser(_ userID: UUID) async {
+        guard activeRole == .owner || activeRole == .admin,
+              members.contains(where: { $0.userID == userID }) else { return }
+        guard selectedRewardUserID != userID else { return }
+        selectedRewardUserID = userID
+        pointBalance = nil
+        pendingRewardIDs = []
+        await loadUserState(for: userID)
+    }
+
+    private func loadUserState(for userID: UUID) async {
+        guard let activeHomeID else { return }
+        let userLoadID = UUID()
+        activeUserLoadID = userLoadID
+        isLoadingUserState = true
+        defer {
+            if activeUserLoadID == userLoadID { isLoadingUserState = false }
+        }
+
+        do {
+            async let pointsRequest: [PhonePointDelta] = client
+                .from("chore_point_transactions")
+                .select("points")
+                .eq("home_id", value: activeHomeID.uuidString)
+                .eq("user_id", value: userID.uuidString)
+                .execute()
+                .value
+            async let pendingRequest: [PhonePendingRewardRedemption] = client
+                .from("chore_reward_redemptions")
+                .select("reward_id")
+                .eq("home_id", value: activeHomeID.uuidString)
+                .eq("user_id", value: userID.uuidString)
+                .eq("status", value: "pending")
+                .execute()
+                .value
+            let (pointRows, pendingRows) = try await (pointsRequest, pendingRequest)
+            guard activeUserLoadID == userLoadID, selectedRewardUserID == userID else { return }
+            pointBalance = pointRows.reduce(0) { $0 + $1.points }
+            pendingRewardIDs = Set(pendingRows.map(\.rewardID))
+        } catch {
+            guard activeUserLoadID == userLoadID, selectedRewardUserID == userID else { return }
+            pointBalance = nil
+            pendingRewardIDs = []
+            errorMessage = "We couldn't load rewards."
+            #if DEBUG
+            print("[Homey] CHORE REWARDS ERROR: \(String(reflecting: error))")
+            #endif
+        }
+    }
+
+    func redeem(_ reward: PhoneChoreReward) async {
+        guard let activeHomeID,
+              let activeCurrentUserID,
+              let selectedRewardUserID,
+              reward.isActive,
+              (pointBalance ?? 0) >= reward.pointCost,
+              !pendingRewardIDs.contains(reward.id),
+              redeemingRewardID == nil else { return }
+        redeemingRewardID = reward.id
+        actionErrorMessage = nil
+        defer { redeemingRewardID = nil }
+
+        do {
+            if selectedRewardUserID == activeCurrentUserID {
+                _ = try await redemptionRepository.redeemReward(
+                    homeID: activeHomeID,
+                    rewardID: reward.id
+                )
+            } else {
+                guard activeRole == .owner || activeRole == .admin,
+                      members.contains(where: { $0.userID == selectedRewardUserID }) else { return }
+                _ = try await redemptionRepository.redeemRewardAsAdmin(
+                    homeID: activeHomeID,
+                    rewardID: reward.id,
+                    userID: selectedRewardUserID
+                )
+            }
+            await loadUserState(for: selectedRewardUserID)
+            NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: self)
+        } catch {
+            actionErrorMessage = "Unable to redeem this reward. Please check your balance and try again."
+            #if DEBUG
+            print("[Homey] CHORE REWARD ACTION ERROR: \(String(reflecting: error))")
+            #endif
+        }
+    }
+
+    private static func rewardSort(_ lhs: PhoneChoreReward, _ rhs: PhoneChoreReward) -> Bool {
+        if lhs.pointCost != rhs.pointCost { return lhs.pointCost < rhs.pointCost }
+        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    }
+}
+
+struct PhoneRewardEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    let homeID: UUID?
+    let currentUserID: UUID?
+    let role: HomeMemberRole?
+    let reward: PhoneChoreReward?
+    let onSaved: () -> Void
+
+    @State private var name = ""
+    @State private var rewardDescription = ""
+    @State private var pointCostText = ""
+    @State private var isActive = true
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    private let client = SupabaseManager.shared.client
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    editorField("Reward Name") {
+                        TextField("Movie Night", text: $name)
+                            .textInputAutocapitalization(.words)
+                            .padding(14)
+                            .background(HomeyColors.field, in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    editorField("Description") {
+                        TextField("Pick the movie for family movie night.", text: $rewardDescription, axis: .vertical)
+                            .lineLimit(3...5)
+                            .padding(14)
+                            .background(HomeyColors.field, in: RoundedRectangle(cornerRadius: 14))
+                    }
+                    editorField("Point Cost") {
+                        TextField("100", text: $pointCostText)
+                            .keyboardType(.numberPad)
+                            .padding(14)
+                            .background(HomeyColors.field, in: RoundedRectangle(cornerRadius: 14))
+                            .onChange(of: pointCostText) { _, newValue in
+                                pointCostText = newValue.filter(\.isNumber)
+                            }
+                    }
+                    Toggle("Active", isOn: $isActive)
+                        .font(.headline)
+                        .tint(HomeyColors.success)
+                        .padding(16)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 16))
+
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(HomeyColors.danger)
+                    }
+
+                    Button { Task { await save() } } label: {
+                        HStack {
+                            if isSaving { ProgressView().tint(.white) }
+                            Text(isSaving ? "Saving…" : "Save Reward")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(HomeyButtonStyle())
+                    .disabled(!canSave)
+                }
+                .padding(20)
+            }
+            .background(HomeyColors.background.ignoresSafeArea())
+            .navigationTitle(reward == nil ? "Add Reward" : "Edit Reward")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(isSaving)
+                }
+            }
+        }
+        .task { populate() }
+        .interactiveDismissDisabled(isSaving)
+    }
+
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var trimmedDescription: String { rewardDescription.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var pointCost: Int? { Int(pointCostText) }
+    private var canSave: Bool {
+        !isSaving && !trimmedName.isEmpty && (pointCost ?? 0) > 0
+            && (role == .owner || role == .admin) && homeID != nil && currentUserID != nil
+    }
+
+    private func editorField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.subheadline.weight(.bold)).foregroundStyle(HomeyColors.text)
+            content()
+        }
+    }
+
+    private func populate() {
+        guard let reward, name.isEmpty, pointCostText.isEmpty else { return }
+        name = reward.name
+        rewardDescription = reward.description ?? ""
+        pointCostText = String(reward.pointCost)
+        isActive = reward.isActive
+    }
+
+    private func save() async {
+        guard canSave, let homeID, let currentUserID, let pointCost else { return }
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+
+        do {
+            if let reward {
+                try await client
+                    .from("chore_rewards")
+                    .update(PhoneRewardUpdatePayload(
+                        name: trimmedName,
+                        description: trimmedDescription.isEmpty ? nil : trimmedDescription,
+                        pointCost: pointCost,
+                        isActive: isActive
+                    ))
+                    .eq("id", value: reward.id.uuidString)
+                    .execute()
+            } else {
+                try await client
+                    .from("chore_rewards")
+                    .insert(PhoneRewardCreatePayload(
+                        homeID: homeID,
+                        name: trimmedName,
+                        description: trimmedDescription.isEmpty ? nil : trimmedDescription,
+                        pointCost: pointCost,
+                        isActive: isActive,
+                        createdBy: currentUserID
+                    ))
+                    .execute()
+            }
+            onSaved()
+            dismiss()
+        } catch {
+            errorMessage = "Unable to save reward. Please try again."
+            #if DEBUG
+            print("[Homey] CHORE REWARD SAVE ERROR: \(String(reflecting: error))")
+            #endif
+        }
+    }
+}
+
+private enum PhonePointAdjustmentType: String, CaseIterable, Identifiable {
+    case add = "Add"
+    case remove = "Remove"
+    var id: Self { self }
+}
+
+private struct PhoneAdjustPointsParameters: Encodable {
+    let homeID: UUID
+    let userID: UUID
+    let points: Int
+    let description: String
+    let transactionAt: String
+    enum CodingKeys: String, CodingKey {
+        case homeID = "requested_home_id"
+        case userID = "requested_user_id"
+        case points = "requested_points"
+        case description = "requested_description"
+        case transactionAt = "requested_transaction_at"
+    }
+}
+
+struct PhonePointAdjustmentView: View {
+    @Environment(\.dismiss) private var dismiss
+    let homeID: UUID?
+    let currentUserID: UUID?
+    let role: HomeMemberRole?
+    let onSaved: () -> Void
+
+    @State private var members: [PhoneChoreMember] = []
+    @State private var selectedUserID: UUID?
+    @State private var adjustmentType: PhonePointAdjustmentType = .add
+    @State private var transactionDate = Date()
+    @State private var amountText = ""
+    @State private var adjustmentDescription = ""
+    @State private var selectedBalance = 0
+    @State private var isLoading = true
+    @State private var isLoadingBalance = false
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    private let client = SupabaseManager.shared.client
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    userField
+
+                    adjustmentField("Adjustment Type") {
+                        Picker("Adjustment Type", selection: $adjustmentType) {
+                            ForEach(PhonePointAdjustmentType.allCases) { type in
+                                Text(type.rawValue).tag(type)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                    }
+
+                    adjustmentField("Date & Time") {
+                        DatePicker(
+                            "Date & Time",
+                            selection: $transactionDate,
+                            displayedComponents: [.date, .hourAndMinute]
+                        )
+                        .labelsHidden()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(14)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 14))
+                    }
+
+                    adjustmentField("Point Amount") {
+                        TextField("25", text: $amountText)
+                            .keyboardType(.numberPad)
+                            .padding(14)
+                            .background(.white, in: RoundedRectangle(cornerRadius: 14))
+                            .onChange(of: amountText) { _, newValue in
+                                amountText = newValue.filter(\.isNumber)
+                            }
+                    }
+
+                    adjustmentField("Description") {
+                        TextField(
+                            "Bonus for helping clean the garage",
+                            text: $adjustmentDescription,
+                            axis: .vertical
+                        )
+                        .lineLimit(3...5)
+                        .padding(14)
+                        .background(.white, in: RoundedRectangle(cornerRadius: 14))
+                    }
+
+                    if isLoadingBalance {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text("Loading available points…")
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(HomeyColors.secondaryText)
+                    } else {
+                        Text("Available points: \(selectedBalance)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(HomeyColors.secondaryText)
+                    }
+
+                    if let visibleMessage = errorMessage ?? validationMessage {
+                        Text(visibleMessage)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(HomeyColors.danger)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Button { Task { await save() } } label: {
+                        HStack {
+                            if isSaving { ProgressView().tint(.white) }
+                            Text(isSaving ? "Saving…" : "Save Adjustment")
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(HomeyButtonStyle())
+                    .disabled(!canSave)
+                }
+                .padding(20)
+            }
+            .background(HomeyColors.background.ignoresSafeArea())
+            .navigationTitle("Adjust Points")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(isSaving)
+                }
+            }
+        }
+        .task { await loadMembers() }
+        .onChange(of: selectedUserID) { _, _ in Task { await loadSelectedBalance() } }
+        .interactiveDismissDisabled(isSaving)
+    }
+
+    private var selectedMember: PhoneChoreMember? {
+        members.first { $0.userID == selectedUserID }
+    }
+    private var amount: Int? { Int(amountText) }
+    private var trimmedDescription: String {
+        adjustmentDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    private var validationMessage: String? {
+        guard role == .owner || role == .admin else { return "Only Home owners and admins can adjust points." }
+        guard selectedUserID != nil else { return "Choose a member." }
+        guard let amount, amount > 0 else { return "Enter a point amount greater than 0." }
+        if adjustmentType == .remove && amount > selectedBalance {
+            return "Cannot remove more points than this member currently has available."
+        }
+        guard !trimmedDescription.isEmpty else { return "Description is required." }
+        return nil
+    }
+    private var canSave: Bool {
+        !isLoading && !isLoadingBalance && !isSaving && validationMessage == nil
+    }
+
+    private var userField: some View {
+        adjustmentField("User") {
+            Menu {
+                ForEach(members, id: \.userID) { member in
+                    Button {
+                        selectedUserID = member.userID
+                    } label: {
+                        Label(
+                            member.userID == currentUserID ? "\(member.displayName) (You)" : member.displayName,
+                            systemImage: member.userID == selectedUserID ? "checkmark" : "person"
+                        )
+                    }
+                }
+            } label: {
+                HStack {
+                    Text(selectedMember.map {
+                        $0.userID == currentUserID ? "\($0.displayName) (You)" : $0.displayName
+                    } ?? "Select Member")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(HomeyColors.text)
+                        .lineLimit(1)
+                    Spacer()
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(HomeyColors.secondaryText)
+                }
+                .padding(14)
+                .background(.white, in: RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+            .disabled(isLoading || isSaving)
+        }
+    }
+
+    private func adjustmentField<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.subheadline.weight(.bold)).foregroundStyle(HomeyColors.text)
+            content()
+        }
+    }
+
+    private func loadMembers() async {
+        guard let homeID, role == .owner || role == .admin else {
+            isLoading = false
+            errorMessage = "Only Home owners and admins can adjust points."
+            return
+        }
+        isLoading = true
+        errorMessage = nil
+        do {
+            let loadedMembers: [PhoneChoreMember] = try await client
+                .rpc("get_home_members", params: PhoneGetChoreMembersParameters(homeID: homeID))
+                .execute()
+                .value
+            members = loadedMembers.sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
+            selectedUserID = currentUserID.flatMap { currentID in
+                members.contains { $0.userID == currentID } ? currentID : nil
+            } ?? members.first?.userID
+        } catch {
+            errorMessage = "Unable to load Home members."
+            #if DEBUG
+            print("[Homey] POINT ADJUSTMENT ERROR: \(String(reflecting: error))")
+            #endif
+        }
+        isLoading = false
+    }
+
+    private func loadSelectedBalance() async {
+        guard let homeID, let selectedUserID else {
+            selectedBalance = 0
+            return
+        }
+        let requestedUserID = selectedUserID
+        isLoadingBalance = true
+        errorMessage = nil
+        do {
+            let rows: [PhonePointDelta] = try await client
+                .from("chore_point_transactions")
+                .select("points")
+                .eq("home_id", value: homeID.uuidString)
+                .eq("user_id", value: requestedUserID.uuidString)
+                .execute()
+                .value
+            guard self.selectedUserID == requestedUserID else { return }
+            selectedBalance = rows.reduce(0) { $0 + $1.points }
+        } catch {
+            guard self.selectedUserID == requestedUserID else { return }
+            selectedBalance = 0
+            errorMessage = "Unable to load available points."
+            #if DEBUG
+            print("[Homey] POINT ADJUSTMENT BALANCE ERROR: \(String(reflecting: error))")
+            #endif
+        }
+        if self.selectedUserID == requestedUserID { isLoadingBalance = false }
+    }
+
+    private func save() async {
+        guard canSave,
+              let homeID,
+              let selectedUserID,
+              let amount else { return }
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+
+        let signedPoints = adjustmentType == .add ? amount : -amount
+        do {
+            let _: UUID = try await client.rpc(
+                "adjust_chore_points",
+                params: PhoneAdjustPointsParameters(
+                    homeID: homeID,
+                    userID: selectedUserID,
+                    points: signedPoints,
+                    description: trimmedDescription,
+                    transactionAt: Self.timestampFormatter.string(from: transactionDate)
+                )
+            ).execute().value
+            onSaved()
+            dismiss()
+        } catch {
+            errorMessage = "Unable to save adjustment. Please verify the member's available points and try again."
+            #if DEBUG
+            print("[Homey] POINT ADJUSTMENT SAVE ERROR: \(String(reflecting: error))")
+            #endif
+        }
+    }
+
+    private static let timestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
 }
 
 struct ChorePlaceholderView: View {
