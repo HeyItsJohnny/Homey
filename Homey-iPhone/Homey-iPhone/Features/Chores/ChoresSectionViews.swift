@@ -920,6 +920,8 @@ private struct PhoneChoreDestructiveButtonStyle: ButtonStyle {
 struct ChoreApprovalsView: View {
     @EnvironmentObject private var appSession: AppSession
     @StateObject private var model = PhoneChoreApprovalsViewModel()
+    @StateObject private var rewardModel = PhonePendingRewardApprovalsViewModel()
+    @State private var selectedMode: PhoneApprovalsMode = .chores
 
     var body: some View {
         Group {
@@ -929,77 +931,43 @@ struct ChoreApprovalsView: View {
                     message: "Only Home owners and admins can review chore submissions.",
                     symbol: "lock.shield"
                 )
-            } else if model.isLoading && model.rooms.isEmpty {
-                ProgressView("Loading approvals…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let errorMessage = model.errorMessage, model.rooms.isEmpty {
-                ScrollView {
-                    VStack(spacing: 14) {
-                        HomeyErrorView(message: errorMessage)
-                        Button("Try Again") { Task { await load() } }
-                            .buttonStyle(HomeyButtonStyle())
-                    }
-                    .padding(20)
-                    .homeyCard()
-                    .padding()
-                }
-            } else if model.rooms.isEmpty {
-                ChorePlaceholderView(
-                    title: "All caught up",
-                    message: "No chores are waiting for approval.",
-                    symbol: "checkmark.circle.fill"
-                )
             } else {
-                List {
-                    ForEach(model.rooms) { room in
-                        Section {
-                            ForEach(model.approvals(for: room.id)) { approval in
-                                PhoneChoreApprovalRow(
-                                    approval: approval,
-                                    isProcessing: model.processingSubmissionIDs.contains(approval.id)
-                                )
-                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                    Button {
-                                        Task { await model.review(approval, decision: .approved) }
-                                    } label: {
-                                        Label("Approve", systemImage: "checkmark.circle.fill")
-                                    }
-                                    .tint(HomeyColors.success)
-                                    .disabled(model.processingSubmissionIDs.contains(approval.id))
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    Button(role: .destructive) {
-                                        Task { await model.review(approval, decision: .needsRedo) }
-                                    } label: {
-                                        Label("Redo", systemImage: "arrow.counterclockwise")
-                                    }
-                                    .disabled(model.processingSubmissionIDs.contains(approval.id))
-                                }
-                            }
-                        } header: {
-                            HStack {
-                                Text(room.name)
-                                    .font(HomeyTypography.headline)
-                                    .foregroundStyle(HomeyColors.text)
-                                Spacer()
-                                Text("\(model.approvals(for: room.id).count)")
-                                    .font(.headline)
-                                    .foregroundStyle(HomeyColors.primary)
-                            }
-                            .textCase(nil)
+                VStack(spacing: 0) {
+                    Picker("Approval Type", selection: $selectedMode) {
+                        ForEach(PhoneApprovalsMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
                         }
                     }
+                    .pickerStyle(.segmented)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+
+                    if selectedMode == .chores {
+                        choreApprovalsContent
+                    } else {
+                        pendingRewardsContent
+                    }
                 }
-                .listStyle(.insetGrouped)
-                .scrollContentBackground(.hidden)
                 .background(HomeyColors.background)
-                .refreshable { await load() }
             }
         }
-        .task(id: loadTaskID) { await load() }
+        .task(id: loadTaskID) {
+            selectedMode = .chores
+            rewardModel.reset(homeID: appSession.activeHome?.id, role: appSession.activeRole)
+            await load()
+        }
+        .onChange(of: selectedMode) { _, mode in
+            guard mode == .pendingRewards else { return }
+            Task { await loadPendingRewardsIfNeeded() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyChoresDidChange"))) { notification in
-            guard notification.object as? PhoneChoreApprovalsViewModel !== model else { return }
-            Task { await load() }
+            if notification.object as? PhoneChoreApprovalsViewModel !== model {
+                Task { await load() }
+            }
+            if selectedMode == .pendingRewards,
+               notification.object as? PhonePendingRewardApprovalsViewModel !== rewardModel {
+                Task { await loadPendingRewards() }
+            }
         }
         .alert("Unable to Review Chore", isPresented: Binding(
             get: { model.actionErrorMessage != nil },
@@ -1008,6 +976,152 @@ struct ChoreApprovalsView: View {
             Button("OK", role: .cancel) { model.actionErrorMessage = nil }
         } message: {
             Text(model.actionErrorMessage ?? "Please try again.")
+        }
+        .alert("Unable to Update Reward Redemption", isPresented: Binding(
+            get: { rewardModel.actionErrorMessage != nil },
+            set: { if !$0 { rewardModel.actionErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { rewardModel.actionErrorMessage = nil }
+        } message: {
+            Text(rewardModel.actionErrorMessage ?? "Please try again.")
+        }
+    }
+
+    @ViewBuilder
+    private var choreApprovalsContent: some View {
+        if model.isLoading && model.rooms.isEmpty {
+            ProgressView("Loading approvals…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let errorMessage = model.errorMessage, model.rooms.isEmpty {
+            ScrollView {
+                VStack(spacing: 14) {
+                    HomeyErrorView(message: errorMessage)
+                    Button("Try Again") { Task { await load() } }
+                        .buttonStyle(HomeyButtonStyle())
+                }
+                .padding(20)
+                .homeyCard()
+                .padding()
+            }
+        } else if model.rooms.isEmpty {
+            ChorePlaceholderView(
+                title: "All caught up",
+                message: "No chores are waiting for approval.",
+                symbol: "checkmark.circle.fill"
+            )
+        } else {
+            List {
+                ForEach(model.rooms) { room in
+                    Section {
+                        ForEach(model.approvals(for: room.id)) { approval in
+                            PhoneChoreApprovalRow(
+                                approval: approval,
+                                isProcessing: model.processingSubmissionIDs.contains(approval.id)
+                            )
+                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                Button {
+                                    Task { await model.review(approval, decision: .approved) }
+                                } label: {
+                                    Label("Approve", systemImage: "checkmark.circle.fill")
+                                }
+                                .tint(HomeyColors.success)
+                                .disabled(model.processingSubmissionIDs.contains(approval.id))
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                Button(role: .destructive) {
+                                    Task { await model.review(approval, decision: .needsRedo) }
+                                } label: {
+                                    Label("Redo", systemImage: "arrow.counterclockwise")
+                                }
+                                .disabled(model.processingSubmissionIDs.contains(approval.id))
+                            }
+                        }
+                    } header: {
+                        HStack {
+                            Text(room.name)
+                                .font(HomeyTypography.headline)
+                                .foregroundStyle(HomeyColors.text)
+                            Spacer()
+                            Text("\(model.approvals(for: room.id).count)")
+                                .font(.headline)
+                                .foregroundStyle(HomeyColors.primary)
+                        }
+                        .textCase(nil)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(HomeyColors.background)
+            .refreshable { await load() }
+        }
+    }
+
+    @ViewBuilder
+    private var pendingRewardsContent: some View {
+        if rewardModel.isLoading && rewardModel.redemptions.isEmpty {
+            ProgressView("Loading pending rewards…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let errorMessage = rewardModel.errorMessage, rewardModel.redemptions.isEmpty {
+            ScrollView {
+                VStack(spacing: 14) {
+                    HomeyErrorView(message: errorMessage)
+                    Button("Try Again") { Task { await loadPendingRewards() } }
+                        .buttonStyle(HomeyButtonStyle())
+                }
+                .padding(20)
+                .homeyCard()
+                .padding()
+            }
+        } else if rewardModel.redemptions.isEmpty {
+            ChorePlaceholderView(
+                title: "All caught up",
+                message: "No reward redemptions are waiting to be marked redeemed.",
+                symbol: "checkmark.circle.fill"
+            )
+        } else {
+            List {
+                Section {
+                    ForEach(rewardModel.redemptions) { redemption in
+                        PhonePendingRewardApprovalRow(
+                            redemption: redemption,
+                            isProcessing: rewardModel.processingRedemptionIDs.contains(redemption.id)
+                        )
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            Button {
+                                Task { await rewardModel.markRedeemed(redemption) }
+                            } label: {
+                                Label("Mark Redeemed", systemImage: "checkmark.circle.fill")
+                            }
+                            .tint(HomeyColors.success)
+                            .disabled(rewardModel.processingRedemptionIDs.contains(redemption.id))
+                        }
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) {
+                                Task { await rewardModel.cancel(redemption) }
+                            } label: {
+                                Label("Cancel", systemImage: "xmark.circle")
+                            }
+                            .disabled(rewardModel.processingRedemptionIDs.contains(redemption.id))
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Pending Rewards")
+                            .font(HomeyTypography.headline)
+                            .foregroundStyle(HomeyColors.text)
+                        Spacer()
+                        Text("\(rewardModel.redemptions.count)")
+                            .font(.headline)
+                            .foregroundStyle(HomeyColors.primary)
+                    }
+                    .textCase(nil)
+                }
+            }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
+            .background(HomeyColors.background)
+            .refreshable { await loadPendingRewards() }
         }
     }
 
@@ -1022,6 +1136,23 @@ struct ChoreApprovalsView: View {
     private func load() async {
         await model.load(homeID: appSession.activeHome?.id, role: appSession.activeRole)
     }
+
+    private func loadPendingRewardsIfNeeded() async {
+        guard !rewardModel.hasLoadedCurrentScope else { return }
+        await loadPendingRewards()
+    }
+
+    private func loadPendingRewards() async {
+        await rewardModel.load(homeID: appSession.activeHome?.id, role: appSession.activeRole)
+    }
+}
+
+private enum PhoneApprovalsMode: String, CaseIterable, Identifiable {
+    case chores
+    case pendingRewards
+
+    var id: Self { self }
+    var title: String { self == .chores ? "Chores" : "Pending Rewards" }
 }
 
 private enum PhoneChoreApprovalDecision: String {
@@ -1174,6 +1305,247 @@ private extension Date {
                 .hour()
                 .minute()
         )
+    }
+}
+
+private struct PhonePendingRewardApprovalRecord: Decodable, Identifiable {
+    let id: UUID
+    let homeID: UUID
+    let rewardID: UUID
+    let userID: UUID
+    let rewardName: String
+    let pointCost: Int
+    let status: String
+    let requestedAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, status
+        case homeID = "home_id"
+        case rewardID = "reward_id"
+        case userID = "user_id"
+        case rewardName = "reward_name_snapshot"
+        case pointCost = "point_cost_snapshot"
+        case requestedAt = "requested_at"
+    }
+}
+
+private struct PhonePendingRewardApproval: Identifiable {
+    let record: PhonePendingRewardApprovalRecord
+    let memberName: String
+    var id: UUID { record.id }
+}
+
+private struct PhoneMarkRewardRedeemedParameters: Encodable {
+    let redemptionID: UUID
+    enum CodingKeys: String, CodingKey { case redemptionID = "requested_redemption_id" }
+}
+
+private struct PhoneCancelRewardRedemptionParameters: Encodable {
+    let redemptionID: UUID
+    let cancellationReason: String?
+
+    enum CodingKeys: String, CodingKey {
+        case redemptionID = "requested_redemption_id"
+        case cancellationReason = "requested_cancellation_reason"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(redemptionID, forKey: .redemptionID)
+        if let cancellationReason {
+            try container.encode(cancellationReason, forKey: .cancellationReason)
+        } else {
+            try container.encodeNil(forKey: .cancellationReason)
+        }
+    }
+}
+
+private struct PhonePendingRewardApprovalRepository {
+    private let client = SupabaseManager.shared.client
+
+    func markRedeemed(redemptionID: UUID) async throws -> UUID {
+        try await client.rpc(
+            "mark_chore_reward_redeemed",
+            params: PhoneMarkRewardRedeemedParameters(redemptionID: redemptionID)
+        ).execute().value
+    }
+
+    func cancel(redemptionID: UUID) async throws -> UUID {
+        try await client.rpc(
+            "cancel_chore_reward_redemption",
+            params: PhoneCancelRewardRedemptionParameters(
+                redemptionID: redemptionID,
+                cancellationReason: nil
+            )
+        ).execute().value
+    }
+}
+
+private struct PhonePendingRewardApprovalRow: View {
+    let redemption: PhonePendingRewardApproval
+    let isProcessing: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Group {
+                if isProcessing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "gift.fill")
+                        .foregroundStyle(HomeyColors.primary)
+                }
+            }
+            .frame(width: 20, height: 22)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(redemption.record.rewardName)
+                        .font(.body)
+                        .foregroundStyle(HomeyColors.text)
+                        .lineLimit(2)
+                    Spacer(minLength: 8)
+                    Text("\(redemption.record.pointCost) pts")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(HomeyColors.secondaryText)
+                }
+
+                Text(redemption.memberName)
+                    .font(.caption)
+                    .foregroundStyle(HomeyColors.secondaryText)
+
+                Text("Pending")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.orange)
+
+                Text("Requested: \(redemption.record.requestedAt.phoneApprovalTimestamp)")
+                    .font(.caption)
+                    .foregroundStyle(HomeyColors.secondaryText)
+            }
+        }
+        .contentShape(Rectangle())
+        .padding(.vertical, 5)
+        .opacity(isProcessing ? 0.65 : 1)
+    }
+}
+
+@MainActor
+private final class PhonePendingRewardApprovalsViewModel: ObservableObject {
+    @Published private(set) var redemptions: [PhonePendingRewardApproval] = []
+    @Published private(set) var isLoading = false
+    @Published private(set) var processingRedemptionIDs: Set<UUID> = []
+    @Published private(set) var errorMessage: String?
+    @Published var actionErrorMessage: String?
+
+    private let client = SupabaseManager.shared.client
+    private let repository = PhonePendingRewardApprovalRepository()
+    private var activeHomeID: UUID?
+    private var activeRole: HomeMemberRole?
+    private var activeLoadID = UUID()
+    private(set) var hasLoadedCurrentScope = false
+
+    func reset(homeID: UUID?, role: HomeMemberRole?) {
+        activeLoadID = UUID()
+        activeHomeID = homeID
+        activeRole = role
+        redemptions = []
+        processingRedemptionIDs = []
+        errorMessage = nil
+        actionErrorMessage = nil
+        isLoading = false
+        hasLoadedCurrentScope = false
+    }
+
+    func load(homeID: UUID?, role: HomeMemberRole?) async {
+        if activeHomeID != homeID || activeRole != role {
+            reset(homeID: homeID, role: role)
+        }
+
+        guard let homeID, role == .owner || role == .admin else {
+            reset(homeID: homeID, role: role)
+            return
+        }
+
+        let loadID = UUID()
+        activeLoadID = loadID
+        isLoading = true
+        errorMessage = nil
+        defer {
+            if activeLoadID == loadID { isLoading = false }
+        }
+
+        do {
+            async let redemptionsRequest: [PhonePendingRewardApprovalRecord] = client
+                .from("chore_reward_redemptions")
+                .select("id,home_id,reward_id,user_id,reward_name_snapshot,point_cost_snapshot,status,requested_at")
+                .eq("home_id", value: homeID.uuidString)
+                .eq("status", value: "pending")
+                .order("requested_at", ascending: true)
+                .execute()
+                .value
+            let members: [PhoneChoreMember] = try await client
+                .rpc("get_home_members", params: PhoneGetChoreMembersParameters(homeID: homeID))
+                .execute()
+                .value
+
+            let records = try await redemptionsRequest
+            guard activeLoadID == loadID else { return }
+            let namesByUserID = Dictionary(uniqueKeysWithValues: members.map { ($0.userID, $0.displayName) })
+            redemptions = records.map {
+                PhonePendingRewardApproval(
+                    record: $0,
+                    memberName: namesByUserID[$0.userID] ?? "Home Member"
+                )
+            }
+            hasLoadedCurrentScope = true
+        } catch {
+            guard activeLoadID == loadID else { return }
+            redemptions = []
+            errorMessage = "We couldn't load pending reward redemptions."
+            hasLoadedCurrentScope = true
+            #if DEBUG
+            print("[Homey] PENDING REWARD APPROVALS ERROR: \(String(reflecting: error))")
+            #endif
+        }
+    }
+
+    func markRedeemed(_ redemption: PhonePendingRewardApproval) async {
+        guard activeRole == .owner || activeRole == .admin,
+              !processingRedemptionIDs.contains(redemption.id) else { return }
+
+        processingRedemptionIDs.insert(redemption.id)
+        actionErrorMessage = nil
+        defer { processingRedemptionIDs.remove(redemption.id) }
+
+        do {
+            _ = try await repository.markRedeemed(redemptionID: redemption.id)
+            await load(homeID: activeHomeID, role: activeRole)
+            NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: self)
+        } catch {
+            actionErrorMessage = "Unable to mark reward redeemed. Please try again."
+            #if DEBUG
+            print("[Homey] PENDING REWARD APPROVAL ACTION ERROR: \(String(reflecting: error))")
+            #endif
+        }
+    }
+
+    func cancel(_ redemption: PhonePendingRewardApproval) async {
+        guard activeRole == .owner || activeRole == .admin,
+              !processingRedemptionIDs.contains(redemption.id) else { return }
+
+        processingRedemptionIDs.insert(redemption.id)
+        actionErrorMessage = nil
+        defer { processingRedemptionIDs.remove(redemption.id) }
+
+        do {
+            _ = try await repository.cancel(redemptionID: redemption.id)
+            await load(homeID: activeHomeID, role: activeRole)
+            NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: self)
+        } catch {
+            actionErrorMessage = "Unable to cancel reward redemption. Please try again."
+            #if DEBUG
+            print("[Homey] PENDING REWARD CANCELLATION ERROR: \(String(reflecting: error))")
+            #endif
+        }
     }
 }
 
@@ -1371,8 +1743,11 @@ struct ChoreRewardsView: View {
             } else if model.rewards.isEmpty {
                 ScrollView {
                     VStack(spacing: 16) {
-                        if canManageRewards { userFilterCard }
-                        pointsCard
+                        if canManageRewards {
+                            adminRewardsHeader
+                        } else {
+                            pointsCard
+                        }
                         VStack(spacing: 12) {
                             Image(systemName: "gift")
                                 .font(.system(size: 30, weight: .medium))
@@ -1397,12 +1772,13 @@ struct ChoreRewardsView: View {
             } else {
                 List {
                     if canManageRewards {
-                        userFilterCard
+                        adminRewardsHeader
                             .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
                             .listRowBackground(Color.clear)
                             .listRowSeparator(.hidden)
+                    } else {
+                        Section { pointsCard }
                     }
-                    Section { pointsCard }
                     rewardListSection(
                         title: "Can Afford",
                         rewards: model.affordableRewards,
@@ -1495,6 +1871,19 @@ struct ChoreRewardsView: View {
         .homeyCard()
     }
 
+    private var adminRewardsHeader: some View {
+        HStack(spacing: 12) {
+            userFilterCard
+            Text("\(model.pointBalance ?? 0) pts")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(HomeyColors.primary)
+                .lineLimit(1)
+                .padding(.horizontal, 14)
+                .frame(minHeight: 52)
+                .background(HomeyColors.field, in: RoundedRectangle(cornerRadius: HomeyCornerRadius.field))
+        }
+    }
+
     private var userFilterCard: some View {
         Menu {
             ForEach(model.members, id: \.userID) { member in
@@ -1527,6 +1916,7 @@ struct ChoreRewardsView: View {
                 RoundedRectangle(cornerRadius: HomeyCornerRadius.field)
                     .stroke(HomeyColors.border, lineWidth: 1)
             }
+            .frame(maxWidth: .infinity)
         }
         .buttonStyle(.plain)
         .disabled(model.isLoadingUserState)

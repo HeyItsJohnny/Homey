@@ -160,16 +160,17 @@ private struct PhoneChoreHistoryRow: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(HomeyColors.secondaryText)
 
-                HStack(spacing: 5) {
-                    Text(item.activity.occurredAt.choreHistoryFormatted(in: timezone))
-                    if let subtitle = item.activity.subtitle, !subtitle.isEmpty {
-                        Text("•")
-                        Text(subtitle)
-                    }
+                Text(item.activity.occurredAt.choreHistoryFormatted(in: timezone))
+                    .font(.caption)
+                    .foregroundStyle(HomeyColors.secondaryText)
+                    .lineLimit(1)
+
+                if let subtitle = item.activity.subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(HomeyColors.secondaryText)
+                        .lineLimit(2)
                 }
-                .font(.caption)
-                .foregroundStyle(HomeyColors.secondaryText)
-                .lineLimit(1)
             }
 
             Spacer(minLength: 8)
