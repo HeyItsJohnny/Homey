@@ -1,5 +1,6 @@
 import SwiftUI
 import Supabase
+import UIKit
 
 struct ChoreDetailView: View {
     let templateID: UUID
@@ -12,6 +13,7 @@ struct ChoreDetailView: View {
     @State private var loading = true
     @State private var error: String?
     @State private var showingEditor = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private let service = PhoneChoreDetailService()
 
     private var canEdit: Bool { home.role == .owner || home.role == .admin }
@@ -25,18 +27,21 @@ struct ChoreDetailView: View {
                 Spacer()
                 if canEdit, detail != nil {
                     Button("Edit") { showingEditor = true }
-                        .font(.headline).frame(minHeight: 44)
+                        .font(.headline).padding(.horizontal, 20).frame(height: 46)
+                        .background(.white.opacity(0.9), in: Capsule())
                 }
             }
             .buttonStyle(.plain).foregroundStyle(HomeyColors.primary)
             .padding(.horizontal, 20).padding(.top, 4).padding(.bottom, 12)
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    Text(detail?.title ?? "Chore").font(HomeyTypography.hero)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    Text("View and manage your chore details.")
-                        .font(.subheadline).foregroundStyle(HomeyColors.secondaryText)
+            GeometryReader { geometry in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text(detail?.title ?? "Chore")
+                            .font(ChoreDetailFont.scaled(24, weight: .bold, style: .title2, rounded: true))
+                            .foregroundStyle(HomeyColors.text)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
                     if loading {
                         HStack { ProgressView(); Text("Loading your chore…") }
                             .frame(maxWidth: .infinity).padding(24).homeyCard()
@@ -46,12 +51,20 @@ struct ChoreDetailView: View {
                             Button("Try Again") { Task { await load() } }.buttonStyle(HomeyButtonStyle())
                         }.padding(20).homeyCard()
                     } else if let detail {
-                        detailCard(detail)
+                        badgeRow(detail)
+                        if let description = detail.description.phoneNilIfBlank {
+                            textCard(label: "Description", text: description)
+                        }
+                        detailCard(detail, stacked: geometry.size.width < 390 || dynamicTypeSize.isAccessibilitySize)
+                        if let instructions = detail.instructions.phoneNilIfBlank {
+                            instructionsCard(instructions)
+                        }
                         if !detail.canSafelyEdit {
                             HomeyErrorView(message: detail.legacyExplanation)
                         }
                     }
-                }.padding(.horizontal, 20).padding(.bottom, 28).frame(maxWidth: 640)
+                    }.padding(.horizontal, 20).padding(.bottom, 28).frame(maxWidth: 640).frame(maxWidth: .infinity)
+                }
             }
         }
         .background(HomeyColors.background.ignoresSafeArea())
@@ -67,30 +80,51 @@ struct ChoreDetailView: View {
         }
     }
 
-    private func detailCard(_ detail: PhoneChoreDetail) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            detailRow("Room", detail.roomName)
-            if let value = detail.description.phoneNilIfBlank { detailRow("Description", value) }
-            if let value = detail.instructions.phoneNilIfBlank { detailRow("Instructions", value) }
-            detailRow("Assigned To", detail.assigneeNames.isEmpty ? "Open Chore" : detail.assigneeNames.joined(separator: ", "))
-            detailRow("Points", "\(detail.pointsValue)")
-            detailRow("Status", detail.status.displayName)
-            detailRow("Schedule", detail.scheduleDescription)
-            detailRow("Recurrence", detail.recurrenceDescription)
-            detailRow("Start Date", detail.displayDate(detail.startDate))
-            detailRow("Due Time", detail.isAllDay ? "All Day" : detail.dueTimeDisplay)
-            detailRow("Approval", detail.requiresApproval ? "Required" : "Not Required")
-            detailRow("Photo", detail.requiresPhoto ? "Required" : "Not Required")
-            detailRow("Completion", detail.completionMode.displayName)
-        }.homeyCard()
+    private func badgeRow(_ detail: PhoneChoreDetail) -> some View {
+        HStack(spacing: 10) {
+            ChoreDetailBadge(symbol: "house.fill", text: detail.roomName,
+                foreground: Color(red: 0.42, green: 0.45, blue: 0.62), background: Color(red: 0.92, green: 0.92, blue: 0.98))
+            ChoreDetailBadge(symbol: "star.fill", text: "\(detail.pointsValue) \(detail.pointsValue == 1 ? "point" : "points")",
+                foreground: Color(red: 0.96, green: 0.65, blue: 0.05), background: Color(red: 1.0, green: 0.95, blue: 0.82))
+        }.fixedSize(horizontal: false, vertical: true)
     }
 
-    private func detailRow(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(label).font(.caption.weight(.semibold)).foregroundStyle(HomeyColors.secondaryText)
-            Text(value).font(.body).foregroundStyle(HomeyColors.text).fixedSize(horizontal: false, vertical: true)
-            Divider().padding(.top, 10)
-        }.padding(.horizontal, 18).padding(.top, 14)
+    private func textCard(label: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(label).font(ChoreDetailFont.scaled(12, weight: .semibold, style: .caption1, rounded: true)).foregroundStyle(HomeyColors.secondaryText)
+            Text(text).font(ChoreDetailFont.scaled(14, style: .body)).foregroundStyle(HomeyColors.text).fixedSize(horizontal: false, vertical: true)
+        }.padding(20).frame(maxWidth: .infinity, alignment: .leading).choreDetailCard()
+    }
+
+    private func detailCard(_ detail: PhoneChoreDetail, stacked: Bool) -> some View {
+        VStack(spacing: 0) {
+            let layout = stacked ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))
+            layout {
+                ChoreDetailFact(symbol: "person.fill", tint: .purple, label: "Assigned To",
+                    value: detail.assigneeNames.isEmpty ? "Open Chore" : detail.assigneeNames.joined(separator: ", "))
+                ChoreDetailFact(symbol: "dollarsign.circle.fill", tint: .green, label: "Points", value: "\(detail.pointsValue)")
+            }
+            Divider().opacity(0.55)
+            layout {
+                ChoreDetailFact(symbol: "calendar", tint: .blue, label: "Next Due", value: detail.nextDueDisplay, singleLineValue: true)
+                ChoreDetailFact(symbol: "arrow.triangle.2.circlepath", tint: .pink, label: "Recurrence",
+                    value: detail.recurrenceTitle, secondary: detail.recurrenceEndDescription)
+            }
+            Divider().opacity(0.55)
+            ChoreDetailFact(symbol: "checkmark.circle", tint: .purple, label: "Requires Approval",
+                value: detail.requiresApproval ? "Yes" : "No")
+        }.padding(.horizontal, 15).choreDetailCard()
+    }
+
+    private func instructionsCard(_ instructions: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            ChoreDetailIcon(symbol: "doc.text.fill", tint: .blue)
+            VStack(alignment: .leading, spacing: 7) {
+                Text("Instructions").font(ChoreDetailFont.scaled(12, weight: .semibold, style: .caption1, rounded: true)).foregroundStyle(HomeyColors.secondaryText)
+                Text(instructions).font(ChoreDetailFont.scaled(14, style: .body)).foregroundStyle(HomeyColors.text).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }.padding(20).choreDetailCard()
     }
 
     private func load() async {
@@ -99,6 +133,82 @@ struct ChoreDetailView: View {
             detail = try await service.load(templateID: templateID, occurrenceID: occurrenceID, homeID: home.id)
         } catch { self.error = "Unable to load this chore. Please try again." }
         loading = false
+    }
+}
+
+private struct ChoreDetailBadge: View {
+    let symbol: String
+    let text: String
+    let foreground: Color
+    let background: Color
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: symbol).foregroundStyle(foreground)
+            Text(text).foregroundStyle(HomeyColors.text)
+        }
+            .font(ChoreDetailFont.scaled(12, weight: .medium, style: .caption1, rounded: true))
+            .padding(.horizontal, 15).padding(.vertical, 11)
+            .background(background, in: Capsule())
+            .accessibilityElement(children: .combine)
+    }
+}
+
+private struct ChoreDetailIcon: View {
+    let symbol: String
+    let tint: Color
+    var body: some View {
+        Image(systemName: symbol).font(.system(size: 16, weight: .semibold)).foregroundStyle(tint)
+            .frame(width: 35, height: 35).background(tint.opacity(0.12), in: Circle())
+            .accessibilityHidden(true)
+    }
+}
+
+private struct ChoreDetailFact: View {
+    let symbol: String
+    let tint: Color
+    let label: String
+    let value: String
+    var secondary: String? = nil
+    var singleLineValue = false
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            ChoreDetailIcon(symbol: symbol, tint: tint)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(label).font(ChoreDetailFont.scaled(12, weight: .semibold, style: .caption1, rounded: true)).foregroundStyle(HomeyColors.secondaryText)
+                Text(value)
+                    .font(ChoreDetailFont.scaled(14, style: .body))
+                    .foregroundStyle(HomeyColors.text)
+                    .lineLimit(singleLineValue ? 1 : nil)
+                    .minimumScaleFactor(singleLineValue ? 0.8 : 1)
+                    .fixedSize(horizontal: false, vertical: !singleLineValue)
+                if let secondary {
+                    Text(secondary).font(ChoreDetailFont.scaled(12, style: .subheadline)).foregroundStyle(HomeyColors.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 0)
+        }.padding(.vertical, 13).frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private extension View {
+    func choreDetailCard() -> some View {
+        background(.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    }
+}
+
+private enum ChoreDetailFont {
+    static func scaled(
+        _ size: CGFloat,
+        weight: UIFont.Weight = .regular,
+        style: UIFont.TextStyle,
+        rounded: Bool = false
+    ) -> Font {
+        let base = UIFont.systemFont(ofSize: size, weight: weight)
+        let designed = rounded
+            ? base.fontDescriptor.withDesign(.rounded).map { UIFont(descriptor: $0, size: size) } ?? base
+            : base
+        return Font(UIFontMetrics(forTextStyle: style).scaledFont(for: designed))
     }
 }
 
@@ -163,6 +273,7 @@ struct PhoneChoreDetail: Identifiable, Equatable {
     var occurrenceCount: Int?
     var timezone: String
     var status: PhoneChoreOccurrenceStatus
+    var nextDueLocalDate: String?
     var rooms: [PhoneEditRoom]
     var members: [ChoreAssigneeOption]
 
@@ -172,19 +283,26 @@ struct PhoneChoreDetail: Identifiable, Equatable {
             ? "This is a legacy Open chore. It can be viewed, but editing is disabled to preserve its assignment configuration."
             : "This chore has multiple or missing assignees. Editing is disabled to preserve its existing assignments."
     }
-    var recurrenceDescription: String {
+    var recurrenceTitle: String {
         if frequency == .none { return "One Time" }
-        let interval = intervalValue == 1 ? frequency.displayName : "Every \(intervalValue) \(frequency.rawValue.capitalized)s"
+        if intervalValue == 1 { return frequency.displayName }
+        let unit: String
+        switch frequency { case .daily: unit = "days"; case .weekly: unit = "weeks"; case .monthly: unit = "months"; case .yearly: unit = "years"; case .none: unit = "times" }
+        return "Every \(intervalValue) \(unit)"
+    }
+    var recurrenceEndDescription: String? {
+        if frequency == .none { return nil }
         switch endType {
-        case .never: return "\(interval) • Never ends"
-        case .onDate: return "\(interval) • Ends \(endsOn.map(displayDate) ?? "on date")"
-        case .afterCount: return "\(interval) • \(occurrenceCount ?? 0) times"
+        case .never: return "Never ends"
+        case .onDate: return "Ends \(endsOn.map(displayDate) ?? "on date")"
+        case .afterCount: return "Ends after \(occurrenceCount ?? 0) occurrences"
         }
     }
-    var scheduleDescription: String {
-        frequency == .weekly && !weekdays.isEmpty
-            ? weekdays.sorted().map { Calendar.current.shortWeekdaySymbols[$0] }.joined(separator: ", ")
-            : recurrenceDescription
+    var nextDueDisplay: String {
+        guard let nextDueLocalDate else { return "No upcoming date" }
+        let pieces = nextDueLocalDate.split(separator: "-")
+        guard pieces.count == 3 else { return "No upcoming date" }
+        return "\(pieces[1])/\(pieces[2])/\(pieces[0])"
     }
     var dueTimeDisplay: String {
         guard let dueTime else { return "Not Set" }
@@ -233,6 +351,7 @@ private struct PhoneDetailMemberRow: Decodable {
     enum CodingKeys: String, CodingKey { case userID = "user_id", firstName = "first_name", lastName = "last_name", displayName = "display_name", email }
 }
 private struct PhoneDetailOccurrenceRow: Decodable { let status: PhoneChoreOccurrenceStatus }
+private struct PhoneNextDueRow: Decodable { let dueLocalDate: String; enum CodingKeys: String, CodingKey { case dueLocalDate = "due_local_date" } }
 private struct PhoneDetailMembersParams: Encodable { let homeID: UUID; enum CodingKeys: String, CodingKey { case homeID = "target_home_id" } }
 
 @MainActor
@@ -249,6 +368,16 @@ final class PhoneChoreDetailService {
         let members: [PhoneDetailMemberRow] = try await client.rpc("get_home_members", params: PhoneDetailMembersParams(homeID: homeID)).execute().value
         let occurrences: [PhoneDetailOccurrenceRow] = try await client.from("chore_occurrences").select("status").eq("id", value: occurrenceID.uuidString).eq("home_id", value: homeID.uuidString).limit(1).execute().value
         guard let occurrence = occurrences.first else { throw ChoreCalendarInfrastructureError.repositoryOperationFailed }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: recurrence.timezone) ?? .current
+        let todayStart = calendar.startOfDay(for: Date())
+        let nextRows: [PhoneNextDueRow] = try await client.from("chore_occurrences")
+            .select("due_local_date")
+            .eq("home_id", value: homeID.uuidString)
+            .eq("template_id", value: templateID.uuidString)
+            .eq("status", value: "not_started")
+            .gte("due_at", value: ChoreCalendarDateFormatting.timestamp(todayStart))
+            .order("due_at", ascending: true).limit(1).execute().value
         let names = Dictionary(uniqueKeysWithValues: members.map { ($0.userID, $0.name) })
         return PhoneChoreDetail(id: template.id, occurrenceID: occurrenceID, homeID: template.homeID, title: template.title,
             description: template.description ?? "", instructions: template.instructions ?? "", categoryID: template.categoryID,
@@ -262,6 +391,7 @@ final class PhoneChoreDetailService {
             weekdays: Set(recurrence.weekdays ?? []), dayOfMonth: recurrence.dayOfMonth, monthOfYear: recurrence.monthOfYear,
             endType: recurrence.endType, endsOn: recurrence.endsOn.map { Self.date($0, timezone: recurrence.timezone) },
             occurrenceCount: recurrence.occurrenceCount, timezone: recurrence.timezone, status: occurrence.status,
+            nextDueLocalDate: nextRows.first?.dueLocalDate,
             rooms: rooms, members: members.map { ChoreAssigneeOption(id: $0.userID, name: $0.name) })
     }
     private static func date(_ value: String, timezone: String) -> Date {
