@@ -35,7 +35,7 @@ struct ChoresMainView: View {
                                     chore: chore,
                                     isProcessing: model.processingOccurrenceIDs.contains(chore.occurrence.id)
                                 )
-                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                     if chore.canSubmit(currentUserID: appSession.currentUser?.id) {
                                         Button {
                                             Task { await model.submit(chore) }
@@ -46,7 +46,7 @@ struct ChoresMainView: View {
                                         .disabled(model.processingOccurrenceIDs.contains(chore.occurrence.id))
                                     }
                                 }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
                                     if chore.canSkip(currentUserID: appSession.currentUser?.id) {
                                         Button(role: .destructive) {
                                             Task { await model.skip(chore) }
@@ -1019,7 +1019,7 @@ struct ChoreApprovalsView: View {
                                 approval: approval,
                                 isProcessing: model.processingSubmissionIDs.contains(approval.id)
                             )
-                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                                 Button {
                                     Task { await model.review(approval, decision: .approved) }
                                 } label: {
@@ -1028,7 +1028,7 @@ struct ChoreApprovalsView: View {
                                 .tint(HomeyColors.success)
                                 .disabled(model.processingSubmissionIDs.contains(approval.id))
                             }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
                                 Button(role: .destructive) {
                                     Task { await model.review(approval, decision: .needsRedo) }
                                 } label: {
@@ -1089,7 +1089,7 @@ struct ChoreApprovalsView: View {
                             redemption: redemption,
                             isProcessing: rewardModel.processingRedemptionIDs.contains(redemption.id)
                         )
-                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             Button {
                                 Task { await rewardModel.markRedeemed(redemption) }
                             } label: {
@@ -1098,7 +1098,7 @@ struct ChoreApprovalsView: View {
                             .tint(HomeyColors.success)
                             .disabled(rewardModel.processingRedemptionIDs.contains(redemption.id))
                         }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
                             Button(role: .destructive) {
                                 Task { await rewardModel.cancel(redemption) }
                             } label: {
@@ -1724,7 +1724,6 @@ private struct PhoneApprovalAssigneeKey: Hashable {
 struct ChoreRewardsView: View {
     @EnvironmentObject private var appSession: AppSession
     @StateObject private var model = PhoneRewardsViewModel()
-    @State private var rewardToRedeem: PhoneChoreReward?
     @State private var rewardToEdit: PhoneChoreReward?
 
     var body: some View {
@@ -1814,25 +1813,6 @@ struct ChoreRewardsView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyChoresDidChange"))) { notification in
             guard notification.object as? PhoneRewardsViewModel !== model else { return }
             Task { await load() }
-        }
-        .confirmationDialog(
-            rewardToRedeem.map { "Redeem \($0.name)?" } ?? "Redeem Reward?",
-            isPresented: Binding(
-                get: { rewardToRedeem != nil },
-                set: { if !$0 { rewardToRedeem = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let rewardToRedeem {
-                Button("Redeem for \(rewardToRedeem.pointCost) points") {
-                    let reward = rewardToRedeem
-                    self.rewardToRedeem = nil
-                    Task { await model.redeem(reward) }
-                }
-            }
-            Button("Cancel", role: .cancel) { rewardToRedeem = nil }
-        } message: {
-            Text("This will spend points and create a pending reward request.")
         }
         .sheet(item: $rewardToEdit) { reward in
             PhoneRewardEditorView(
@@ -1951,10 +1931,10 @@ struct ChoreRewardsView: View {
                         pointsNeeded: isManagementSection ? nil : model.pointsNeeded(for: reward),
                         onSelect: canManageRewards ? { rewardToEdit = reward } : nil
                     )
-                    .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if isAffordable && !model.pendingRewardIDs.contains(reward.id) {
                             Button {
-                                rewardToRedeem = reward
+                                Task { await model.redeem(reward) }
                             } label: {
                                 Label("Redeem", systemImage: "gift.fill")
                             }
