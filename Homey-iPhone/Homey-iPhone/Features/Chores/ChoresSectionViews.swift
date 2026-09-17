@@ -5,6 +5,7 @@ import Combine
 struct ChoresMainView: View {
     @EnvironmentObject private var appSession: AppSession
     @StateObject private var model = PhoneChoresViewModel()
+    @State private var selectedChore: PhoneRoomChore?
 
     var body: some View {
         Group {
@@ -31,14 +32,20 @@ struct ChoresMainView: View {
                                     .foregroundStyle(HomeyColors.secondaryText)
                             }
                             ForEach(chores) { chore in
-                                PhoneRoomChoreRow(
-                                    chore: chore,
-                                    isProcessing: model.processingOccurrenceIDs.contains(chore.occurrence.id)
-                                )
+                                Button { selectedChore = chore } label: {
+                                    PhoneRoomChoreRow(
+                                        chore: chore,
+                                        isProcessing: model.processingOccurrenceIDs.contains(chore.occurrence.id)
+                                    )
+                                }
+                                .buttonStyle(.plain)
                                 .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    if chore.canSubmit(currentUserID: appSession.currentUser?.id) {
+                                    if let targetUserID = chore.submitTarget(
+                                        currentUserID: appSession.currentUser?.id,
+                                        role: appSession.activeRole
+                                    ) {
                                         Button {
-                                            Task { await model.submit(chore) }
+                                            Task { await model.submit(chore, for: targetUserID) }
                                         } label: {
                                             Label("Submit", systemImage: "checkmark.circle.fill")
                                         }
@@ -47,9 +54,12 @@ struct ChoresMainView: View {
                                     }
                                 }
                                 .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                    if chore.canSkip(currentUserID: appSession.currentUser?.id) {
+                                    if let targetUserID = chore.skipTarget(
+                                        currentUserID: appSession.currentUser?.id,
+                                        role: appSession.activeRole
+                                    ) {
                                         Button(role: .destructive) {
-                                            Task { await model.skip(chore) }
+                                            Task { await model.skip(chore, for: targetUserID) }
                                         } label: {
                                             Label("Skip", systemImage: "forward.end.fill")
                                         }
@@ -61,7 +71,7 @@ struct ChoresMainView: View {
                         } header: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(room.name)
+                                    Text(room.displayName)
                                         .font(HomeyTypography.headline)
                                         .foregroundStyle(HomeyColors.text)
                                     Text(room.detail)
@@ -84,6 +94,22 @@ struct ChoresMainView: View {
             }
         }
         .task(id: loadTaskID) { await load() }
+        .navigationDestination(item: $selectedChore) { chore in
+            if let home = appSession.activeHome {
+                ChoreDetailView(
+                    templateID: chore.template.id,
+                    occurrenceID: chore.occurrence.id,
+                    home: home,
+                    onSaveCompleted: {
+                        selectedChore = nil
+                        Task { await load() }
+                    }
+                )
+            }
+        }
+        .onChange(of: appSession.activeHome?.id) { _, newHomeID in
+            if selectedChore != nil { selectedChore = nil }
+        }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyChoresDidChange"))) { _ in Task { await load() } }
         .alert("Unable to Update Chore", isPresented: Binding(
             get: { model.actionErrorMessage != nil },
@@ -113,6 +139,9 @@ private struct PhoneChoreRoom: Decodable, Identifiable {
     let name: String
     let roomType: String?
     let preferredCleaningWeekday: Int?
+    var displayName: String {
+        roomType == "other" || name.caseInsensitiveCompare("Other") == .orderedSame ? "General" : name
+    }
     var detail: String {
         let type = (roomType ?? "other").replacingOccurrences(of: "_", with: " ").capitalized
         guard let weekday = preferredCleaningWeekday, (1...7).contains(weekday) else { return type }
@@ -121,7 +150,7 @@ private struct PhoneChoreRoom: Decodable, Identifiable {
     enum CodingKeys: String, CodingKey { case id, name, roomType = "room_type", preferredCleaningWeekday = "preferred_cleaning_weekday" }
 }
 
-private struct PhoneChoreTemplate: Decodable, Identifiable {
+struct PhoneChoreTemplate: Decodable, Identifiable {
     let id: UUID
     let roomID: UUID?
     let title: String
@@ -135,17 +164,17 @@ private struct PhoneChoreTemplate: Decodable, Identifiable {
     }
 }
 
-private enum PhoneChoreAssignmentMode: String, Decodable { case assigned, open }
-private enum PhoneChoreOccurrenceStatus: String, Decodable {
+enum PhoneChoreAssignmentMode: String, Decodable { case assigned, open }
+enum PhoneChoreOccurrenceStatus: String, Decodable {
     case notStarted = "not_started", inProgress = "in_progress", awaitingApproval = "awaiting_approval"
     case completed, needsRedo = "needs_redo", skipped, cancelled
 }
-private enum PhoneChoreAssigneeStatus: String, Decodable {
+enum PhoneChoreAssigneeStatus: String, Decodable {
     case assigned, inProgress = "in_progress", awaitingApproval = "awaiting_approval"
     case completed, needsRedo = "needs_redo", skipped, cancelled
 }
 
-private struct PhoneChoreOccurrence: Decodable, Identifiable {
+struct PhoneChoreOccurrence: Decodable, Identifiable {
     let id: UUID
     let templateID: UUID
     let assignmentMode: PhoneChoreAssignmentMode
@@ -165,7 +194,7 @@ private struct PhoneChoreOccurrence: Decodable, Identifiable {
     }
 }
 
-private struct PhoneOccurrenceAssignee: Decodable {
+struct PhoneOccurrenceAssignee: Decodable {
     let occurrenceID: UUID
     let userID: UUID
     let status: PhoneChoreAssigneeStatus
@@ -198,7 +227,7 @@ private struct PhoneChoreMember: Decodable {
     }
 }
 
-private struct PhoneRoomChore: Identifiable {
+struct PhoneRoomChore: Identifiable, Hashable {
     let template: PhoneChoreTemplate
     let occurrence: PhoneChoreOccurrence
     let assignees: [PhoneOccurrenceAssignee]
@@ -207,6 +236,12 @@ private struct PhoneRoomChore: Identifiable {
     var id: UUID { template.id }
     var title: String { template.title }
     var pointsValue: Int { occurrence.pointsValue }
+    static func == (lhs: PhoneRoomChore, rhs: PhoneRoomChore) -> Bool {
+        lhs.template.id == rhs.template.id && lhs.occurrence.id == rhs.occurrence.id
+    }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(template.id); hasher.combine(occurrence.id)
+    }
 }
 
 private struct PhoneRoomChoreRow: View {
@@ -246,22 +281,32 @@ private struct PhoneRoomChoreRow: View {
 }
 
 private extension PhoneRoomChore {
-    func canSubmit(currentUserID: UUID?) -> Bool {
-        guard let currentUserID else { return false }
+    func submitTarget(currentUserID: UUID?, role: HomeMemberRole?) -> UUID? {
+        guard let currentUserID else { return nil }
         if occurrence.assignmentMode == .open {
-            return occurrence.claimedBy == currentUserID
-                && occurrence.status != .awaitingApproval
+            return occurrence.claimedBy == currentUserID && occurrence.status != .awaitingApproval
+                ? currentUserID : nil
         }
-        guard let status = assignees.first(where: { $0.userID == currentUserID })?.status else { return false }
-        return status == .assigned || status == .inProgress || status == .needsRedo
+        let eligible = assignees.filter { [.assigned, .inProgress, .needsRedo].contains($0.status) }
+        if eligible.contains(where: { $0.userID == currentUserID }) { return currentUserID }
+        guard role == .owner || role == .admin,
+              assignees.count == 1,
+              eligible.count == 1 else { return nil }
+        return eligible[0].userID
     }
 
-    func canSkip(currentUserID: UUID?) -> Bool {
-        guard let currentUserID else { return false }
+    func skipTarget(currentUserID: UUID?, role: HomeMemberRole?) -> UUID? {
+        guard let currentUserID else { return nil }
         if occurrence.assignmentMode == .open {
             return occurrence.claimedBy == currentUserID && occurrence.status == .notStarted
+                ? currentUserID : nil
         }
-        return assignees.first(where: { $0.userID == currentUserID })?.status == .assigned
+        let eligible = assignees.filter { $0.status == .assigned }
+        if eligible.contains(where: { $0.userID == currentUserID }) { return currentUserID }
+        guard role == .owner || role == .admin,
+              assignees.count == 1,
+              eligible.count == 1 else { return nil }
+        return eligible[0].userID
     }
 
     var statusSymbol: String {
@@ -301,6 +346,35 @@ private struct PhoneGetChoreMembersParameters: Encodable {
 private struct PhoneOccurrenceActionParameters: Encodable {
     let occurrenceID: UUID
     enum CodingKeys: String, CodingKey { case occurrenceID = "requested_occurrence_id" }
+}
+
+private struct PhoneAdminOccurrenceActionParameters: Encodable {
+    let occurrenceID: UUID
+    let userID: UUID
+    enum CodingKeys: String, CodingKey {
+        case occurrenceID = "requested_occurrence_id"
+        case userID = "requested_user_id"
+    }
+}
+
+private struct PhoneAdminSubmitChoreParameters: Encodable {
+    let occurrenceID: UUID
+    let userID: UUID
+    let note: String?
+    let photoPath: String? = nil
+    enum CodingKeys: String, CodingKey {
+        case occurrenceID = "requested_occurrence_id"
+        case userID = "requested_user_id"
+        case note = "requested_completion_note"
+        case photoPath = "requested_photo_path"
+    }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(occurrenceID, forKey: .occurrenceID)
+        try container.encode(userID, forKey: .userID)
+        if let note { try container.encode(note, forKey: .note) } else { try container.encodeNil(forKey: .note) }
+        if let photoPath { try container.encode(photoPath, forKey: .photoPath) } else { try container.encodeNil(forKey: .photoPath) }
+    }
 }
 
 private struct PhoneSubmitChoreParameters: Encodable {
@@ -354,6 +428,20 @@ private struct PhoneChoreActionRepository {
             params: PhoneOccurrenceActionParameters(occurrenceID: occurrenceID)
         ).execute().value
     }
+
+    func submitAsAdmin(occurrenceID: UUID, userID: UUID, note: String?) async throws {
+        let _: UUID = try await client.rpc(
+            "submit_chore_as_admin",
+            params: PhoneAdminSubmitChoreParameters(occurrenceID: occurrenceID, userID: userID, note: note)
+        ).execute().value
+    }
+
+    func skipAsAdmin(occurrenceID: UUID, userID: UUID) async throws {
+        let _: UUID = try await client.rpc(
+            "skip_chore_as_admin",
+            params: PhoneAdminOccurrenceActionParameters(occurrenceID: occurrenceID, userID: userID)
+        ).execute().value
+    }
 }
 
 @MainActor
@@ -382,15 +470,29 @@ private final class PhoneChoresViewModel: ObservableObject {
             }
     }
 
-    func submit(_ chore: PhoneRoomChore) async {
+    func submit(_ chore: PhoneRoomChore, for targetUserID: UUID) async {
         await performAction(for: chore) {
-            try await actionRepository.submit(occurrenceID: chore.occurrence.id, note: nil)
+            if targetUserID == activeCurrentUserID {
+                try await actionRepository.submit(occurrenceID: chore.occurrence.id, note: nil)
+            } else {
+                guard activeRole == .owner || activeRole == .admin else { return }
+                try await actionRepository.submitAsAdmin(
+                    occurrenceID: chore.occurrence.id,
+                    userID: targetUserID,
+                    note: nil
+                )
+            }
         }
     }
 
-    func skip(_ chore: PhoneRoomChore) async {
+    func skip(_ chore: PhoneRoomChore, for targetUserID: UUID) async {
         await performAction(for: chore) {
-            try await actionRepository.skip(occurrenceID: chore.occurrence.id)
+            if targetUserID == activeCurrentUserID {
+                try await actionRepository.skip(occurrenceID: chore.occurrence.id)
+            } else {
+                guard activeRole == .owner || activeRole == .admin else { return }
+                try await actionRepository.skipAsAdmin(occurrenceID: chore.occurrence.id, userID: targetUserID)
+            }
         }
     }
 
@@ -1040,7 +1142,7 @@ struct ChoreApprovalsView: View {
                         }
                     } header: {
                         HStack {
-                            Text(room.name)
+                                    Text(room.displayName)
                                 .font(HomeyTypography.headline)
                                 .foregroundStyle(HomeyColors.text)
                             Spacer()

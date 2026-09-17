@@ -123,8 +123,7 @@ private struct SetupChore: Identifiable {
     var contributesToRoomCleaning: Bool
     var isSelected: Bool
     var isCustom = false
-    var isOpen = true
-    var assigneeIDs: Set<UUID> = []
+    var selectedAssigneeID: UUID?
     var createdTemplateID: UUID?
 }
 
@@ -182,7 +181,7 @@ struct RoomChoreSetupView: View {
                 Button("Cancel", role: .cancel) { customName = "" }
                 Button("Add") { addCustomChore() }.disabled(customName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .task { await loadMembers() }
+            .task(id: homeID) { await loadMembers() }
         }
     }
 
@@ -318,7 +317,7 @@ struct RoomChoreSetupView: View {
         VStack(alignment: .leading, spacing: 15) {
             intro("Assign Household Members", "Choose who can handle each chore.")
             if draft.members.isEmpty {
-                Text("No household members are available. These chores will be open to anyone.")
+                Text("No household members are available.")
                     .font(.footnote)
                     .foregroundStyle(HomeyColors.secondaryText)
             }
@@ -327,23 +326,10 @@ struct RoomChoreSetupView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text(chore.name)
                             .font(.headline)
-                        ForEach(draft.members) { member in
-                            Toggle(
-                                member.name,
-                                isOn: Binding(
-                                    get: { chore.assigneeIDs.contains(member.userID) },
-                                    set: { isSelected in
-                                        if isSelected {
-                                            chore.assigneeIDs.insert(member.userID)
-                                        } else {
-                                            chore.assigneeIDs.remove(member.userID)
-                                        }
-                                        chore.isOpen = chore.assigneeIDs.isEmpty
-                                    }
-                                )
-                            )
-                            .tint(HomeyColors.primary)
-                        }
+                        ChoreSingleAssigneePicker(
+                            options: draft.members.map { ChoreAssigneeOption(id: $0.userID, name: $0.name) },
+                            selection: $chore.selectedAssigneeID
+                        )
                     }
                     .padding(14)
                     .background(HomeyColors.field, in: RoundedRectangle(cornerRadius: HomeyCornerRadius.field))
@@ -379,7 +365,8 @@ struct RoomChoreSetupView: View {
 
     private var canAdvance: Bool {
         if draft.step == 0 { return !draft.roomName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        if draft.step >= 3 { return !draft.selected.isEmpty && draft.selected.allSatisfy { $0.isOpen || !$0.assigneeIDs.isEmpty || draft.step < 7 } }
+        if draft.step >= 6 { return !draft.selected.isEmpty && draft.selected.allSatisfy { $0.selectedAssigneeID != nil } }
+        if draft.step >= 3 { return !draft.selected.isEmpty }
         return true
     }
     private func advance() {
@@ -392,8 +379,17 @@ struct RoomChoreSetupView: View {
     private func addCustomChore() { let name = customName.trimmingCharacters(in: .whitespacesAndNewlines); draft.chores.append(.init(name: name, frequency: .weekly, weekday: draft.weekday, points: 10, contributesToRoomCleaning: false, isSelected: true, isCustom: true)); customName = "" }
     private func selectionRow(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View { Button(action: action) { HStack { Image(systemName: selected ? "checkmark.circle.fill" : "circle"); Text(title); Spacer() }.contentShape(Rectangle()) }.buttonStyle(.plain).foregroundStyle(selected ? HomeyColors.primary : HomeyColors.text) }
     private func scheduleText(_ chore: SetupChore) -> String { chore.frequency.usesWeekday ? "\(chore.frequency.name) • \(chore.weekday.name)" : chore.frequency.name }
-    private func assignmentText(_ chore: SetupChore) -> String { chore.isOpen ? "Open to Anyone" : draft.members.filter { chore.assigneeIDs.contains($0.userID) }.map(\.name).joined(separator: " + ") }
-    private func loadMembers() async { guard let homeID else { return }; draft.members = (try? await service.members(homeID: homeID)) ?? [] }
+    private func assignmentText(_ chore: SetupChore) -> String { draft.members.first { $0.userID == chore.selectedAssigneeID }?.name ?? "Not Selected" }
+    private func loadMembers() async {
+        guard let homeID else { draft.members = []; return }
+        draft.members = (try? await service.members(homeID: homeID)) ?? []
+        let validIDs = Set(draft.members.map(\.userID))
+        for index in draft.chores.indices {
+            if let selectedID = draft.chores[index].selectedAssigneeID, !validIDs.contains(selectedID) {
+                draft.chores[index].selectedAssigneeID = nil
+            }
+        }
+    }
     private func create() async {
         guard role == .owner || role == .admin else { draft.errorMessage = "Only an owner or admin can create rooms and chores."; return }
         guard let homeID else { draft.errorMessage = "Select a Home before running setup."; return }
@@ -434,6 +430,7 @@ private struct RoomChoreSetupService {
         return response.id
     }
     func createChore(homeID: UUID, roomID: UUID, chore: SetupChore, timezone: String) async throws -> UUID {
+        guard chore.selectedAssigneeID != nil else { throw ChoreSingleAssigneeError.selectionRequired }
         let start = startDate(for: chore, timezone: timezone)
         let parameters = SaveTemplateParams(homeID: homeID, roomID: roomID, chore: chore, timezone: timezone, startDate: dateString(start, timezone: timezone))
         let templateID: UUID = try await client.rpc("save_chore_template", params: parameters).execute().value
@@ -471,14 +468,14 @@ private struct SaveTemplateParams: Encodable {
     let requestedEndType: String; let requestedEndsOn: String? = nil; let requestedOccurrenceCount: Int?; let requestedTimezone: String; let requestedAssigneeIDs: [UUID]
     init(homeID: UUID, roomID: UUID, chore: SetupChore, timezone: String, startDate: String) {
         requestedHomeID = homeID; requestedTitle = chore.name; requestedRoomID = roomID
-        requestedAssignmentMode = chore.isOpen ? "open" : "assigned"; requestedCompletionMode = chore.isOpen || chore.assigneeIDs.count <= 1 ? "single" : "everyone"
+        requestedAssignmentMode = "assigned"; requestedCompletionMode = "single"
         requestedPointsValue = max(0, chore.points); requestedFrequency = chore.frequency.backendFrequency; requestedIntervalValue = chore.frequency.interval
         requestedStartDate = startDate; requestedWeekdays = chore.frequency.usesWeekday ? [chore.weekday.postgresValue] : []
         let day = Int(startDate.suffix(2)); let month = Int(startDate.dropFirst(5).prefix(2))
         requestedDayOfMonth = [.monthly, .annually, .biannually].contains(chore.frequency) ? day : nil
         requestedMonthOfYear = chore.frequency == .annually ? month : nil
         requestedEndType = chore.frequency == .oneTime ? "after_count" : "never"; requestedOccurrenceCount = chore.frequency == .oneTime ? 1 : nil
-        requestedTimezone = timezone; requestedAssigneeIDs = chore.isOpen ? [] : Array(chore.assigneeIDs)
+        requestedTimezone = timezone; requestedAssigneeIDs = chore.selectedAssigneeID.map { [$0] } ?? []
     }
     enum CodingKeys: String, CodingKey {
         case requestedHomeID = "requested_home_id", requestedTemplateID = "requested_template_id", requestedTitle = "requested_title", requestedDescription = "requested_description", requestedInstructions = "requested_instructions", requestedCategoryID = "requested_category_id", requestedRoomID = "requested_room_id", requestedAssignmentMode = "requested_assignment_mode", requestedCompletionMode = "requested_completion_mode", requestedPointsValue = "requested_points_value", requestedRequiresApproval = "requested_requires_approval", requestedRequiresPhoto = "requested_requires_photo", requestedFrequency = "requested_frequency", requestedIntervalValue = "requested_interval_value", requestedStartDate = "requested_start_date", requestedDueTime = "requested_due_time", requestedDurationMinutes = "requested_duration_minutes", requestedIsAllDay = "requested_is_all_day", requestedWeekdays = "requested_weekdays", requestedDayOfMonth = "requested_day_of_month", requestedMonthOfYear = "requested_month_of_year", requestedEndType = "requested_end_type", requestedEndsOn = "requested_ends_on", requestedOccurrenceCount = "requested_occurrence_count", requestedTimezone = "requested_timezone", requestedAssigneeIDs = "requested_assignee_ids"

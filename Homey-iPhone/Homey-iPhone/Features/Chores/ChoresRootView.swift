@@ -54,6 +54,14 @@ struct ChoresRootView: View {
                     ) {
                         refreshToken = UUID()
                     }
+                } else if destination == .chore {
+                    AddChoreWizardView(
+                        homeID: appSession.activeHome?.id,
+                        role: appSession.activeRole,
+                        timezone: appSession.activeTimezone.identifier
+                    ) {
+                        refreshToken = UUID()
+                    }
                 } else if destination == .reward {
                     PhoneRewardEditorView(
                         homeID: appSession.activeHome?.id,
@@ -102,17 +110,17 @@ struct ChoresRootView: View {
             Spacer()
 
             Menu {
-                    Section("Automation") {
-                        Button("Add Room and Chores", systemImage: "wand.and.sparkles") {
+                    Section("Add") {
+                        Button("Room and Chores", systemImage: "wand.and.sparkles") {
                             creationDestination = .roomAndChores
                         }
-                    }
-                    Section("Chores & Rooms") {
-                        Button("Add Chore", systemImage: "checkmark.circle") {
+                        Button("Chore", systemImage: "checkmark.circle") {
                             creationDestination = .chore
                         }
-                        Button("Add Room", systemImage: "door.left.hand.open") {
-                            creationDestination = .room
+                    }
+                    Section("Chores") {
+                        Button("Reschedule", systemImage: "calendar.badge.clock") {
+                            creationDestination = .reschedule
                         }
                     }
                     if canAccessApprovals {
@@ -164,7 +172,7 @@ struct ChoresRootView: View {
 private enum ChoreCreationPlaceholder: String, Identifiable {
     case roomAndChores = "Add Room and Chores"
     case chore = "Add Chore"
-    case room = "Add Room"
+    case reschedule = "Reschedule"
     case reward = "Add Reward"
     case adjustments = "Adjustments"
 
@@ -173,7 +181,7 @@ private enum ChoreCreationPlaceholder: String, Identifiable {
         switch self {
         case .roomAndChores: "wand.and.sparkles"
         case .chore: "checkmark.circle"
-        case .room: "door.left.hand.open"
+        case .reschedule: "calendar.badge.clock"
         case .reward: "gift"
         case .adjustments: "plusminus.circle"
         }
