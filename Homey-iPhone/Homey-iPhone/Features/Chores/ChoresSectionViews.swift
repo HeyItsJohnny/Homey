@@ -42,7 +42,7 @@ struct ChoresMainView: View {
                                         } label: {
                                             Label("Submit", systemImage: "checkmark.circle.fill")
                                         }
-                                        .tint(HomeyColors.primary)
+                                        .tint(HomeyColors.success)
                                         .disabled(model.processingOccurrenceIDs.contains(chore.occurrence.id))
                                     }
                                 }
@@ -53,6 +53,7 @@ struct ChoresMainView: View {
                                         } label: {
                                             Label("Skip", systemImage: "forward.end.fill")
                                         }
+                                        .tint(HomeyColors.danger)
                                         .disabled(model.processingOccurrenceIDs.contains(chore.occurrence.id))
                                     }
                                 }
@@ -1022,7 +1023,7 @@ struct ChoreApprovalsView: View {
                                 Button {
                                     Task { await model.review(approval, decision: .approved) }
                                 } label: {
-                                    Label("Approve", systemImage: "checkmark.circle.fill")
+                                    Label("Approve", systemImage: "checkmark.seal.fill")
                                 }
                                 .tint(HomeyColors.success)
                                 .disabled(model.processingSubmissionIDs.contains(approval.id))
@@ -1033,6 +1034,7 @@ struct ChoreApprovalsView: View {
                                 } label: {
                                     Label("Redo", systemImage: "arrow.counterclockwise")
                                 }
+                                .tint(HomeyColors.danger)
                                 .disabled(model.processingSubmissionIDs.contains(approval.id))
                             }
                         }
@@ -1100,8 +1102,9 @@ struct ChoreApprovalsView: View {
                             Button(role: .destructive) {
                                 Task { await rewardModel.cancel(redemption) }
                             } label: {
-                                Label("Cancel", systemImage: "xmark.circle")
+                                Label("Cancel", systemImage: "xmark.circle.fill")
                             }
+                            .tint(HomeyColors.danger)
                             .disabled(rewardModel.processingRedemptionIDs.contains(redemption.id))
                         }
                     }
