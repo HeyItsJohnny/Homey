@@ -72,8 +72,8 @@ struct ChoresMainView: View {
                     occurrenceID: chore.occurrence.id,
                     home: home,
                     onSaveCompleted: {
+                        await load()
                         selectedChore = nil
-                        Task { await load() }
                     }
                 )
             }
@@ -81,7 +81,10 @@ struct ChoresMainView: View {
         .onChange(of: appSession.activeHome?.id) { _, newHomeID in
             if selectedChore != nil { selectedChore = nil }
         }
-        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyChoresDidChange"))) { _ in Task { await load() } }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyChoresDidChange"))) { _ in
+            guard selectedChore == nil else { return }
+            Task { await load() }
+        }
         .alert("Unable to Update Chore", isPresented: Binding(
             get: { model.actionErrorMessage != nil },
             set: { if !$0 { model.actionErrorMessage = nil } }
@@ -233,10 +236,34 @@ struct PhoneRoomChore: Identifiable, Hashable {
     var title: String { template.title }
     var pointsValue: Int { occurrence.pointsValue }
     static func == (lhs: PhoneRoomChore, rhs: PhoneRoomChore) -> Bool {
-        lhs.template.id == rhs.template.id && lhs.occurrence.id == rhs.occurrence.id
+        lhs.template.id == rhs.template.id
+            && lhs.occurrence.id == rhs.occurrence.id
+            && lhs.title == rhs.title
+            && lhs.pointsValue == rhs.pointsValue
+            && lhs.occurrence.dueLocalDate == rhs.occurrence.dueLocalDate
+            && lhs.occurrence.status == rhs.occurrence.status
+            && lhs.occurrence.claimedBy == rhs.occurrence.claimedBy
+            && lhs.assigneeText == rhs.assigneeText
+            && lhs.assigneeIdentity == rhs.assigneeIdentity
+            && lhs.roomName == rhs.roomName
     }
     func hash(into hasher: inout Hasher) {
-        hasher.combine(template.id); hasher.combine(occurrence.id)
+        hasher.combine(template.id)
+        hasher.combine(occurrence.id)
+        hasher.combine(title)
+        hasher.combine(pointsValue)
+        hasher.combine(occurrence.dueLocalDate)
+        hasher.combine(occurrence.status.rawValue)
+        hasher.combine(occurrence.claimedBy)
+        hasher.combine(assigneeText)
+        hasher.combine(assigneeIdentity)
+        hasher.combine(roomName)
+    }
+
+    private var assigneeIdentity: [String] {
+        assignees
+            .map { "\($0.userID.uuidString):\($0.status.rawValue)" }
+            .sorted()
     }
 }
 

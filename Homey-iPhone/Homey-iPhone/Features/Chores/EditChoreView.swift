@@ -4,7 +4,7 @@ import Supabase
 struct EditChoreView: View {
     let home: HomeSummary
     let initial: PhoneChoreDetail
-    let onSaved: () -> Void
+    let onSaved: () async -> Void
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var appSession: AppSession
     @State private var draft: PhoneChoreDetail
@@ -12,6 +12,7 @@ struct EditChoreView: View {
     @State private var savePhase: PhoneChoreSavePhase?
     @State private var error: String?
     @State private var partialFailure: ChoreRecurringEditPartialFailure?
+    @State private var snapshotRefreshPending = false
     @State private var confirmsDelete = false
     @State private var failedDeleteCalendarEventIDs: [UUID] = []
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -19,7 +20,7 @@ struct EditChoreView: View {
     private let service = PhoneChoreEditService()
     private let weekdays = Array(0...6)
 
-    init(home: HomeSummary, initial: PhoneChoreDetail, onSaved: @escaping () -> Void) {
+    init(home: HomeSummary, initial: PhoneChoreDetail, onSaved: @escaping () async -> Void) {
         self.home = home; self.initial = initial; self.onSaved = onSaved
         _draft = State(initialValue: initial)
         _selectedAssignee = State(initialValue: initial.canSafelyEdit ? initial.assigneeIDs.first : nil)
@@ -260,16 +261,31 @@ struct EditChoreView: View {
         savePhase = .saving; error = nil
         draft.assigneeIDs = [assignee]
         do {
-            try await service.save(draft: draft, original: initial, partialFailure: partialFailure) { phase in
+            try await service.save(
+                draft: draft,
+                original: initial,
+                partialFailure: partialFailure,
+                retrySnapshotRefreshOnly: snapshotRefreshPending
+            ) { phase in
                 savePhase = phase
             }
+            partialFailure = nil
+            snapshotRefreshPending = false
             savePhase = .refreshing
-            onSaved()
+            await onSaved()
+        } catch let failure as PhoneChoreSnapshotRefreshPartialFailure {
+            partialFailure = nil
+            snapshotRefreshPending = true
+            error = failure.localizedDescription
+            #if DEBUG
+            print("[Homey] CHORE EDIT: occurrence refresh failed after template save template_id=\(failure.templateID.uuidString) error=\(failure.underlyingDescription)")
+            #endif
         } catch let failure as ChoreRecurringEditPartialFailure {
             #if DEBUG
             print("[Homey] CHORE EDIT: \(failure.stage.rawValue) failed template_id=\(failure.templateId.uuidString) error=\(failure.underlyingDescription)")
             #endif
             partialFailure = failure
+            snapshotRefreshPending = false
             error = failure.localizedDescription
         } catch {
             #if DEBUG
@@ -299,7 +315,7 @@ struct EditChoreView: View {
             print("[Homey] CHORE DELETE: chores refreshed template_id=\(draft.id.uuidString)")
             #endif
             savePhase = .refreshing
-            onSaved()
+            await onSaved()
             #if DEBUG
             print("[Homey] CHORE DELETE: navigation completed template_id=\(draft.id.uuidString)")
             #endif
@@ -398,47 +414,125 @@ final class PhoneChoreEditService {
         draft: PhoneChoreDetail,
         original: PhoneChoreDetail,
         partialFailure: ChoreRecurringEditPartialFailure?,
+        retrySnapshotRefreshOnly: Bool,
         progress: @escaping (PhoneChoreSavePhase) -> Void
     ) async throws {
         guard draft.homeID == original.homeID, draft.canSafelyEdit, draft.assigneeIDs.count == 1 else {
             throw ChoreCalendarInfrastructureError.repositoryOperationFailed
         }
-        if draft == original { progress(.refreshing); postRefresh(); return }
+        let snapshotChanged = hasSnapshotChanges(draft, original)
+        let scheduleChanged = hasScheduleChanges(draft, original)
+
+        if retrySnapshotRefreshOnly {
+            try await refreshUntouchedOccurrences(draft, progress: progress)
+            postRefresh(includeCalendar: false)
+            return
+        }
+        if !snapshotChanged && !scheduleChanged {
+            progress(.refreshing)
+            postRefresh(includeCalendar: false)
+            return
+        }
         let basis = max(Date(), draft.startDate)
         let through = Calendar.current.date(byAdding: .day, value: 90, to: basis) ?? basis
 
         if let partialFailure, partialFailure.stage == .replaceOccurrences {
             throw partialFailure
         } else if let partialFailure {
-            try await coordinator.resumeRecurringSchedule(homeId: draft.homeID, templateId: draft.id,
+            try await coordinator.resumeRecurringSchedule(homeId: draft.homeID,
                 generateThrough: through, timezone: draft.timezone,
-                remainingCalendarEventIds: partialFailure.remainingCalendarEventIds,
+                failure: partialFailure,
                 progress: { progress(Self.phase($0)) })
-        } else if isAssignmentOnly(draft, original) {
+            if snapshotChanged { try await refreshUntouchedOccurrences(draft, progress: progress) }
+        } else if !scheduleChanged {
             progress(.saving); log("save_chore_template", "started", draft)
             _ = try await saveTemplate(draft)
             log("save_chore_template", "completed", draft)
-            progress(.futureChores); log("assignment refresh", "started", draft)
-            _ = try await coordinator.refreshAssignmentsOnly(templateId: draft.id, effectiveFrom: effectiveDate(timezone: draft.timezone))
-            log("assignment refresh", "completed", draft)
-            progress(.refreshing)
-            postRefresh()
+            try await refreshUntouchedOccurrences(draft, progress: progress)
+            postRefresh(includeCalendar: false)
         } else {
             _ = try await coordinator.replaceRecurringSchedule(homeId: draft.homeID,
                 effectiveFrom: effectiveDate(timezone: draft.timezone), generateThrough: through, timezone: draft.timezone,
                 progress: { stage in progress(Self.phase(stage)); self.log(stage, draft) }) {
                     try await self.saveTemplate(draft)
                 }
+            if snapshotChanged { try await refreshUntouchedOccurrences(draft, progress: progress) }
         }
         progress(.refreshing)
         log("navigation", "dismissing edit and details", draft)
     }
 
-    private func isAssignmentOnly(_ lhs: PhoneChoreDetail, _ rhs: PhoneChoreDetail) -> Bool {
-        var left = lhs; var right = rhs
-        left.assigneeIDs = []; left.assigneeNames = []; left.members = []; left.rooms = []
-        right.assigneeIDs = []; right.assigneeNames = []; right.members = []; right.rooms = []
-        return left == right && lhs.assigneeIDs != rhs.assigneeIDs
+    private func hasSnapshotChanges(_ lhs: PhoneChoreDetail, _ rhs: PhoneChoreDetail) -> Bool {
+        normalized(lhs.title) != normalized(rhs.title)
+            || optionalText(lhs.description) != optionalText(rhs.description)
+            || optionalText(lhs.instructions) != optionalText(rhs.instructions)
+            || lhs.categoryID != rhs.categoryID
+            || lhs.roomID != rhs.roomID
+            || lhs.assignmentMode != rhs.assignmentMode
+            || lhs.completionMode != rhs.completionMode
+            || lhs.assigneeIDs.sorted(by: uuidSort) != rhs.assigneeIDs.sorted(by: uuidSort)
+            || lhs.pointsValue != rhs.pointsValue
+            || lhs.requiresApproval != rhs.requiresApproval
+            || lhs.requiresPhoto != rhs.requiresPhoto
+    }
+
+    private func hasScheduleChanges(_ lhs: PhoneChoreDetail, _ rhs: PhoneChoreDetail) -> Bool {
+        lhs.frequency != rhs.frequency
+            || normalizedInterval(lhs) != normalizedInterval(rhs)
+            || dateOnly(lhs.startDate, timezone: lhs.timezone) != dateOnly(rhs.startDate, timezone: rhs.timezone)
+            || normalizedDueTime(lhs) != normalizedDueTime(rhs)
+            || lhs.durationMinutes != rhs.durationMinutes
+            || lhs.isAllDay != rhs.isAllDay
+            || normalizedWeekdays(lhs) != normalizedWeekdays(rhs)
+            || normalizedDay(lhs) != normalizedDay(rhs)
+            || normalizedMonth(lhs) != normalizedMonth(rhs)
+            || normalizedEndType(lhs) != normalizedEndType(rhs)
+            || normalizedEndDate(lhs) != normalizedEndDate(rhs)
+            || normalizedCount(lhs) != normalizedCount(rhs)
+            || lhs.timezone != rhs.timezone
+    }
+
+    private func refreshUntouchedOccurrences(
+        _ draft: PhoneChoreDetail,
+        progress: @escaping (PhoneChoreSavePhase) -> Void
+    ) async throws {
+        progress(.futureChores)
+        log("untouched occurrence refresh", "started", draft)
+        do {
+            _ = try await coordinator.refreshAssignmentsOnly(
+                templateId: draft.id,
+                effectiveFrom: effectiveDate(timezone: draft.timezone)
+            )
+            log("untouched occurrence refresh", "completed", draft)
+        } catch {
+            throw PhoneChoreSnapshotRefreshPartialFailure(
+                templateID: draft.id,
+                underlyingDescription: String(reflecting: error)
+            )
+        }
+    }
+
+    private func normalized(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    private func optionalText(_ value: String) -> String? { value.phoneNilIfBlank }
+    private func uuidSort(_ lhs: UUID, _ rhs: UUID) -> Bool { lhs.uuidString < rhs.uuidString }
+    private func normalizedInterval(_ value: PhoneChoreDetail) -> Int { value.frequency == .none ? 1 : value.intervalValue }
+    private func normalizedDueTime(_ value: PhoneChoreDetail) -> String? { value.isAllDay ? nil : value.dueTime }
+    private func normalizedWeekdays(_ value: PhoneChoreDetail) -> Set<Int> { value.frequency == .weekly ? value.weekdays : [] }
+    private func normalizedDay(_ value: PhoneChoreDetail) -> Int? { [.monthly, .yearly].contains(value.frequency) ? value.dayOfMonth : nil }
+    private func normalizedMonth(_ value: PhoneChoreDetail) -> Int? { value.frequency == .yearly ? value.monthOfYear : nil }
+    private func normalizedEndType(_ value: PhoneChoreDetail) -> PhoneEditEndType { value.frequency == .none ? .afterCount : value.endType }
+    private func normalizedEndDate(_ value: PhoneChoreDetail) -> String? {
+        value.frequency != .none && value.endType == .onDate
+            ? value.endsOn.map { dateOnly($0, timezone: value.timezone) }
+            : nil
+    }
+    private func normalizedCount(_ value: PhoneChoreDetail) -> Int? {
+        value.frequency == .none || value.endType == .afterCount ? value.occurrenceCount : nil
+    }
+    private func dateOnly(_ value: Date, timezone: String) -> String {
+        ChoreCalendarDateFormatting.date(value, timezone: timezone)
     }
 
     private func saveTemplate(_ draft: PhoneChoreDetail) async throws -> UUID {
@@ -449,9 +543,11 @@ final class PhoneChoreEditService {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: timezone) ?? .current
         return calendar.startOfDay(for: Date())
     }
-    private func postRefresh() {
+    private func postRefresh(includeCalendar: Bool = true) {
         NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: nil)
-        NotificationCenter.default.post(name: Notification.Name("homeyCalendarEventsDidChange"), object: nil)
+        if includeCalendar {
+            NotificationCenter.default.post(name: Notification.Name("homeyCalendarEventsDidChange"), object: nil)
+        }
     }
     private static func phase(_ value: ChoreRecurringEditProgress) -> PhoneChoreSavePhase {
         switch value {
@@ -468,6 +564,14 @@ final class PhoneChoreEditService {
         #if DEBUG
         print("[Homey] CHORE EDIT: \(stage) \(state) template_id=\(draft.id.uuidString) occurrence_id=\(draft.occurrenceID.uuidString)")
         #endif
+    }
+}
+
+private struct PhoneChoreSnapshotRefreshPartialFailure: LocalizedError {
+    let templateID: UUID
+    let underlyingDescription: String
+    var errorDescription: String? {
+        "The chore template was saved, but existing untouched chores were not fully refreshed. Tap Save to retry the remaining refresh."
     }
 }
 

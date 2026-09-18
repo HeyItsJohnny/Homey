@@ -6,7 +6,7 @@ struct ChoreDetailView: View {
     let templateID: UUID
     let occurrenceID: UUID
     let home: HomeSummary
-    let onSaveCompleted: () -> Void
+    let onSaveCompleted: () async -> Void
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var appSession: AppSession
     @State private var detail: PhoneChoreDetail?
@@ -74,7 +74,7 @@ struct ChoreDetailView: View {
         .sheet(isPresented: $showingEditor, onDismiss: { Task { await load() } }) {
             if let detail {
                 EditChoreView(home: home, initial: detail) {
-                    onSaveCompleted()
+                    await onSaveCompleted()
                 }
             }
         }

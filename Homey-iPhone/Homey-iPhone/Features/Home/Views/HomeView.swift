@@ -28,6 +28,12 @@ struct HomeView: View {
         .toolbar(.hidden, for: .navigationBar)
         .task(id: appSession.activeHome?.id) { await refresh(force: true) }
         .onAppear { Task { await refresh() } }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyChoresDidChange"))) { _ in
+            Task { await refresh(force: true) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyCalendarEventsDidChange"))) { _ in
+            Task { await refresh(force: true) }
+        }
         .sheet(isPresented: $showingProfile) { ProfileSheet() }
     }
 

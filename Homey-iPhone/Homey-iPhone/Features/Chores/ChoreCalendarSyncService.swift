@@ -79,6 +79,7 @@ struct ChoreRecurringEditPartialFailure: LocalizedError, Sendable {
     let templateId: UUID
     let stage: ChoreRecurringEditStage
     let remainingCalendarEventIds: [UUID]
+    let generatedOccurrenceIds: [UUID]
     let underlyingDescription: String
 
     var errorDescription: String? {
@@ -141,7 +142,7 @@ final class ChoreRecurringEditCoordinator {
                 timezone: timezone
             )
         } catch {
-            throw partialFailure(templateId, .replaceOccurrences, [], error)
+            throw partialFailure(templateId, .replaceOccurrences, [], [], error)
         }
 
         for (index, eventId) in replacement.calendarEventIds.enumerated() {
@@ -153,6 +154,7 @@ final class ChoreRecurringEditCoordinator {
                     templateId,
                     .deleteObsoleteCalendarEvents,
                     Array(replacement.calendarEventIds[index...]),
+                    [],
                     error
                 )
             }
@@ -167,7 +169,7 @@ final class ChoreRecurringEditCoordinator {
                 timezone: timezone
             )
         } catch {
-            throw partialFailure(templateId, .generateOccurrences, [], error)
+            throw partialFailure(templateId, .generateOccurrences, [], [], error)
         }
 
         do {
@@ -192,7 +194,7 @@ final class ChoreRecurringEditCoordinator {
                 synchronizedOccurrences: synchronized
             )
         } catch {
-            throw partialFailure(templateId, .synchronizeCalendar, [], error)
+            throw partialFailure(templateId, .synchronizeCalendar, [], generated.map(\.id), error)
         }
     }
 
@@ -213,26 +215,66 @@ final class ChoreRecurringEditCoordinator {
 
     func resumeRecurringSchedule(
         homeId: UUID,
-        templateId: UUID,
         generateThrough: Date,
         timezone: String,
-        remainingCalendarEventIds: [UUID],
+        failure: ChoreRecurringEditPartialFailure,
         progress: @escaping (ChoreRecurringEditProgress) -> Void = { _ in }
     ) async throws {
-        progress(.updatingCalendar)
-        try await retryCalendarEventDeletions(remainingCalendarEventIds)
-        progress(.replacingOccurrences)
-        let generated = try await repository.generateOccurrences(
-            templateId: templateId,
-            through: generateThrough,
-            timezone: timezone
-        )
-        progress(.updatingCalendar)
-        _ = try await syncService.syncMissingCalendarEvents(
-            homeId: homeId,
-            occurrences: generated,
-            timezone: timezone
-        )
+        if failure.stage == .replaceOccurrences { throw failure }
+
+        if failure.stage == .deleteObsoleteCalendarEvents {
+            for (index, eventId) in failure.remainingCalendarEventIds.enumerated() {
+                do {
+                    progress(.updatingCalendar)
+                    try await calendarService.deleteEvent(eventId: eventId)
+                } catch {
+                    throw partialFailure(
+                        failure.templateId,
+                        .deleteObsoleteCalendarEvents,
+                        Array(failure.remainingCalendarEventIds[index...]),
+                        [],
+                        error
+                    )
+                }
+            }
+        }
+
+        let generated: [ChoreCalendarOccurrence]
+        if failure.stage == .synchronizeCalendar {
+            do {
+                generated = try await repository.fetchOccurrences(ids: failure.generatedOccurrenceIds)
+            } catch {
+                throw partialFailure(
+                    failure.templateId,
+                    .synchronizeCalendar,
+                    [],
+                    failure.generatedOccurrenceIds,
+                    error
+                )
+            }
+        } else {
+            do {
+                progress(.replacingOccurrences)
+                generated = try await repository.generateOccurrences(
+                    templateId: failure.templateId,
+                    through: generateThrough,
+                    timezone: timezone
+                )
+            } catch {
+                throw partialFailure(failure.templateId, .generateOccurrences, [], [], error)
+            }
+        }
+
+        do {
+            progress(.updatingCalendar)
+            _ = try await syncService.syncMissingCalendarEvents(
+                homeId: homeId,
+                occurrences: generated,
+                timezone: timezone
+            )
+        } catch {
+            throw partialFailure(failure.templateId, .synchronizeCalendar, [], generated.map(\.id), error)
+        }
         NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: nil)
         NotificationCenter.default.post(name: Notification.Name("homeyCalendarEventsDidChange"), object: nil)
         progress(.refreshing)
@@ -242,12 +284,14 @@ final class ChoreRecurringEditCoordinator {
         _ templateId: UUID,
         _ stage: ChoreRecurringEditStage,
         _ remainingIds: [UUID],
+        _ generatedOccurrenceIds: [UUID],
         _ error: Error
     ) -> ChoreRecurringEditPartialFailure {
         ChoreRecurringEditPartialFailure(
             templateId: templateId,
             stage: stage,
             remainingCalendarEventIds: remainingIds,
+            generatedOccurrenceIds: generatedOccurrenceIds,
             underlyingDescription: String(reflecting: error)
         )
     }
