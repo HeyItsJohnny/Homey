@@ -9,20 +9,27 @@ struct ChoresMainView: View {
 
     var body: some View {
         Group {
-            if model.isLoading && model.rooms.isEmpty {
+            if model.isLoading && model.rooms.isEmpty && model.preservedWork.isEmpty {
                 ProgressView("Loading chores…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let error = model.errorMessage, model.rooms.isEmpty {
+            } else if let error = model.errorMessage, model.rooms.isEmpty && model.preservedWork.isEmpty {
                 ScrollView {
                     VStack(spacing: 14) {
                         HomeyErrorView(message: error)
                         Button("Try Again") { Task { await load() } }.buttonStyle(HomeyButtonStyle())
                     }.padding(20).homeyCard().padding()
                 }
-            } else if model.rooms.isEmpty {
+            } else if model.rooms.isEmpty && model.preservedWork.isEmpty {
                 ChorePlaceholderView(title: "No rooms yet", message: "Use Add Room and Chores to set up your first room.", symbol: "door.left.hand.open")
             } else {
                 List {
+                    if !model.preservedWork.isEmpty {
+                        Section("Current Work") {
+                            ForEach(model.preservedWork) { chore in
+                                choreRow(chore)
+                            }
+                        }
+                    }
                     ForEach(model.rooms) { room in
                         Section {
                             let chores = model.chores(for: room.id)
@@ -31,43 +38,7 @@ struct ChoresMainView: View {
                                     .font(.subheadline)
                                     .foregroundStyle(HomeyColors.secondaryText)
                             }
-                            ForEach(chores) { chore in
-                                Button { selectedChore = chore } label: {
-                                    PhoneRoomChoreRow(
-                                        chore: chore,
-                                        isProcessing: model.processingOccurrenceIDs.contains(chore.occurrence.id)
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    if let targetUserID = chore.submitTarget(
-                                        currentUserID: appSession.currentUser?.id,
-                                        role: appSession.activeRole
-                                    ) {
-                                        Button {
-                                            Task { await model.submit(chore, for: targetUserID) }
-                                        } label: {
-                                            Label("Submit", systemImage: "checkmark.circle.fill")
-                                        }
-                                        .tint(HomeyColors.success)
-                                        .disabled(model.processingOccurrenceIDs.contains(chore.occurrence.id))
-                                    }
-                                }
-                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                    if let targetUserID = chore.skipTarget(
-                                        currentUserID: appSession.currentUser?.id,
-                                        role: appSession.activeRole
-                                    ) {
-                                        Button(role: .destructive) {
-                                            Task { await model.skip(chore, for: targetUserID) }
-                                        } label: {
-                                            Label("Skip", systemImage: "forward.end.fill")
-                                        }
-                                        .tint(HomeyColors.danger)
-                                        .disabled(model.processingOccurrenceIDs.contains(chore.occurrence.id))
-                                    }
-                                }
-                            }
+                            ForEach(chores) { chore in choreRow(chore) }
                         } header: {
                             HStack {
                                 VStack(alignment: .leading, spacing: 3) {
@@ -123,6 +94,31 @@ struct ChoresMainView: View {
 
     private var loadTaskID: String {
         "\(appSession.activeHome?.id.uuidString ?? "no-home")-\(appSession.currentUser?.id.uuidString ?? "no-user")-\(appSession.activeRole?.rawValue ?? "no-role")"
+    }
+
+    private func choreRow(_ chore: PhoneRoomChore) -> some View {
+        Button { selectedChore = chore } label: {
+            PhoneRoomChoreRow(chore: chore, isProcessing: model.processingOccurrenceIDs.contains(chore.occurrence.id))
+        }
+        .buttonStyle(.plain)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if let targetUserID = chore.submitTarget(currentUserID: appSession.currentUser?.id, role: appSession.activeRole) {
+                Button { Task { await model.submit(chore, for: targetUserID) } } label: {
+                    Label("Submit", systemImage: "checkmark.circle.fill")
+                }
+                .tint(HomeyColors.success)
+                .disabled(model.processingOccurrenceIDs.contains(chore.occurrence.id))
+            }
+        }
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            if let targetUserID = chore.skipTarget(currentUserID: appSession.currentUser?.id, role: appSession.activeRole) {
+                Button(role: .destructive) { Task { await model.skip(chore, for: targetUserID) } } label: {
+                    Label("Skip", systemImage: "forward.end.fill")
+                }
+                .tint(HomeyColors.danger)
+                .disabled(model.processingOccurrenceIDs.contains(chore.occurrence.id))
+            }
+        }
     }
 
     private func load() async {
@@ -233,7 +229,7 @@ struct PhoneRoomChore: Identifiable, Hashable {
     let assignees: [PhoneOccurrenceAssignee]
     let assigneeText: String
     let roomName: String
-    var id: UUID { template.id }
+    var id: UUID { occurrence.id }
     var title: String { template.title }
     var pointsValue: Int { occurrence.pointsValue }
     static func == (lhs: PhoneRoomChore, rhs: PhoneRoomChore) -> Bool {
@@ -448,6 +444,7 @@ private struct PhoneChoreActionRepository {
 private final class PhoneChoresViewModel: ObservableObject {
     @Published var rooms: [PhoneChoreRoom] = []
     @Published var roomChores: [PhoneRoomChore] = []
+    @Published var preservedWork: [PhoneRoomChore] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var actionErrorMessage: String?
@@ -522,13 +519,14 @@ private final class PhoneChoresViewModel: ObservableObject {
         if activeHomeID != homeID {
             rooms = []
             roomChores = []
+            preservedWork = []
             processingOccurrenceIDs = []
         }
         activeHomeID = homeID
         activeCurrentUserID = currentUserID
         activeRole = role
 
-        guard let homeID else { rooms = []; roomChores = []; return }
+        guard let homeID else { rooms = []; roomChores = []; preservedWork = []; return }
         isLoading = true; errorMessage = nil
         defer {
             if activeLoadID == loadID { isLoading = false }
@@ -543,12 +541,12 @@ private final class PhoneChoresViewModel: ObservableObject {
                 .order("sort_order")
                 .execute()
                 .value
-            // Match ChoresRepository.fetchTemplates: the deployed relation is
-            // queried by home and ordered without a server-side archive filter.
             let loadedTemplates: [PhoneChoreTemplate] = try await client
                 .from("chore_templates")
                 .select("id,room_id,title,description,instructions,points_value")
                 .eq("home_id", value: homeID.uuidString)
+                .eq("is_active", value: true)
+                .eq("is_archived", value: false)
                 .order("title")
                 .execute()
                 .value
@@ -566,7 +564,7 @@ private final class PhoneChoresViewModel: ObservableObject {
                 firstOccurrenceByTemplate[occurrence.templateID] = occurrence
             }
             let selectedOccurrences = Array(firstOccurrenceByTemplate.values)
-            let occurrenceIDs = selectedOccurrences.map { $0.id.uuidString }
+            let occurrenceIDs = occurrences.map { $0.id.uuidString }
             let loadedAssignees: [PhoneOccurrenceAssignee]
             if occurrenceIDs.isEmpty {
                 loadedAssignees = []
@@ -585,6 +583,24 @@ private final class PhoneChoresViewModel: ObservableObject {
             let namesByUserID = Dictionary(uniqueKeysWithValues: members.map { ($0.userID, $0.displayName) })
             let templatesByID = Dictionary(uniqueKeysWithValues: loadedTemplates.map { ($0.id, $0) })
             let roomNamesByID = Dictionary(uniqueKeysWithValues: loadedRooms.map { ($0.id, $0.name) })
+
+            let retainedOccurrences = occurrences.filter {
+                templatesByID[$0.templateID] == nil && [.inProgress, .needsRedo].contains($0.status)
+            }
+            let retainedTemplateIDs = Array(Set(retainedOccurrences.map(\.templateID)))
+            let retainedTemplates: [PhoneChoreTemplate]
+            if retainedTemplateIDs.isEmpty {
+                retainedTemplates = []
+            } else {
+                retainedTemplates = try await client
+                    .from("chore_templates")
+                    .select("id,room_id,title,description,instructions,points_value")
+                    .eq("home_id", value: homeID.uuidString)
+                    .in("id", values: retainedTemplateIDs.map(\.uuidString))
+                    .execute()
+                    .value
+            }
+            let retainedTemplatesByID = Dictionary(uniqueKeysWithValues: retainedTemplates.map { ($0.id, $0) })
 
             guard activeLoadID == loadID else { return }
             let householdChores: [PhoneRoomChore] = selectedOccurrences.compactMap { occurrence in
@@ -617,6 +633,24 @@ private final class PhoneChoresViewModel: ObservableObject {
             let visibleRoomIDs = Set(visibleChores.compactMap { $0.template.roomID })
             roomChores = visibleChores
             rooms = loadedRooms.filter { visibleRoomIDs.contains($0.id) }
+            preservedWork = retainedOccurrences.compactMap { occurrence in
+                guard let template = retainedTemplatesByID[occurrence.templateID] else { return nil }
+                let assignees = loadedAssignees.filter { $0.occurrenceID == occurrence.id }
+                if !canViewAllChores {
+                    guard let currentUserID,
+                          occurrence.claimedBy == currentUserID || assignees.contains(where: { $0.userID == currentUserID }) else { return nil }
+                }
+                let names = assignees.compactMap { namesByUserID[$0.userID] }
+                return PhoneRoomChore(
+                    template: template,
+                    occurrence: occurrence,
+                    assignees: assignees,
+                    assigneeText: occurrence.assignmentMode == .open
+                        ? (occurrence.claimedBy.flatMap { namesByUserID[$0] }.map { "Claimed by \($0)" } ?? "Open Chore")
+                        : (names.isEmpty ? "Assigned" : names.joined(separator: ", ")),
+                    roomName: template.roomID.flatMap { roomNamesByID[$0] } ?? "No Room"
+                )
+            }
         } catch {
             guard activeLoadID == loadID else { return }
             errorMessage = "We couldn't load your rooms and chores."

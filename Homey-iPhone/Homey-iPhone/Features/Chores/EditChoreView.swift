@@ -12,6 +12,10 @@ struct EditChoreView: View {
     @State private var savePhase: PhoneChoreSavePhase?
     @State private var error: String?
     @State private var partialFailure: ChoreRecurringEditPartialFailure?
+    @State private var confirmsDelete = false
+    @State private var failedDeleteCalendarEventIDs: [UUID] = []
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @FocusState private var focusedField: EditChoreField?
     private let service = PhoneChoreEditService()
     private let weekdays = Array(0...6)
 
@@ -26,54 +30,59 @@ struct EditChoreView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 14) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Edit Chore").font(HomeyTypography.hero)
-                        Text("Changes apply to this chore and its future occurrences.")
-                            .font(.subheadline).foregroundStyle(HomeyColors.secondaryText)
+                        Text("Edit Chore").font(.system(size: 24, weight: .bold, design: .rounded))
+                        Text("Update the details for this chore.")
+                            .font(.system(size: 13)).foregroundStyle(HomeyColors.secondaryText)
                     }
                     if !initial.canSafelyEdit {
                         HomeyErrorView(message: initial.legacyExplanation)
                     } else {
-                        field("Chore Title *") { TextField("Chore title", text: $draft.title) }
-                        field("Description") { TextField("Description", text: $draft.description, axis: .vertical).lineLimit(2...5) }
-                        field("Instructions") { TextField("Instructions", text: $draft.instructions, axis: .vertical).lineLimit(2...6) }
-                        field("Room") {
+                        editorCard {
+                            editorLabel("Title")
+                            TextField("Chore title", text: $draft.title)
+                                .focused($focusedField, equals: .title).editorInput()
+                        }
+                        iconEditorCard(symbol: "house.fill", tint: .indigo) {
+                            editorLabel("Room")
                             Picker("Room", selection: $draft.roomID) {
                                 ForEach(draft.rooms) { Text($0.displayName).tag(Optional($0.id)) }
-                            }.labelsHidden().pickerStyle(.menu)
+                            }.labelsHidden().pickerStyle(.menu).frame(maxWidth: .infinity, alignment: .leading).editorInput()
                         }
-                        field("Assigned Person *") {
-                            ChoreSingleAssigneePicker(options: draft.members, selection: $selectedAssignee)
+                        editorCard {
+                            editorLabel("Description")
+                            TextField("Description", text: $draft.description, axis: .vertical)
+                                .lineLimit(2...6).focused($focusedField, equals: .description).editorInput(minHeight: 66)
                         }
-                        field("Points") { Stepper("\(draft.pointsValue) points", value: $draft.pointsValue, in: 0...1000, step: 1) }
-                        Toggle("Requires Approval", isOn: $draft.requiresApproval)
-                        Toggle("Requires Photo", isOn: $draft.requiresPhoto)
-                        Toggle("All Day", isOn: $draft.isAllDay)
-                        if !draft.isAllDay { dueTimePicker }
+                        assigneeAndPoints
                         recurrenceSection
-                        field("Start Date") { DatePicker("Start Date", selection: $draft.startDate, displayedComponents: .date).labelsHidden() }
-                        endSection
-                        field("Completion") { Text(draft.completionMode.displayName).foregroundStyle(HomeyColors.secondaryText) }
-                        field("Duration") { Stepper("\(draft.durationMinutes) minutes", value: $draft.durationMinutes, in: 5...1440, step: 5) }
+                        approvalCard
+                        iconEditorCard(symbol: "doc.text.fill", tint: .blue) {
+                            editorLabel("Instructions")
+                            TextField("Instructions", text: $draft.instructions, axis: .vertical)
+                                .lineLimit(2...7).focused($focusedField, equals: .instructions).editorInput(minHeight: 66)
+                        }
+                        deleteButton
                     }
                     if let error { HomeyErrorView(message: error) }
                 }.padding(20).frame(maxWidth: 620).frame(maxWidth: .infinity)
                     .disabled(saving || !initial.canSafelyEdit)
             }
             .background(HomeyColors.background.ignoresSafeArea())
-            .safeAreaInset(edge: .bottom) {
-                HStack(spacing: 12) {
-                    Button("Cancel") { dismiss() }.buttonStyle(.bordered).disabled(saving)
-                    Button { Task { await save() } } label: {
-                        if saving { ProgressView().frame(maxWidth: .infinity) }
-                        else { Text("Save Changes").frame(maxWidth: .infinity) }
-                    }.buttonStyle(HomeyButtonStyle()).disabled(!valid || saving || !initial.canSafelyEdit)
-                }.padding().background(.regularMaterial)
-            }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { dismiss() } label: { Label("Chore", systemImage: "chevron.left").font(.headline) }.disabled(saving)
+                    Button { dismiss() } label: { Label("Chores", systemImage: "chevron.left").font(.headline) }.disabled(saving)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { Task { await save() } } label: {
+                        Text("Save").font(.system(size: 14, weight: .semibold)).padding(.horizontal, 15).frame(height: 44)
+                    }.buttonStyle(.plain).foregroundStyle(.white)
+                        .background(HomeyColors.primary, in: Capsule())
+                        .disabled(!valid || saving || !initial.canSafelyEdit)
+                }
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer(); Button("Done") { focusedField = nil }
                 }
             }
             .interactiveDismissDisabled(saving)
@@ -111,16 +120,73 @@ struct EditChoreView: View {
             .padding(16).homeyCard()
     }
 
-    private var dueTimePicker: some View {
-        field("Due Time") {
-            DatePicker("Due Time", selection: Binding(get: { service.time(from: draft.dueTime) }, set: { draft.dueTime = service.timeString($0) }), displayedComponents: .hourAndMinute).labelsHidden()
+    private func editorLabel(_ title: String) -> some View {
+        Text(title).font(.system(size: 12, weight: .semibold)).foregroundStyle(HomeyColors.text)
+    }
+
+    private func editorCard<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 7) { content() }
+            .padding(16).frame(maxWidth: .infinity, alignment: .leading)
+            .background(.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func iconEditorCard<Content: View>(symbol: String, tint: Color, @ViewBuilder content: () -> Content) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            EditChoreIcon(symbol: symbol, tint: tint)
+            VStack(alignment: .leading, spacing: 7) { content() }
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(16).background(.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var assigneeAndPoints: some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 10) { assigneeCard; pointsCard }
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .top, spacing: 10) {
+                        assigneeCard.frame(minWidth: 150)
+                        pointsCard.frame(minWidth: 130)
+                    }
+                    VStack(spacing: 10) { assigneeCard; pointsCard }
+                }
+            }
         }
     }
 
+    private var assigneeCard: some View {
+        iconEditorCard(symbol: "person.fill", tint: .purple) {
+            editorLabel("Assigned To")
+            Picker("Assigned To", selection: $selectedAssignee) {
+                Text("Select").tag(Optional<UUID>.none)
+                ForEach(draft.members) { Text($0.name).tag(Optional($0.id)) }
+            }.labelsHidden().pickerStyle(.menu).frame(maxWidth: .infinity, alignment: .leading).editorInput()
+        }
+    }
+
+    private var pointsCard: some View {
+        iconEditorCard(symbol: "dollarsign.circle.fill", tint: .green) {
+            editorLabel("Points")
+            Stepper("\(draft.pointsValue)", value: $draft.pointsValue, in: 0...1000, step: 1)
+                .font(.system(size: 14)).editorInput()
+        }
+    }
+
+    private var dueTimePicker: some View {
+        DatePicker("Due Time", selection: Binding(get: { service.time(from: draft.dueTime) }, set: { draft.dueTime = service.timeString($0) }), displayedComponents: .hourAndMinute)
+    }
+
     private var recurrenceSection: some View {
-        field("Recurrence") {
-            Picker("Frequency", selection: $draft.frequency) { ForEach(PhoneEditFrequency.allCases) { Text($0.displayName).tag($0) } }
-            if draft.frequency != .none { Stepper("Every \(draft.intervalValue)", value: $draft.intervalValue, in: 1...52) }
+        editorCard {
+            HStack(alignment: .top, spacing: 12) {
+                EditChoreIcon(symbol: "arrow.triangle.2.circlepath", tint: .pink)
+                VStack(alignment: .leading, spacing: 8) {
+                    editorLabel("Recurrence")
+                    Picker("Frequency", selection: $draft.frequency) { ForEach(PhoneEditFrequency.allCases) { Text($0.displayName).tag($0) } }
+                        .labelsHidden().pickerStyle(.menu).frame(maxWidth: .infinity, alignment: .leading).editorInput()
+                    if draft.frequency != .none { Stepper("Every \(draft.intervalValue)", value: $draft.intervalValue, in: 1...52) }
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
             if draft.frequency == .weekly {
                 HStack { ForEach(weekdays, id: \.self) { day in
                     Button(Calendar.current.veryShortWeekdaySymbols[day]) {
@@ -134,14 +200,57 @@ struct EditChoreView: View {
             if draft.frequency == .yearly {
                 Stepper("Month \(draft.monthOfYear ?? 1)", value: Binding(get: { draft.monthOfYear ?? 1 }, set: { draft.monthOfYear = $0 }), in: 1...12)
             }
+            Divider().padding(.vertical, 4)
+            HStack(alignment: .top, spacing: 12) {
+                EditChoreIcon(symbol: "infinity", tint: .indigo)
+                VStack(alignment: .leading, spacing: 8) {
+                    editorLabel("Ends")
+                    Picker("Chore Ends", selection: $draft.endType) { ForEach(PhoneEditEndType.allCases) { Text($0.displayName).tag($0) } }
+                        .labelsHidden().pickerStyle(.menu).frame(maxWidth: .infinity, alignment: .leading).editorInput()
+                }.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if draft.endType == .onDate { DatePicker("End Date", selection: Binding(get: { draft.endsOn ?? draft.startDate }, set: { draft.endsOn = $0 }), displayedComponents: .date) }
+            if draft.endType == .afterCount { Stepper("\(draft.occurrenceCount ?? 1) occurrences", value: Binding(get: { draft.occurrenceCount ?? 1 }, set: { draft.occurrenceCount = $0 }), in: 1...999) }
+            Divider().padding(.vertical, 4)
+            DatePicker("Start Date", selection: $draft.startDate, displayedComponents: .date)
+            Toggle("All Day", isOn: $draft.isAllDay)
+            if !draft.isAllDay { dueTimePicker }
         }
     }
 
-    private var endSection: some View {
-        field("Chore Ends") {
-            Picker("Chore Ends", selection: $draft.endType) { ForEach(PhoneEditEndType.allCases) { Text($0.displayName).tag($0) } }.pickerStyle(.segmented)
-            if draft.endType == .onDate { DatePicker("End Date", selection: Binding(get: { draft.endsOn ?? draft.startDate }, set: { draft.endsOn = $0 }), displayedComponents: .date) }
-            if draft.endType == .afterCount { Stepper("\(draft.occurrenceCount ?? 1) occurrences", value: Binding(get: { draft.occurrenceCount ?? 1 }, set: { draft.occurrenceCount = $0 }), in: 1...999) }
+    private var approvalCard: some View {
+        iconEditorCard(symbol: "checkmark.circle", tint: .purple) {
+            Toggle(isOn: $draft.requiresApproval) {
+                VStack(alignment: .leading, spacing: 4) {
+                    editorLabel("Requires Approval")
+                    Text("Chore must be approved before it is marked complete.")
+                        .font(.system(size: 12)).foregroundStyle(HomeyColors.secondaryText)
+                }
+            }
+        }
+    }
+
+    private var deleteButton: some View {
+        Button {
+            #if DEBUG
+            print("[Homey] CHORE DELETE: button tapped template_id=\(draft.id.uuidString)")
+            #endif
+            confirmsDelete = true
+            #if DEBUG
+            print("[Homey] CHORE DELETE: confirmation presented template_id=\(draft.id.uuidString)")
+            #endif
+        } label: {
+            Label(failedDeleteCalendarEventIDs.isEmpty ? "Delete Chore" : "Retry Calendar Cleanup", systemImage: "trash")
+                .font(.system(size: 14, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 15)
+        }
+        .buttonStyle(.plain).foregroundStyle(HomeyColors.danger)
+        .background(HomeyColors.danger.opacity(0.09), in: RoundedRectangle(cornerRadius: 20))
+        .disabled(saving || !(home.role == .owner || home.role == .admin))
+        .confirmationDialog("Delete Chore?", isPresented: $confirmsDelete, titleVisibility: .visible) {
+            Button("Delete Chore", role: .destructive) { Task { await deleteChore() } }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Delete this chore and its unstarted occurrences? Started and completed chore history, earned points, and rewards will be preserved.")
         }
     }
 
@@ -170,16 +279,75 @@ struct EditChoreView: View {
         }
         savePhase = nil
     }
+
+    private func deleteChore() async {
+        guard savePhase == nil, appSession.activeHome?.id == home.id else { return }
+        savePhase = .deleting; error = nil
+        #if DEBUG
+        print("[Homey] CHORE DELETE: confirmed template_id=\(draft.id.uuidString)")
+        print("[Homey] CHORE DELETE: backend deletion started template_id=\(draft.id.uuidString)")
+        #endif
+        do {
+            try await service.retire(
+                draft: draft,
+                retryCalendarEventIDs: failedDeleteCalendarEventIDs
+            ) { phase in savePhase = phase }
+            failedDeleteCalendarEventIDs = []
+            #if DEBUG
+            print("[Homey] CHORE DELETE: backend deletion completed template_id=\(draft.id.uuidString)")
+            print("[Homey] CHORE DELETE: calendar cleanup completed template_id=\(draft.id.uuidString)")
+            print("[Homey] CHORE DELETE: chores refreshed template_id=\(draft.id.uuidString)")
+            #endif
+            savePhase = .refreshing
+            onSaved()
+            #if DEBUG
+            print("[Homey] CHORE DELETE: navigation completed template_id=\(draft.id.uuidString)")
+            #endif
+        } catch let partial as PhoneChoreDeletePartialFailure {
+            failedDeleteCalendarEventIDs = partial.remainingCalendarEventIDs
+            self.error = partial.localizedDescription
+            #if DEBUG
+            print("[Homey] CHORE DELETE: calendar cleanup failed template_id=\(draft.id.uuidString) remaining=\(partial.remainingCalendarEventIDs.count)")
+            #endif
+        } catch {
+            self.error = "The chore could not be deleted. \(error.localizedDescription)"
+            #if DEBUG
+            print("[Homey] CHORE DELETE: backend deletion failed template_id=\(draft.id.uuidString) error=\(String(reflecting: error))")
+            #endif
+        }
+        savePhase = nil
+    }
+}
+
+private enum EditChoreField { case title, description, instructions }
+
+private struct EditChoreIcon: View {
+    let symbol: String
+    let tint: Color
+    var body: some View {
+        Image(systemName: symbol).font(.system(size: 17, weight: .semibold)).foregroundStyle(tint)
+            .frame(width: 40, height: 40).background(tint.opacity(0.12), in: Circle())
+            .accessibilityHidden(true)
+    }
+}
+
+private extension View {
+    func editorInput(minHeight: CGFloat = 44) -> some View {
+        padding(.horizontal, 12).frame(minHeight: minHeight, alignment: .leading)
+            .font(.system(size: 14)).background(HomeyColors.field, in: RoundedRectangle(cornerRadius: 12))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(HomeyColors.border.opacity(0.65), lineWidth: 1))
+    }
 }
 
 enum PhoneChoreSavePhase {
-    case saving, futureChores, calendar, refreshing
+    case saving, futureChores, calendar, refreshing, deleting
     var message: String {
         switch self {
         case .saving: "Saving Chore..."
         case .futureChores: "Updating future chores..."
         case .calendar: "Updating calendar..."
         case .refreshing: "Refreshing chores..."
+        case .deleting: "Deleting chore..."
         }
     }
 }
@@ -193,6 +361,38 @@ final class PhoneChoreEditService {
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return value.flatMap(f.date) ?? Date()
     }
     func timeString(_ date: Date) -> String { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f.string(from: date) }
+
+    func retire(
+        draft: PhoneChoreDetail,
+        retryCalendarEventIDs: [UUID],
+        progress: @escaping (PhoneChoreSavePhase) -> Void
+    ) async throws {
+        _ = try await client.auth.session
+        let calendarEventIDs: [UUID]
+        if retryCalendarEventIDs.isEmpty {
+            progress(.deleting)
+            let rows: [PhoneRetiredOccurrenceRow] = try await client.rpc(
+                "retire_chore_template",
+                params: PhoneRetireChoreParameters(templateID: draft.id, effectiveFrom: Date())
+            ).execute().value
+            calendarEventIDs = rows.compactMap(\.calendarEventID)
+        } else {
+            calendarEventIDs = retryCalendarEventIDs
+        }
+        progress(.calendar)
+        let calendarService = ChoreCalendarService()
+        var failedEventIDs: [UUID] = []
+        for eventID in calendarEventIDs {
+            do { try await calendarService.deleteEvent(eventId: eventID) }
+            catch { failedEventIDs.append(eventID) }
+        }
+        if !failedEventIDs.isEmpty {
+            NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: nil)
+            throw PhoneChoreDeletePartialFailure(remainingCalendarEventIDs: failedEventIDs)
+        }
+        progress(.refreshing)
+        postRefresh()
+    }
 
     func save(
         draft: PhoneChoreDetail,
@@ -268,6 +468,35 @@ final class PhoneChoreEditService {
         #if DEBUG
         print("[Homey] CHORE EDIT: \(stage) \(state) template_id=\(draft.id.uuidString) occurrence_id=\(draft.occurrenceID.uuidString)")
         #endif
+    }
+}
+
+private struct PhoneChoreDeletePartialFailure: LocalizedError {
+    let remainingCalendarEventIDs: [UUID]
+    var errorDescription: String? {
+        "The chore was deleted, but some future calendar events could not be removed. Tap Retry Calendar Cleanup to finish."
+    }
+}
+
+private struct PhoneRetireChoreParameters: Encodable {
+    let templateID: UUID
+    let effectiveFrom: String
+    init(templateID: UUID, effectiveFrom: Date) {
+        self.templateID = templateID
+        self.effectiveFrom = ChoreCalendarDateFormatting.timestamp(effectiveFrom)
+    }
+    enum CodingKeys: String, CodingKey {
+        case templateID = "requested_template_id"
+        case effectiveFrom = "effective_from"
+    }
+}
+
+private struct PhoneRetiredOccurrenceRow: Decodable {
+    let occurrenceID: UUID
+    let calendarEventID: UUID?
+    enum CodingKeys: String, CodingKey {
+        case occurrenceID = "occurrence_id"
+        case calendarEventID = "calendar_event_id"
     }
 }
 
