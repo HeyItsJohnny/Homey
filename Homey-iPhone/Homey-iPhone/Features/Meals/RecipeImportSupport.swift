@@ -117,7 +117,6 @@ enum WebsiteIngredientParser {
             isOptional: isOptional,
             safety: safety
         )
-        log(result)
         return result
     }
 
@@ -197,19 +196,6 @@ enum WebsiteIngredientParser {
         return (lower.hasPrefix("for serving:") || lower.hasPrefix("toppings:")) && value.contains(",")
     }
 
-    private static func log(_ value: ParsedWebsiteIngredient) {
-        #if DEBUG
-        print("[RecipeImportIngredient]")
-        print("raw=\"\(value.originalText)\"")
-        print("quantity=\(value.quantity.map { NSDecimalNumber(decimal: $0).stringValue } ?? "nil")")
-        print("unit=\(value.unit ?? "nil")")
-        print("ingredientName=\(value.ingredientName)")
-        print("preparation=\(value.preparation ?? "nil")")
-        print("isOptional=\(value.isOptional)")
-        print("classification=\(value.safety.rawValue)")
-        if value.usedFallback { print("[RecipeImportIngredient] fallback=true") }
-        #endif
-    }
 }
 
 extension RecipeDraft {

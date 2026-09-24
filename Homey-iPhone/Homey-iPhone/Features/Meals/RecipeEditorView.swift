@@ -47,7 +47,6 @@ struct RecipeEditorView: View {
         _savedPhotoPath = State(initialValue: existingMeal?.primaryPhotoPath)
         let startingDraft = initialDraft ?? RecipeDraft()
         _draft = State(initialValue: startingDraft)
-        RecipeImportDiagnostics.editor(startingDraft, editing: existingMeal != nil)
     }
 
     var body: some View {
@@ -104,7 +103,6 @@ struct RecipeEditorView: View {
             .alert("Recipe Save", isPresented: .init(get: { error != nil }, set: { if !$0 { error = nil } })) {
                 Button("OK", role: .cancel) {}
             } message: { Text(error ?? "") }
-            .onAppear { RecipeImportDiagnostics.editor(draft, editing: existingMeal != nil, mounted: true) }
             .task { photoURL = await service.signedImageURL(path: savedPhotoPath ?? draft.importImageURL) }
             .task(id: photoSelection) { await preparePhoto() }
         }
@@ -327,13 +325,7 @@ struct RecipeEditorView: View {
         guard !saving else { return }
         saving = true
         error = nil
-        #if DEBUG
-        print("[RecipeImageFlow] source=\(draft.imported == nil ? "manual" : "website")")
-        print("[RecipeImageFlow] localImagePresent=\(selectedPhotoData != nil)")
-        print("[RecipeImageFlow] remoteImageURL=\(RecipeImageReference.safeLog(draft.importImageURL))")
-        #endif
         var stage = "validation"
-        RecipeSaveDiagnostics.log("Starting save title=\(draft.name) addToHome=true contributeToCommunity=\(draft.shareWithCommunity) imported=\(draft.imported != nil) homeID=\(home.id)")
         defer { saving = false }
         do {
             try service.validateSave(draft, homeId: home.id)
@@ -341,10 +333,8 @@ struct RecipeEditorView: View {
             try await service.requireSaveSession()
             if !destinationsComplete {
                 stage = "homeRecipe"
-                RecipeSaveDiagnostics.log("Saving Home recipe…")
                 let homeID = try await service.save(draft, homeId: home.id, mealId: savedHomeID, photoPath: savedPhotoPath)
                 savedHomeID = homeID
-                RecipeSaveDiagnostics.log("Home recipe succeeded: \(homeID)")
 
                 if let selectedPhotoData {
                     if !uploadedSelectedPhoto {
@@ -357,44 +347,28 @@ struct RecipeEditorView: View {
                 } else if let imageURL = draft.importImageURL, !imageURL.isEmpty {
                     if savedPhotoPath == nil {
                         stage = "imageUpload"
-                        RecipeSaveDiagnostics.log("Downloading/uploading imported image to meal-images…")
                         savedPhotoPath = try await service.importPhoto(imageURL, homeId: home.id, mealId: homeID)
-                        RecipeSaveDiagnostics.log("Image upload succeeded")
                     }
                     stage = "imageAttachment"
                     _ = try await service.save(draft, homeId: home.id, mealId: homeID, photoPath: savedPhotoPath)
-                    RecipeSaveDiagnostics.log("Image attachment succeeded")
-                } else {
-                    RecipeSaveDiagnostics.log("Image upload skipped: no selected/imported photo")
                 }
-
-                #if DEBUG
-                print("[RecipeImageFlow] uploadedPath=\(savedPhotoPath ?? "nil")")
-                print("[RecipeImageFlow] homeImagePayload=\(savedPhotoPath ?? "nil")")
-                print("[RecipeImageFlow] communityImagePayload=\(RecipeImageReference.safeLog(SaveCommunityParams(draft: draft).imageURL))")
-                #endif
 
                 if existingMeal == nil && draft.shareWithCommunity && !communityContributionComplete {
                     stage = "communityRecipe"
-                    RecipeSaveDiagnostics.log("Saving Community recipe…")
-                    let contribution = try await service.share(draft, homeRecipeID: homeID, homePhotoPath: savedPhotoPath)
+                    let contribution = try await service.share(draft, homePhotoPath: savedPhotoPath)
                     switch contribution {
                     case .created(let id):
                         savedCommunityID = id
-                        RecipeSaveDiagnostics.log("Community recipe succeeded: \(id.uuidString)")
                     case .alreadyExists(let id):
                         savedCommunityID = id
-                        RecipeSaveDiagnostics.log("Community recipe already exists; continuing successfully")
                     }
                     communityContributionComplete = true
                 }
                 destinationsComplete = true
             }
             stage = "refresh"
-            RecipeSaveDiagnostics.log("Refreshing Home Recipes and Explore; no favorite operations requested")
             try await model.refreshRecipesAfterSave(home: home)
             if existingMeal != nil { await model.refreshPlan(home: home) }
-            RecipeSaveDiagnostics.log("Finished successfully; dismissing editor")
             dismiss()
         } catch {
             RecipeSaveDiagnostics.failure(error, stage: stage)

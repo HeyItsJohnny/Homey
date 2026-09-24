@@ -51,15 +51,6 @@ import Combine
             let loadedPlan = try await service.plannedMeals(home: home, week: Self.week(containing: date, home: home))
             guard activeHomeID == home.id else { return }
             planned = loadedPlan
-            #if DEBUG
-            let calendar = Self.calendar(home)
-            let selectedDayMeals = planned.filter { calendar.isDate($0.startsAt, inSameDayAs: date) }
-            let dateText = date.formatted(.iso8601.year().month().day())
-            print("[MealPlan] Loaded date=\(dateText) total=\(selectedDayMeals.count)")
-            for type in [MealType.breakfast, .lunch, .dinner] {
-                print("[MealPlan] \(type.rawValue)=\(selectedDayMeals.count { $0.mealType == type })")
-            }
-            #endif
         } catch {
             guard activeHomeID == home.id else { return }
             errorMessage = error.localizedDescription
@@ -69,12 +60,6 @@ import Combine
     @discardableResult func schedule(_ meal: HomeyMeal,type:MealType,day:Date,home:HomeSummary) async -> Bool {
         do {
             try await service.schedule(meal,type:type,day:day,home:home)
-            #if DEBUG
-            print("[MealPlan] Added recipe=\(meal.id.uuidString)")
-            print("[MealPlan] mealType=\(type.rawValue)")
-            print("[MealPlan] date=\(day.formatted(.iso8601.year().month().day()))")
-            print("[MealPlan] refreshing day")
-            #endif
             await refreshPlan(home:home, containing:day)
             return true
         } catch {
@@ -108,13 +93,6 @@ import Combine
         let selectedDay = calendar.startOfDay(for: date)
         let visibleTypes: [MealType] = [.breakfast, .lunch, .dinner]
 
-        #if DEBUG
-        let components = calendar.dateComponents([.year, .month, .day], from: selectedDay)
-        let dateText = String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
-        print("[AutoPlan] selectedDate=\(dateText)")
-        print("[AutoPlan] homeID=\(home.id.uuidString)")
-        #endif
-
         do {
             planned = try await service.plannedMeals(home: home, week: Self.week(containing: selectedDay, home: home))
         } catch {
@@ -126,15 +104,6 @@ import Combine
         let missingTypes = visibleTypes.filter { type in
             !dayMeals.contains { $0.mealType == type }
         }
-
-        #if DEBUG
-        for type in visibleTypes {
-            let count = dayMeals.count { $0.mealType == type }
-            print("[AutoPlan] \(type.rawValue)Count=\(count)")
-            if count > 0 { print("[AutoPlan] \(type.title) already planned - skipping") }
-        }
-        print("[AutoPlan] missingTypes=\(missingTypes.map(\.rawValue).joined(separator: ","))")
-        #endif
 
         guard !missingTypes.isEmpty else {
             errorMessage = "All meals are planned for this day."
@@ -152,9 +121,6 @@ import Combine
 
         for type in missingTypes {
             let eligible = homeRecipes.filter { $0.mealTypes.isEmpty || $0.mealTypes.contains(type) }
-            #if DEBUG
-            print("[AutoPlan] \(type.title) eligibleRecipes=\(eligible.count)")
-            #endif
             guard !eligible.isEmpty else {
                 unavailableTypes.append(type)
                 continue
@@ -162,9 +128,6 @@ import Combine
 
             let unused = eligible.filter { !usedRecipeIDs.contains($0.id) }
             guard let selected = (unused.isEmpty ? eligible : unused).randomElement() else { continue }
-            #if DEBUG
-            print("[AutoPlan] \(type.title) selected=\(selected.id.uuidString)")
-            #endif
             do {
                 try await service.schedule(selected, type: type, day: selectedDay, home: home)
                 usedRecipeIDs.insert(selected.id)
@@ -179,9 +142,6 @@ import Combine
         }
 
         await refreshPlan(home: home, containing: selectedDay)
-        #if DEBUG
-        print("[AutoPlan] Complete created=\(created) skipped=\(visibleTypes.count - missingTypes.count + unavailableTypes.count)")
-        #endif
 
         if failed > 0 {
             errorMessage = created > 0
@@ -258,107 +218,28 @@ import Combine
 
     func assignLeftovers(
         home: HomeSummary,
-        sourceDate: Date,
+        sourceCalendarEventIDs: [UUID],
         destinationDate: Date,
-        mealTypes: Set<MealType>,
-        replaceDestination: Bool
-    ) async throws {
-        let calendar = Self.calendar(home)
-        let sourceDay = calendar.startOfDay(for: sourceDate)
-        let destinationDay = calendar.startOfDay(for: destinationDate)
-        guard destinationDay > sourceDay else { throw LeftoversError.invalidDestination }
-
-        let sourceMeals = try await plannedMealsForDay(home: home, date: sourceDay)
-            .filter { mealTypes.contains($0.mealType) }
-        guard !sourceMeals.isEmpty else { throw LeftoversError.noSelectedMeals }
-        let destinationMeals = try await plannedMealsForDay(home: home, date: destinationDay)
-            .filter { mealTypes.contains($0.mealType) }
-
-        #if DEBUG
-        print("[Leftovers] sourceDate=\(Self.logDate(sourceDay, calendar: calendar))")
-        print("[Leftovers] destinationDate=\(Self.logDate(destinationDay, calendar: calendar))")
-        print("[Leftovers] mode=\(replaceDestination ? "replace" : "add")")
-        for type in [MealType.breakfast, .lunch, .dinner] {
-            print("[Leftovers] \(type.rawValue)Selected=\(mealTypes.contains(type)) count=\(sourceMeals.count { $0.mealType == type })")
-            print("[Leftovers] destination\(type.title)Existing=\(destinationMeals.count { $0.mealType == type })")
+        conflictMode: LeftoverConflictMode,
+        idempotencyKey: UUID
+    ) async throws -> AssignLeftoversRPCResponse {
+        guard activeHomeID == home.id else {
+            throw MealsError.message("The active Home changed. Reopen Leftovers and try again.")
         }
-        #endif
-
-        var createdCount = 0
-        do {
-            // Leftovers are new planned meals. Keep every source event on its
-            // original day and create corresponding destination events first.
-            for item in sourceMeals {
-                let originalEventID = item.isLeftover
-                    ? (item.leftoverFromCalendarEventID ?? item.eventId)
-                    : item.eventId
-                #if DEBUG
-                print("[Leftovers] copying sourceEntry=\(item.eventId.uuidString)")
-                print("[Leftovers] sourceIsLeftover=\(item.isLeftover)")
-                print("[Leftovers] originalEventID=\(originalEventID.uuidString)")
-                #endif
-                let destinationEventID = try await service.schedule(
-                    item.meal,
-                    type: item.mealType,
-                    day: destinationDay,
-                    home: home,
-                    isLeftover: true,
-                    leftoverFromCalendarEventID: originalEventID
-                )
-                #if DEBUG
-                print("[Leftovers] sourceEventID=\(item.eventId.uuidString)")
-                print("[Leftovers] destinationEventID=\(destinationEventID.uuidString)")
-                print("[Leftovers] mealID=\(item.meal.id.uuidString)")
-                print("[Leftovers] isLeftover=true")
-                print("[Leftovers] leftoverFromEventID=\(originalEventID.uuidString)")
-                #endif
-                createdCount += 1
-            }
-        } catch {
-            await refreshPlan(home: home, containing: sourceDay)
-            throw createdCount > 0 ? LeftoversError.partialAssignment : error
+        guard !sourceCalendarEventIDs.isEmpty else {
+            throw MealsError.message("Choose at least one meal.")
         }
-
-        if replaceDestination {
-            #if DEBUG
-            for type in mealTypes {
-                print("[Leftovers] replacing destination mealType=\(type.rawValue) count=\(destinationMeals.count { $0.mealType == type })")
-            }
-            #endif
-            do {
-                for item in destinationMeals { try await service.removePlanned(item.eventId) }
-            } catch {
-                await refreshPlan(home: home, containing: sourceDay)
-                throw LeftoversError.partialReplace
-            }
-        }
-
-        await refreshPlan(home: home, containing: sourceDay)
-        #if DEBUG
-        print("[Leftovers] completed")
-        #endif
-    }
-
-    private static func logDate(_ date: Date, calendar: Calendar) -> String {
-        let components = calendar.dateComponents([.year, .month, .day], from: date)
-        return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+        return try await service.assignLeftovers(
+            home: home,
+            sourceCalendarEventIDs: sourceCalendarEventIDs,
+            destinationDate: destinationDate,
+            conflictMode: conflictMode,
+            idempotencyKey: idempotencyKey
+        )
     }
     func autoPlan(home: HomeSummary, types: Set<MealType>, favoritesOnly: Bool) async { let calendar=Self.calendar(home); let week=Self.week(containing:Date(),home:home); let candidates=(favoritesOnly ? homeRecipes.filter{favoriteIDs.contains($0.id)}:homeRecipes); guard !candidates.isEmpty else { errorMessage="Add recipes to this Home before auto-planning."; return }; var index=0; for offset in 0..<7 { guard let day=calendar.date(byAdding:.day,value:offset,to:week.start), day >= calendar.startOfDay(for:Date()) else { continue }; for type in types { let occupied=planned.contains{calendar.isDate($0.startsAt,inSameDayAs:day) && $0.mealType == type}; guard !occupied else {continue}; let preferred=candidates.filter{$0.mealTypes.isEmpty || $0.mealTypes.contains(type)}; let pool=preferred.isEmpty ? candidates:preferred; do { try await service.schedule(pool[index % pool.count],type:type,day:day,home:home); index += 1 } catch { errorMessage=error.localizedDescription; await refreshPlan(home:home); return } }; await refreshPlan(home:home) } }
     static func calendar(_ home:HomeSummary)->Calendar { var c=Calendar(identifier:.gregorian); c.timeZone=home.timezone.flatMap(TimeZone.init(identifier:)) ?? .current; c.firstWeekday=home.weekStartsOn == 2 ? 2:1; return c }
     static func week(containing date:Date,home:HomeSummary)->DateInterval { let c=calendar(home); return c.dateInterval(of:.weekOfYear,for:date) ?? .init(start:c.startOfDay(for:date),duration:604800) }
-}
-
-enum LeftoversError: LocalizedError {
-    case invalidDestination, noSelectedMeals, partialAssignment, partialReplace
-
-    var errorDescription: String? {
-        switch self {
-        case .invalidDestination: "Choose a leftovers day after the current meal-plan date."
-        case .noSelectedMeals: "Choose at least one meal that exists on this day."
-        case .partialAssignment: "Some leftovers were assigned, but Homey couldn't finish the entire selection."
-        case .partialReplace: "The leftovers were assigned, but Homey couldn't remove every replaced meal."
-        }
-    }
 }
 
 struct MealsRootView: View {
@@ -477,7 +358,9 @@ struct MealsRootView: View {
             }
             .sheet(isPresented: $showLeftovers) {
                 if let home = session.activeHome {
-                    AssignLeftoversView(home: home, sourceDate: selectedMealPlanDate, model: model)
+                    AssignLeftoversView(home: home, sourceDate: selectedMealPlanDate, model: model) { destinationDate in
+                        selectedMealPlanDate = destinationDate
+                    }
                 }
             }
             .task(id: session.activeHome?.id) {

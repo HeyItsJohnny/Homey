@@ -233,13 +233,7 @@ struct EditChoreView: View {
 
     private var deleteButton: some View {
         Button {
-            #if DEBUG
-            print("[Homey] CHORE DELETE: button tapped template_id=\(draft.id.uuidString)")
-            #endif
             confirmsDelete = true
-            #if DEBUG
-            print("[Homey] CHORE DELETE: confirmation presented template_id=\(draft.id.uuidString)")
-            #endif
         } label: {
             Label(failedDeleteCalendarEventIDs.isEmpty ? "Delete Chore" : "Retry Calendar Cleanup", systemImage: "trash")
                 .font(.system(size: 14, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 15)
@@ -299,26 +293,14 @@ struct EditChoreView: View {
     private func deleteChore() async {
         guard savePhase == nil, appSession.activeHome?.id == home.id else { return }
         savePhase = .deleting; error = nil
-        #if DEBUG
-        print("[Homey] CHORE DELETE: confirmed template_id=\(draft.id.uuidString)")
-        print("[Homey] CHORE DELETE: backend deletion started template_id=\(draft.id.uuidString)")
-        #endif
         do {
             try await service.retire(
                 draft: draft,
                 retryCalendarEventIDs: failedDeleteCalendarEventIDs
             ) { phase in savePhase = phase }
             failedDeleteCalendarEventIDs = []
-            #if DEBUG
-            print("[Homey] CHORE DELETE: backend deletion completed template_id=\(draft.id.uuidString)")
-            print("[Homey] CHORE DELETE: calendar cleanup completed template_id=\(draft.id.uuidString)")
-            print("[Homey] CHORE DELETE: chores refreshed template_id=\(draft.id.uuidString)")
-            #endif
             savePhase = .refreshing
             await onSaved()
-            #if DEBUG
-            print("[Homey] CHORE DELETE: navigation completed template_id=\(draft.id.uuidString)")
-            #endif
         } catch let partial as PhoneChoreDeletePartialFailure {
             failedDeleteCalendarEventIDs = partial.remainingCalendarEventIDs
             self.error = partial.localizedDescription
@@ -445,21 +427,19 @@ final class PhoneChoreEditService {
                 progress: { progress(Self.phase($0)) })
             if snapshotChanged { try await refreshUntouchedOccurrences(draft, progress: progress) }
         } else if !scheduleChanged {
-            progress(.saving); log("save_chore_template", "started", draft)
+            progress(.saving)
             _ = try await saveTemplate(draft)
-            log("save_chore_template", "completed", draft)
             try await refreshUntouchedOccurrences(draft, progress: progress)
             postRefresh(includeCalendar: false)
         } else {
             _ = try await coordinator.replaceRecurringSchedule(homeId: draft.homeID,
                 effectiveFrom: effectiveDate(timezone: draft.timezone), generateThrough: through, timezone: draft.timezone,
-                progress: { stage in progress(Self.phase(stage)); self.log(stage, draft) }) {
+                progress: { stage in progress(Self.phase(stage)) }) {
                     try await self.saveTemplate(draft)
                 }
             if snapshotChanged { try await refreshUntouchedOccurrences(draft, progress: progress) }
         }
         progress(.refreshing)
-        log("navigation", "dismissing edit and details", draft)
     }
 
     private func hasSnapshotChanges(_ lhs: PhoneChoreDetail, _ rhs: PhoneChoreDetail) -> Bool {
@@ -497,13 +477,11 @@ final class PhoneChoreEditService {
         progress: @escaping (PhoneChoreSavePhase) -> Void
     ) async throws {
         progress(.futureChores)
-        log("untouched occurrence refresh", "started", draft)
         do {
             _ = try await coordinator.refreshAssignmentsOnly(
                 templateId: draft.id,
                 effectiveFrom: effectiveDate(timezone: draft.timezone)
             )
-            log("untouched occurrence refresh", "completed", draft)
         } catch {
             throw PhoneChoreSnapshotRefreshPartialFailure(
                 templateID: draft.id,
@@ -556,14 +534,6 @@ final class PhoneChoreEditService {
         case .updatingCalendar: .calendar
         case .refreshing: .refreshing
         }
-    }
-    private func log(_ stage: ChoreRecurringEditProgress, _ draft: PhoneChoreDetail) {
-        log(String(describing: stage), "started", draft)
-    }
-    private func log(_ stage: String, _ state: String, _ draft: PhoneChoreDetail) {
-        #if DEBUG
-        print("[Homey] CHORE EDIT: \(stage) \(state) template_id=\(draft.id.uuidString) occurrence_id=\(draft.occurrenceID.uuidString)")
-        #endif
     }
 }
 

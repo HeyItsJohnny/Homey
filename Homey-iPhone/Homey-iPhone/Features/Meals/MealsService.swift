@@ -43,38 +43,13 @@ final class MealsService {
         return try await client.rpc("save_meal_recipe", params: params).execute().value
     }
 
-    func share(_ draft: RecipeDraft, homeRecipeID: UUID, homePhotoPath: String?) async throws -> CommunityContributionResult {
-        let session = try await client.auth.session
+    func share(_ draft: RecipeDraft, homePhotoPath: String?) async throws -> CommunityContributionResult {
         if let existingID = draft.imported?.globalRecipeId {
-            #if DEBUG
-            print("[CommunityRecipeSave] existing globalRecipeId=\(existingID.uuidString); skipping duplicate save")
-            #endif
             return .alreadyExists(existingID)
         }
         let params = SaveCommunityParams(draft: draft, imageURL: homePhotoPath ?? draft.importImageURL)
-        #if DEBUG
-        print("[CommunityRecipeSave]")
-        print("title=\(params.title)")
-        print("sourceURL=\(RecipeImportInput.safeLogURL(params.sourceURL ?? ""))")
-        print("sourceType=\(params.sourceType)")
-        print("ingredientCount=\(params.ingredients.count)")
-        print("photoPath/reference=\(RecipeImageReference.safeLog(params.imageURL))")
-        print("creatorID=\(session.user.id.uuidString)")
-        print("starting save")
-        print("[RecipeImageFlow] homeRecipeID=\(homeRecipeID.uuidString)")
-        print("[RecipeImageFlow] uploadedPath=\(homePhotoPath ?? "nil")")
-        print("[RecipeImageFlow] homeImageField=\(homePhotoPath ?? "nil")")
-        print("[RecipeImageFlow] globalImagePayload=\(RecipeImageReference.safeLog(params.imageURL))")
-        print("[CommunityRecipe] sourceType=\(params.sourceType)")
-        print("[CommunityRecipe] source=\(params.sourceName ?? "nil")")
-        print("[CommunityRecipe] sourceURL=\(params.sourceURL ?? "nil")")
-        print("[CommunityRecipe] imported=\(draft.imported != nil)")
-        #endif
         do {
             let createdID: UUID = try await client.rpc("save_global_recipe", params: params).execute().value
-            #if DEBUG
-            print("[CommunityRecipeSave] created")
-            #endif
             return .created(createdID)
         } catch {
             if let error = error as? PostgrestError,
@@ -83,9 +58,6 @@ final class MealsService {
                    message: error.message,
                    details: error.detail
                ) {
-                #if DEBUG
-                print("[CommunityRecipeSave] alreadyExists - continuing as success")
-                #endif
                 return .alreadyExists(nil)
             }
             #if DEBUG
@@ -148,13 +120,7 @@ final class MealsService {
     private func copyCommunityRecipeToHome(_ recipe: CommunityRecipe, homeId: UUID) async throws -> UUID {
         let homeMealID: UUID = try await client.rpc("add_global_meal_to_home", params: AddGlobalParams(globalId: recipe.id, homeId: homeId)).execute().value
         try await normalizeCommunityIngredientsAfterCopy(recipe.ingredients, homeMealID: homeMealID)
-        #if DEBUG
-        print("[RecipeImageFlow] source=community")
-        print("[RecipeImageFlow] globalRecipeID=\(recipe.id.uuidString)")
-        print("[RecipeImageFlow] globalImageReference=\(RecipeImageReference.safeLog(recipe.imageURL))")
-        print("[RecipeImageFlow] homeRecipeID=\(homeMealID.uuidString)")
-        #endif
-        guard let sourceImage = recipe.imageURL?.trimmingCharacters(in: .whitespacesAndNewlines), !sourceImage.isEmpty else { return homeMealID }
+        guard recipe.imageURL?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else { return homeMealID }
         do {
             struct ImageRow: Decodable { let primary_photo_path: String? }
             let homeImage: ImageRow = try await client.from("meals").select("primary_photo_path")
@@ -162,10 +128,7 @@ final class MealsService {
                 .single().execute().value
             // The RPC deduplicates by origin_global_recipe_id. Keep an already
             // copied or edited Home image when Add to Home is retried.
-            if let existing = RecipeImageReference(homeImage.primary_photo_path) {
-                #if DEBUG
-                print("[RecipeImageFlow] homeImageReference=\(RecipeImageReference.safeLog(existing.value))")
-                #endif
+            if RecipeImageReference(homeImage.primary_photo_path) != nil {
                 return homeMealID
             }
             let path: String
@@ -185,10 +148,6 @@ final class MealsService {
                 .eq("id", value: homeMealID.uuidString).eq("home_id", value: homeId.uuidString)
                 .select("id").single().execute().value
             Self.pendingCommunityPhotoCopies[homeMealID] = nil
-            #if DEBUG
-            print("[RecipeImageFlow] uploadedPath=\(path)")
-            print("[RecipeImageFlow] homeImageReference=\(path)")
-            #endif
             return homeMealID
         } catch {
             RecipeSaveDiagnostics.failure(error, stage: "communityPhotoCopy")
@@ -230,9 +189,6 @@ final class MealsService {
             else { continue }
             let parsed = WebsiteIngredientParser.parse("\(quantity) \(community.ingredientName)")
             guard parsed.safety == .safe else {
-                #if DEBUG
-                print("[CommunityToHome] needsReview sortOrder=\(homeIngredient.sortOrder) value=\(quantity) \(community.ingredientName)")
-                #endif
                 continue
             }
             try await client.from("recipe_ingredients")
@@ -279,33 +235,19 @@ final class MealsService {
 
     func importURL(_ url: String, homeId: UUID) async throws -> RecipeImportResponse {
         guard let cleanURL = RecipeImportInput.validURL(url) else { throw MealsError.message("Enter a valid recipe URL.") }
-        #if DEBUG
-        print("[RecipeImport] Starting url=\(RecipeImportInput.safeLogURL(cleanURL))")
-        print("[RecipeImport] Calling importer")
-        #endif
         do {
-            let response: RecipeImportResponse = try await client.functions.invoke("import-recipe-url", options: FunctionInvokeOptions(body: RecipeImportRequest(homeId: homeId, url: cleanURL))) { data, response in
-                RecipeImportDiagnostics.response(data: data, status: response.statusCode, contentType: response.value(forHTTPHeaderField: "Content-Type"))
+            let response: RecipeImportResponse = try await client.functions.invoke("import-recipe-url", options: FunctionInvokeOptions(body: RecipeImportRequest(homeId: homeId, url: cleanURL))) { data, _ in
                 return try RecipeImportResponseDecoder.decode(data)
             }
-            RecipeImportDiagnostics.decoded(response)
-            #if DEBUG
-            print("[RecipeImport] Success")
-            print("[RecipeImport] title=\(response.recipe.title)")
-            print("[RecipeImport] imagePresent=\(response.recipe.imageUrl?.isEmpty == false)")
-            print("[RecipeImport] ingredients=\(response.recipe.ingredients.count)")
-            print("[RecipeImport] directions=\(response.recipe.steps.count)")
-            #endif
             return response
         } catch {
             var code = error is URLError ? "NETWORK_ERROR" : "IMPORT_REQUEST_ERROR"
             if let responseError = error as? RecipeImportResponseError { code = responseError.code }
             if let decodingError = error as? DecodingError {
                 code = "RESPONSE_DECODING_ERROR"
-                RecipeImportDiagnostics.decoding(decodingError)
+                RecipeSaveDiagnostics.failure(decodingError, stage: "recipeImportDecoding")
             }
             if let functionError = error as? FunctionsError, case .httpError(let status, let data) = functionError {
-                RecipeImportDiagnostics.response(data: data, status: status, contentType: nil)
                 code = RecipeImportInput.errorCode(data: data) ?? "HTTP_\(status)"
             }
             #if DEBUG
@@ -328,16 +270,8 @@ final class MealsService {
     }
 
     func uploadPhoto(_ data: Data, homeId: UUID, mealId: UUID) async throws -> String {
-        let userID = try await client.auth.session.user.id
         guard !data.isEmpty else { throw MealsError.message("The recipe photo is empty. Please choose another image.") }
         let path = RecipeImageStoragePath.make(homeId: homeId, mealId: mealId)
-        #if DEBUG
-        print("[RecipeImage] bucket=\(imageBucket)")
-        print("[RecipeImage] path=\(path)")
-        print("[RecipeImage] userID=\(userID.uuidString)")
-        print("[RecipeImage] homeID=\(homeId.uuidString)")
-        print("[RecipeImage] recipeID=\(mealId.uuidString)")
-        #endif
         try await client.storage.from(imageBucket).upload(path, data: data, options: FileOptions(cacheControl: "3600", contentType: "image/jpeg", upsert: true))
         return path
     }
@@ -359,29 +293,14 @@ final class MealsService {
         _ meal: HomeyMeal,
         type: MealType,
         day: Date,
-        home: HomeSummary,
-        isLeftover: Bool = false,
-        leftoverFromCalendarEventID: UUID? = nil
+        home: HomeSummary
     ) async throws -> UUID {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = home.timezone.flatMap(TimeZone.init(identifier:)) ?? .current
         let start = calendar.date(bySettingHour: type.hour, minute: 0, second: 0, of: day) ?? day
 
-        #if DEBUG
-        print("[MealPlan] Scheduling recipe")
-        print("[MealPlan] homeID=\(home.id.uuidString)")
-        print("[MealPlan] recipeID=\(meal.id.uuidString)")
-        print("[MealPlan] date=\(ISO8601DateFormatter().string(from: start))")
-        print("[MealPlan] mealType=\(type.rawValue)")
-        print("[MealPlan] Resolving Meal calendar category")
-        #endif
-
         let categoryId: UUID
         do {
             categoryId = try await resolveMealCategory(homeId: home.id)
-            #if DEBUG
-            print("[MealPlan] categoryID=\(categoryId.uuidString)")
-            print("[MealPlan] Saving meal plan")
-            #endif
         } catch {
             logSchedulingFailure(error, stage: "categoryLookup")
             throw error
@@ -401,20 +320,14 @@ final class MealsService {
                 mealId: meal.id,
                 mealType: type,
                 userId: user,
-                isLeftover: isLeftover,
-                leftoverFromCalendarEventID: leftoverFromCalendarEventID
+                isLeftover: false,
+                leftoverFromCalendarEventID: nil
             )).execute()
         } catch {
             logSchedulingFailure(error, stage: "mealInsert")
             try? await removePlanned(eventId)
             throw error
         }
-        #if DEBUG
-        print("[MealPlan] Success")
-        print("[MealPlan] eventID=\(eventId.uuidString)")
-        print("[MealPlan] mealID=\(meal.id.uuidString)")
-        print("[MealPlan] isLeftover=\(isLeftover)")
-        #endif
         return eventId
     }
 
@@ -450,8 +363,73 @@ final class MealsService {
         #endif
     }
 
+    func assignLeftovers(
+        home: HomeSummary,
+        sourceCalendarEventIDs: [UUID],
+        destinationDate: Date,
+        conflictMode: LeftoverConflictMode,
+        idempotencyKey: UUID
+    ) async throws -> AssignLeftoversRPCResponse {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = home.timezone.flatMap(TimeZone.init(identifier:)) ?? .current
+        let components = calendar.dateComponents([.year, .month, .day], from: destinationDate)
+        let date = String(
+            format: "%04d-%02d-%02d",
+            components.year ?? 0,
+            components.month ?? 0,
+            components.day ?? 0
+        )
+        let parameters = AssignLeftoversParameters(
+            homeID: home.id,
+            sourceCalendarEventIDs: sourceCalendarEventIDs,
+            destinationDate: date,
+            conflictMode: conflictMode,
+            idempotencyKey: idempotencyKey
+        )
+
+        do {
+            let response: AssignLeftoversRPCResponse = try await client
+                .rpc("assign_meal_leftovers", params: parameters)
+                .execute().value
+            return response
+        } catch {
+            #if DEBUG
+            print("[Homey] ASSIGN LEFTOVERS FAILED: \(String(reflecting: error))")
+            #endif
+            throw error
+        }
+    }
+
     func removePlanned(_ eventId: UUID) async throws { try await client.rpc("delete_calendar_event", params: DeleteEvent(eventId: eventId)).execute() }
 
+}
+
+enum LeftoverConflictMode: String, Codable, Equatable {
+    case add, replace
+
+    var title: String { self == .add ? "Add Anyway" : "Replace" }
+}
+
+struct AssignLeftoversRPCResponse: Decodable {
+    let createdCalendarEventIDs: [UUID]
+    let createdCount: Int
+    let deletedCalendarEventIDs: [UUID]
+    let deletedCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case createdCalendarEventIDs = "created_calendar_event_ids"
+        case createdCount = "created_count"
+        case deletedCalendarEventIDs = "deleted_calendar_event_ids"
+        case deletedCount = "deleted_count"
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        createdCalendarEventIDs = try values.decode([UUID].self, forKey: .createdCalendarEventIDs)
+        createdCount = try values.decode(Int.self, forKey: .createdCount)
+        deletedCalendarEventIDs = try values.decodeIfPresent([UUID].self, forKey: .deletedCalendarEventIDs) ?? []
+        deletedCount = try values.decodeIfPresent(Int.self, forKey: .deletedCount) ?? 0
+    }
 }
 
 enum MealsError: LocalizedError { case message(String); var errorDescription: String? { if case .message(let value) = self { value } else { nil } } }
@@ -465,6 +443,21 @@ private struct EnsureMealCategory: Encodable {
     enum CodingKeys: String, CodingKey { case homeId = "requested_home_id" }
 }
 private struct DeleteEvent: Encodable { let eventId: UUID; enum CodingKeys: String, CodingKey { case eventId = "target_event_id" } }
+private struct AssignLeftoversParameters: Encodable {
+    let homeID: UUID
+    let sourceCalendarEventIDs: [UUID]
+    let destinationDate: String
+    let conflictMode: LeftoverConflictMode
+    let idempotencyKey: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case homeID = "requested_home_id"
+        case sourceCalendarEventIDs = "requested_source_calendar_event_ids"
+        case destinationDate = "requested_destination_date"
+        case conflictMode = "requested_conflict_mode"
+        case idempotencyKey = "requested_idempotency_key"
+    }
+}
 private struct CreateMealDetail: Encodable {
     let eventId, mealId: UUID
     let mealType: MealType
@@ -509,13 +502,6 @@ struct SaveMealParams: Encodable {
             unit = draft.unit.nilIfBlank
             sortOrder = order
             isOptional = draft.optional
-            #if DEBUG
-            print("[RecipeIngredientSave]")
-            print("ingredientName=\(ingredientName)")
-            print("quantity=\(quantity.map { NSDecimalNumber(decimal: $0).stringValue } ?? "nil")")
-            print("unit=\(unit ?? "nil")")
-            print("preparation=\(preparation ?? "nil")")
-            #endif
         }
 
         enum CodingKeys: String, CodingKey {

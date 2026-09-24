@@ -3,12 +3,6 @@ import PostgREST
 
 // Deliberately excludes auth sessions, headers, keys, and tokens.
 enum RecipeSaveDiagnostics {
-    static func log(_ message: String) {
-        #if DEBUG
-        print("[RecipeSave] \(message)")
-        #endif
-    }
-
     static func failure(_ error: Error, stage: String) {
         #if DEBUG
         print("[RecipeSave] FAILED stage=\(stage)")

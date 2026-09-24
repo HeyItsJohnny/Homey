@@ -16,53 +16,6 @@ enum RecipeImportResponseDecoder {
 }
 
 enum RecipeImportDiagnostics {
-    static func decoded(_ response: RecipeImportResponse) {
-        #if DEBUG
-        print("[RecipeImport] decodedTitle=\(response.recipe.title)")
-        print("[RecipeImport] decodedImage=\(RecipeImageReference.safeLog(response.recipe.imageUrl))")
-        print("[RecipeImport] decodedIngredients=\(response.recipe.ingredients.count)")
-        print("[RecipeImport] decodedDirections=\(response.recipe.steps.count)")
-        print("[RecipeImport] decodedSource=\(response.recipe.source.name ?? response.recipe.source.domain)")
-        print("[RecipeImport] decodedSourceURL=\(RecipeImportInput.safeLogURL(response.recipe.source.originalUrl))")
-        #endif
-    }
-
-    static func mapped(_ draft: RecipeDraft) {
-        #if DEBUG
-        print("[RecipeImport] draftTitle=\(draft.name)")
-        print("[RecipeImport] draftImage=\(RecipeImageReference.safeLog(draft.importImageURL))")
-        print("[RecipeImport] draftIngredients=\(draft.ingredients.count)")
-        print("[RecipeImport] draftDirections=\(draft.steps.count)")
-        print("[RecipeImport] draftSource=\(draft.sourceName)")
-        #endif
-    }
-
-    static func editor(_ draft: RecipeDraft, editing: Bool, mounted: Bool = false) {
-        #if DEBUG
-        let stage = mounted ? "mounted" : "initial"
-        print("[RecipeEditor] \(stage)Title=\(draft.name)")
-        print("[RecipeEditor] \(stage)Ingredients=\(draft.ingredients.count)")
-        print("[RecipeEditor] \(stage)Directions=\(draft.steps.count)")
-        print("[RecipeEditor] mode=\(editing ? "edit" : "create")")
-        print("[RecipeEditor] imported=\(draft.imported != nil)")
-        #endif
-    }
-
-    static func response(data: Data, status: Int, contentType: String?) {
-        #if DEBUG
-        print("[RecipeImport] HTTP/function response received")
-        print("[RecipeImport] status=\(status)")
-        print("[RecipeImport] contentType=\(contentType ?? "unavailable")")
-        print("[RecipeImport] rawResponse=\(sanitizedJSON(data))")
-        #endif
-    }
-
-    static func decoding(_ error: DecodingError) {
-        #if DEBUG
-        for line in decodingDetails(error) { print("[RecipeImport] \(line)") }
-        #endif
-    }
-
     static func decodingDetails(_ error: DecodingError) -> [String] {
         let context: DecodingError.Context
         var details: [String]

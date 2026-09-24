@@ -66,7 +66,6 @@ struct RecipeImportView: View {
             let response = try await service.importURL(cleanURL, homeId: home.id)
             var draft = RecipeDraft()
             draft.apply(response)
-            RecipeImportDiagnostics.mapped(draft)
             onPreview(draft)
         } catch { self.error = error.localizedDescription }
     }

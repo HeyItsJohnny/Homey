@@ -147,12 +147,6 @@ struct GrocerySource: Identifiable, Decodable, Hashable {
         isActive = try container.decode(Bool.self, forKey: .isActive)
         createdBy = try container.decodeIfPresent(UUID.self, forKey: .createdBy)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
-        #if DEBUG
-        if let sourceDate {
-            print("[Groceries] raw source_date=\(sourceDate.rawValue)")
-            print("[Groceries] decoded sourceDate=\(sourceDate.rawValue)")
-        }
-        #endif
     }
 }
 

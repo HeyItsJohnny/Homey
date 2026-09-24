@@ -252,13 +252,6 @@ final class GroceryRepository {
             return rawName
         }
 
-        #if DEBUG
-        print("[Groceries] Add Home Recipe")
-        print("[Groceries] mealID=\(mealID.uuidString)")
-        print("[Groceries] recipeName=\(recipeName)")
-        print("[Groceries] ingredientCount=\(names.count)")
-        #endif
-
         guard !names.isEmpty else {
             return AddHomeRecipeToGroceriesResult(ingredientCount: 0, successfulCount: 0, newAssociationCount: 0, failureCount: 0)
         }
@@ -276,7 +269,6 @@ final class GroceryRepository {
         var failureCount = 0
 
         for name in names {
-            let normalized = GroceryNameNormalizer.normalize(name)
             do {
                 let resolution = try await resolveItem(
                     listID: list.id,
@@ -284,16 +276,9 @@ final class GroceryRepository {
                     displayName: GroceryNameNormalizer.recipeDisplayName(name),
                     category: GroceryCategoryMatcher.category(for: name)
                 )
-                #if DEBUG
-                print("[Groceries] ingredient=\(GroceryNameNormalizer.displayName(name)) normalized=\(normalized)")
-                print("[Groceries] item=\(resolution.created ? "created category=\(resolution.item.category.rawValue)" : "reused")")
-                #endif
                 let attached = try await attach(sourceID: source.id, to: resolution.item.id)
                 successfulCount += 1
                 if attached { newAssociationCount += 1 }
-                #if DEBUG
-                print("[Groceries] sourceAssociation=\(attached ? "attached" : "existing")")
-                #endif
             } catch {
                 failureCount += 1
                 #if DEBUG
@@ -343,12 +328,6 @@ final class GroceryRepository {
         homeID: UUID,
         calendar: Calendar
     ) async throws -> AddMealPlanDayToGroceriesResult {
-        #if DEBUG
-        print("[Groceries] Add Meal Plan Day")
-        print("[Groceries] selectedDate=\(Self.dateOnlyString(selectedDate, calendar: calendar))")
-        print("[Groceries] scheduledMealCount=\(meals.count)")
-        #endif
-
         let freshMeals = meals.filter { !$0.isLeftover }
         guard !freshMeals.isEmpty else {
             return AddMealPlanDayToGroceriesResult(meals: meals.map {
@@ -374,16 +353,7 @@ final class GroceryRepository {
         var results: [GroceryMealEventResult] = []
 
         for meal in meals {
-            #if DEBUG
-            print("[Groceries] eventID=\(meal.eventID.uuidString)")
-            print("[Groceries] mealID=\(meal.mealID.uuidString)")
-            print("[Groceries] meal=\(meal.label)")
-            print("[Groceries] isLeftover=\(meal.isLeftover)")
-            #endif
             if meal.isLeftover {
-                #if DEBUG
-                print("[Groceries] meal=\(meal.label) skipped=leftover")
-                #endif
                 results.append(.init(eventID: meal.eventID, label: meal.label, status: .leftoverSkipped))
                 continue
             }
@@ -394,9 +364,6 @@ final class GroceryRepository {
                 guard !normalized.isEmpty, seen.insert(normalized).inserted else { return nil }
                 return rawName
             }
-            #if DEBUG
-            print("[Groceries] ingredientCount=\(names.count)")
-            #endif
             guard !names.isEmpty else {
                 results.append(.init(eventID: meal.eventID, label: meal.label, status: .noIngredients))
                 continue
@@ -422,15 +389,8 @@ final class GroceryRepository {
                             displayName: GroceryNameNormalizer.recipeDisplayName(name),
                             category: GroceryCategoryMatcher.category(for: name)
                         )
-                        #if DEBUG
-                        print("[Groceries] ingredient=\(GroceryNameNormalizer.displayName(name)) normalized=\(GroceryNameNormalizer.normalize(name))")
-                        print("[Groceries] groceryItem=\(resolution.created ? "created" : "reused")")
-                        #endif
                         let attached = try await attach(sourceID: source.id, to: resolution.item.id)
                         if attached { newAssociations += 1 }
-                        #if DEBUG
-                        print("[Groceries] sourceAssociation=\(attached ? "attached" : "existing")")
-                        #endif
                     } catch {
                         ingredientFailures += 1
                         #if DEBUG
@@ -579,7 +539,6 @@ final class GroceryRepository {
             .select("ingredient_name, quantity, unit, preparation, sort_order")
             .in("recipe_id", values: recipeRows.map { $0.id.uuidString })
             .order("sort_order").execute().value
-        logRecipeIngredients(ingredientRows)
         return ingredientRows.map(\.ingredientName)
     }
 
@@ -594,7 +553,6 @@ final class GroceryRepository {
             .select("recipe_id, ingredient_name, quantity, unit, preparation, sort_order")
             .in("recipe_id", values: recipeRows.map { $0.id.uuidString })
             .order("sort_order").execute().value
-        logRecipeIngredients(ingredientRows)
         let mealIDByRecipeID = Dictionary(uniqueKeysWithValues: recipeRows.compactMap { row in
             row.mealID.map { (row.id, $0) }
         })
@@ -604,21 +562,6 @@ final class GroceryRepository {
             result[mealID, default: []].append(ingredient.ingredientName)
         }
         return result
-    }
-
-    private func logRecipeIngredients(_ ingredients: [IngredientNameRow]) {
-        #if DEBUG
-        for ingredient in ingredients {
-            let displayName = GroceryNameNormalizer.recipeDisplayName(ingredient.ingredientName)
-            print("[Groceries] recipe ingredient:")
-            print("ingredient_name=\(ingredient.ingredientName)")
-            print("quantity=\(ingredient.quantity.map(String.init(describing:)) ?? "nil")")
-            print("unit=\(ingredient.unit ?? "nil")")
-            print("preparation=\(ingredient.preparation ?? "nil")")
-            print("[Groceries] grocery displayName=\(displayName)")
-            print("[Groceries] normalizedName=\(GroceryNameNormalizer.normalize(ingredient.ingredientName))")
-        }
-        #endif
     }
 
     private static func dateOnlyString(_ date: Date, calendar: Calendar) -> String {
