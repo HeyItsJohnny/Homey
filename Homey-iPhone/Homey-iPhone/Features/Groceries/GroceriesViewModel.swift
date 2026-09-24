@@ -12,6 +12,8 @@ final class GroceriesViewModel: ObservableObject {
     @Published var noticeMessage: String?
 
     private let repository: GroceryRepository
+    private var activeHomeID: UUID?
+    private var activeLoadID = UUID()
 
     init(repository: GroceryRepository? = nil) {
         self.repository = repository ?? GroceryRepository()
@@ -30,16 +32,27 @@ final class GroceriesViewModel: ObservableObject {
     var checkedItemCount: Int { items.count { $0.item.isChecked } }
 
     func load(homeID: UUID) async {
+        let loadID = UUID()
+        activeLoadID = loadID
+        if activeHomeID != homeID {
+            list = nil
+            items = []
+            noticeMessage = nil
+        }
+        activeHomeID = homeID
         isLoading = true
         errorMessage = nil
         do {
             let resolvedList = try await repository.defaultList(homeID: homeID)
+            let loadedItems = try await repository.loadItemsWithSources(listID: resolvedList.id)
+            guard activeLoadID == loadID, activeHomeID == homeID else { return }
             list = resolvedList
-            items = try await repository.loadItemsWithSources(listID: resolvedList.id)
+            items = loadedItems
         } catch {
+            guard activeLoadID == loadID, activeHomeID == homeID else { return }
             errorMessage = "Unable to load groceries."
         }
-        isLoading = false
+        if activeLoadID == loadID { isLoading = false }
     }
 
     func addManualItem(name: String, category: GroceryCategory, homeID: UUID) async -> Bool {

@@ -41,13 +41,197 @@ private struct FeaturePlaceholderView: View {
 struct ProfileSheet: View {
     @EnvironmentObject private var appSession: AppSession
     @Environment(\.dismiss) private var dismiss
+    @State private var showingEditor = false
+    @State private var isRefreshingProfile = false
+    @State private var statusMessage: String?
+    @State private var profileError: String?
+
     var body: some View {
         NavigationStack {
-            List {
-                Section("Profile") { LabeledContent("Name", value: appSession.currentUser?.preferredDisplayName ?? "—"); LabeledContent("Email", value: appSession.currentUser?.email ?? "—") }
-                Section("Active Home") { LabeledContent("Home", value: appSession.activeHome?.name ?? "—"); LabeledContent("Role", value: appSession.activeRole?.displayName ?? "—") }
-                Section { Button("Sign Out", role: .destructive) { Task { dismiss(); await appSession.signOut() } } }
-            }.navigationTitle("Profile").toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }.presentationDetents([.medium, .large])
+            ZStack {
+                HomeyBackground()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if isRefreshingProfile {
+                            HStack(spacing: 10) { ProgressView(); Text("Refreshing profile…") }
+                                .font(.subheadline).foregroundStyle(HomeyColors.secondaryText)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        if let statusMessage {
+                            Label(statusMessage, systemImage: "checkmark.circle.fill")
+                                .font(.subheadline.weight(.medium)).foregroundStyle(HomeyColors.success)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                                .background(HomeyColors.success.opacity(0.10), in: RoundedRectangle(cornerRadius: 16))
+                        }
+                        if let profileError { HomeyErrorView(message: profileError).padding(14).background(Color.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 16)) }
+                        profileCard
+                        homeCard
+                        signOutButton
+                    }
+                    .padding(18)
+                }
+            }
+            .navigationTitle("Profile")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .task(id: appSession.currentUser?.id) { await refreshProfile() }
+            .sheet(isPresented: $showingEditor) {
+                EditProfileView { message in
+                    statusMessage = message
+                    profileError = nil
+                }
+            }
+        }
+        .presentationDetents([.large])
+    }
+
+    private var profileCard: some View {
+        VStack(spacing: 14) {
+            ProfileAvatarView(profile: appSession.currentUser, size: 92)
+
+            VStack(spacing: 5) {
+                Text(appSession.currentUser?.preferredDisplayName ?? "Homey Member")
+                    .font(HomeyTypography.title)
+                    .foregroundStyle(HomeyColors.text)
+                    .multilineTextAlignment(.center)
+
+                Text(appSession.currentUser?.email ?? "Email unavailable")
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyColors.secondaryText)
+                    .multilineTextAlignment(.center)
+            }
+
+            Button("Edit Profile") {
+                statusMessage = nil
+                showingEditor = true
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(HomeyColors.primary)
+        }
+        .frame(maxWidth: .infinity)
+        .homeyCard()
+    }
+
+    private func refreshProfile() async {
+        guard appSession.currentUser != nil else {
+            profileError = "Your session has expired. Please sign in again."
+            return
+        }
+        isRefreshingProfile = true
+        let loaded = await appSession.authentication.refreshCurrentUserProfile()
+        isRefreshingProfile = false
+        if !loaded { profileError = appSession.authentication.errorMessage ?? "We couldn't load your profile." }
+    }
+
+    private var homeCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            profileSectionTitle("Active Home", subtitle: "Your current household and access")
+
+            if let home = appSession.activeHome {
+                HStack(spacing: 13) {
+                    Image(systemName: "house.fill")
+                        .font(.headline)
+                        .foregroundStyle(HomeyColors.primary)
+                        .frame(width: 44, height: 44)
+                        .background(HomeyColors.primary.opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(home.name).font(.headline).foregroundStyle(HomeyColors.text)
+                        Text(appSession.activeRole?.displayName ?? "Role unavailable")
+                            .font(.caption).foregroundStyle(HomeyColors.secondaryText)
+                    }
+                    Spacer()
+                }
+
+                if appSession.homes.homes.count > 1 {
+                    Divider()
+                    Button {
+                        dismiss()
+                        appSession.chooseAnotherHome()
+                    } label: {
+                        profileNavigationRow("Change Home", detail: "Choose another household", icon: "arrow.left.arrow.right")
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                Text("No Home is currently selected.")
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyColors.secondaryText)
+            }
+        }
+        .homeyCard()
+    }
+
+    private var signOutButton: some View {
+        Button(role: .destructive) {
+            Task {
+                dismiss()
+                await appSession.signOut()
+            }
+        } label: {
+            Label("Sign Out", systemImage: "rectangle.portrait.and.arrow.right")
+                .font(.headline)
+                .foregroundStyle(HomeyColors.danger)
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .background(Color.white.opacity(0.94), in: RoundedRectangle(cornerRadius: HomeyCornerRadius.field))
+                .overlay {
+                    RoundedRectangle(cornerRadius: HomeyCornerRadius.field)
+                        .stroke(HomeyColors.danger.opacity(0.30))
+                }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func profileSectionTitle(_ title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(HomeyTypography.headline).foregroundStyle(HomeyColors.text)
+            Text(subtitle).font(.caption).foregroundStyle(HomeyColors.secondaryText)
+        }
+    }
+
+    private func profileNavigationRow(_ title: String, detail: String, icon: String) -> some View {
+        HStack(spacing: 13) {
+            Image(systemName: icon)
+                .foregroundStyle(HomeyColors.primary)
+                .frame(width: 40, height: 40)
+                .background(HomeyColors.primary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(HomeyColors.text)
+                Text(detail).font(.caption).foregroundStyle(HomeyColors.secondaryText)
+            }
+            Spacer()
+            Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+    }
+}
+
+struct ProfileAvatarView: View {
+    let profile: UserProfile?
+    let size: CGFloat
+    var isLoading = false
+
+    var body: some View {
+        AsyncImage(url: profile?.avatarURL) { phase in
+            if case .success(let image) = phase {
+                image.resizable().scaledToFill()
+            } else {
+                Text(profile?.initials ?? "HM")
+                    .font(.system(size: size * 0.31, weight: .bold))
+                    .foregroundStyle(HomeyColors.primary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(HomeyColors.primary.opacity(0.12))
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay { Circle().stroke(HomeyColors.primary.opacity(0.20), lineWidth: 1) }
+        .overlay { if isLoading { ProgressView().tint(HomeyColors.primary) } }
+        .accessibilityLabel("Profile photo for \(profile?.preferredDisplayName ?? "Homey Member")")
     }
 }

@@ -13,14 +13,44 @@ import Combine
     @Published var errorMessage: String?
     private let service = MealsService()
     private let groceryRepository = GroceryRepository()
-    func load(home: HomeSummary) async { isLoading=true; defer{isLoading=false}; do { async let h=service.homeRecipes(homeId:home.id); async let f=service.favoriteIDs(); let week=Self.week(containing:Date(),home:home); async let p=service.plannedMeals(home:home,week:week); (homeRecipes,favoriteIDs,planned)=try await(h,f,p); recipesRevision += 1 } catch { errorMessage=error.localizedDescription } }
+    private var activeHomeID: UUID?
+    private var activeLoadID = UUID()
+    func load(home: HomeSummary) async {
+        let loadID = UUID()
+        activeLoadID = loadID
+        if activeHomeID != home.id {
+            homeRecipes = []
+            planned = []
+            errorMessage = nil
+        }
+        activeHomeID = home.id
+        isLoading = true
+        do {
+            async let h = service.homeRecipes(homeId: home.id)
+            async let f = service.favoriteIDs()
+            let week = Self.week(containing: Date(), home: home)
+            async let p = service.plannedMeals(home: home, week: week)
+            let result = try await (h, f, p)
+            guard activeLoadID == loadID, activeHomeID == home.id else { return }
+            (homeRecipes, favoriteIDs, planned) = result
+            recipesRevision += 1
+        } catch {
+            guard activeLoadID == loadID, activeHomeID == home.id else { return }
+            errorMessage = error.localizedDescription
+        }
+        if activeLoadID == loadID { isLoading = false }
+    }
     func refreshRecipesAfterSave(home: HomeSummary) async throws {
+        let loadedRecipes = try await service.homeRecipes(homeId: home.id)
+        guard activeHomeID == home.id else { return }
         recipesRevision += 1
-        homeRecipes = try await service.homeRecipes(homeId: home.id)
+        homeRecipes = loadedRecipes
     }
     func refreshPlan(home: HomeSummary, containing date: Date = Date()) async {
         do {
-            planned = try await service.plannedMeals(home: home, week: Self.week(containing: date, home: home))
+            let loadedPlan = try await service.plannedMeals(home: home, week: Self.week(containing: date, home: home))
+            guard activeHomeID == home.id else { return }
+            planned = loadedPlan
             #if DEBUG
             let calendar = Self.calendar(home)
             let selectedDayMeals = planned.filter { calendar.isDate($0.startsAt, inSameDayAs: date) }
@@ -31,6 +61,7 @@ import Combine
             }
             #endif
         } catch {
+            guard activeHomeID == home.id else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -454,6 +485,10 @@ struct MealsRootView: View {
                     selectedMealPlanDate = Self.startOfToday(home: home)
                     await model.load(home: home)
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyMealsDidChange"))) { _ in
+                guard let home = session.activeHome else { return }
+                Task { await model.load(home: home) }
             }
             .refreshable {
                 if let home = session.activeHome { await model.load(home: home) }

@@ -25,6 +25,30 @@ struct ContentView: View {
         .environmentObject(appSession.authentication)
         .environmentObject(appSession.homes)
         .task { if appSession.state == .loading { await appSession.launch() } }
+        .overlay {
+            if appSession.isSwitchingHome {
+                ZStack {
+                    Color.black.opacity(0.18).ignoresSafeArea()
+                    VStack(spacing: 14) {
+                        ProgressView().controlSize(.large).tint(HomeyColors.primary)
+                        Text("Switching Home...")
+                            .font(HomeyTypography.headline)
+                            .foregroundStyle(HomeyColors.text)
+                        Text("Loading the selected household and permissions.")
+                            .font(.caption)
+                            .foregroundStyle(HomeyColors.secondaryText)
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(28)
+                    .frame(maxWidth: 310)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: HomeyCornerRadius.card))
+                }
+                .transition(.opacity)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Switching Home")
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: appSession.isSwitchingHome)
     }
 }
 

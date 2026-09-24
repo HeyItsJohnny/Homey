@@ -166,13 +166,13 @@ struct HomeSettingsView: View {
                 isShowingClearMealsConfirmation = true
             }
         } message: {
-            Text("This will permanently delete this Home's recipes, meal plans, and meal calendar entries. Global Recipes will not be deleted.")
+            Text("This will permanently delete this Home's recipes, meal plans, and meal calendar entries. Explore and Community Recipes will not be deleted.")
         }
         .sheet(isPresented: $isShowingClearMealsConfirmation) {
             ClearHomeDataConfirmationSheet(
                 title: "Clear Meals?",
                 homeName: selectedHome?.name ?? "this Home",
-                message: "This will permanently delete this Home's recipes, meal plans, and meal calendar entries. Global Recipes will not be deleted. This cannot be undone.",
+                message: "This will permanently delete this Home's recipes, meal plans, and meal calendar entries. Explore and Community Recipes will not be deleted. This cannot be undone.",
                 confirmButtonTitle: "Clear Meals",
                 loadingAccessibilityLabel: "Clearing meals",
                 confirmationText: $clearMealsConfirmationText,
@@ -380,7 +380,7 @@ struct HomeSettingsView: View {
 
             dangerZoneAction(
                 title: "Clear Meals",
-                description: "Deletes this Home's meal plans, Home Recipes, and Home-specific meal data. Global Recipes are not deleted.",
+                description: "Deletes this Home's meal plans, Home Recipes, and Home-specific meal data. Explore and Community Recipes are not deleted.",
                 systemImage: "fork.knife",
                 isLoading: isClearingMeals,
                 loadingTitle: "Clearing Meals...",

@@ -4,6 +4,9 @@ struct HomeView: View {
     @EnvironmentObject private var appSession: AppSession
     @StateObject private var viewModel = HomeDashboardViewModel()
     @State private var showingProfile = false
+    @State private var showingHomeSettings = false
+    @State private var showingMembers = false
+    @State private var showingInvitations = false
     let navigate: (DashboardDestination) -> Void
 
     private var firstName: String? {
@@ -34,7 +37,32 @@ struct HomeView: View {
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyCalendarEventsDidChange"))) { _ in
             Task { await refresh(force: true) }
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyMealsDidChange"))) { _ in
+            Task { await refresh(force: true) }
+        }
         .sheet(isPresented: $showingProfile) { ProfileSheet() }
+        .sheet(isPresented: $showingHomeSettings) {
+            NavigationStack {
+                HomeSettingsView()
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingHomeSettings = false }
+                        }
+                    }
+            }
+        }
+        .sheet(isPresented: $showingMembers) {
+            NavigationStack {
+                HomeMembersView()
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingMembers = false } } }
+            }
+        }
+        .sheet(isPresented: $showingInvitations) {
+            NavigationStack {
+                HomeInvitationsView()
+                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingInvitations = false } } }
+            }
+        }
     }
 
     private var header: some View {
@@ -45,9 +73,36 @@ struct HomeView: View {
                 Text(appSession.activeHome?.name ?? "Your Home").font(.subheadline.weight(.medium)).foregroundStyle(HomeyColors.secondaryText)
             }
             Spacer()
-            Button { showingProfile = true } label: {
-                Text(appSession.currentUser?.initials ?? "HM").font(.subheadline.bold()).foregroundStyle(HomeyColors.primary).frame(width: 44, height: 44).background(.white.opacity(0.92), in: Circle()).overlay { Circle().stroke(HomeyColors.primary.opacity(0.18)) }
-            }.accessibilityLabel("Open profile")
+            Menu {
+                Button {
+                    showingProfile = true
+                } label: {
+                    Label("Profile", systemImage: "person.crop.circle")
+                }
+
+                Button {
+                    showingHomeSettings = true
+                } label: {
+                    Label("Home Settings", systemImage: "gearshape")
+                }
+                .disabled(appSession.activeHome == nil)
+
+                Button {
+                    showingMembers = true
+                } label: {
+                    Label("Members", systemImage: "person.2")
+                }
+                .disabled(appSession.activeHome == nil)
+
+                Button {
+                    showingInvitations = true
+                } label: {
+                    Label("Home Invitations", systemImage: "envelope.badge")
+                }
+            } label: {
+                ProfileAvatarView(profile: appSession.currentUser, size: 44)
+            }
+            .accessibilityLabel("Open profile menu")
         }
     }
 

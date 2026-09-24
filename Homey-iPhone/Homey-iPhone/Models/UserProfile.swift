@@ -23,9 +23,26 @@ struct UserProfile: Codable, Identifiable, Equatable {
     }
 
     var initials: String {
+        let nameInitials = [firstName, lastName]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).first }
+            .map(String.init)
+            .joined()
+        if !nameInitials.isEmpty { return nameInitials.uppercased() }
+
         let parts = preferredDisplayName.split(separator: " ").prefix(2)
         let value = parts.compactMap(\.first).map(String.init).joined()
         return value.isEmpty ? "HM" : value.uppercased()
+    }
+
+    func withAvatarURL(_ avatarURL: URL?) -> UserProfile {
+        UserProfile(
+            id: id,
+            email: email,
+            firstName: firstName,
+            lastName: lastName,
+            displayName: displayName,
+            avatarURL: avatarURL
+        )
     }
 
     enum CodingKeys: String, CodingKey {
@@ -34,5 +51,14 @@ struct UserProfile: Codable, Identifiable, Equatable {
         case lastName = "last_name"
         case displayName = "display_name"
         case avatarURL = "avatar_url"
+    }
+}
+
+enum ProfileNameFormatter {
+    static func generatedDisplayName(firstName: String, lastName: String) -> String {
+        [firstName, lastName]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }

@@ -4,6 +4,9 @@ enum HomeMemberRole: String, Codable, CaseIterable, Identifiable {
     case owner, admin, member
     var id: String { rawValue }
     var displayName: String { rawValue.capitalized }
+    var canManageInvitations: Bool { self == .owner || self == .admin }
+    var canBeInvited: Bool { self == .admin || self == .member }
+    static let invitationOptions: [HomeMemberRole] = [.member, .admin]
 }
 
 struct HomeSummary: Identifiable, Codable, Hashable {
