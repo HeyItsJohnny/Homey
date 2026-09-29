@@ -17,6 +17,9 @@ struct ContentView: View {
                 VerifyEmailView().safeAreaInset(edge: .bottom) {
                     Button("Back to Login") { appSession.returnToLogin() }.buttonStyle(HomeyButtonStyle()).padding()
                 }
+            case .resolvingAccount: AccountResolutionView(errorMessage: nil)
+            case .accountResolutionFailed: AccountResolutionView(errorMessage: appSession.accountResolutionErrorMessage)
+            case .pendingInvitations: PendingInvitationsOnboardingView()
             case .needsHome: CreateHomeView()
             case .selectingHome: HomeSelectionView()
             case .authenticated: MainTabView()

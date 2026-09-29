@@ -42,7 +42,7 @@ struct HomeInvitationsView: View {
             }
             .refreshable { await refresh() }
         }
-        .navigationTitle("Home Invitations")
+        .navigationTitle("Invites")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: session.currentUser?.id) { await load() }
         .confirmationDialog(
@@ -101,7 +101,7 @@ struct HomeInvitationsView: View {
 
                 Button { Task { await accept(invitation) } } label: {
                     if session.homes.acceptingInvitationID == invitation.id { ProgressView().tint(.white) }
-                    else { Text("Accept Invitation") }
+                    else { Text("Join Home") }
                 }
                 .buttonStyle(HomeyButtonStyle())
                 .disabled(isBusy)

@@ -1,5 +1,159 @@
 import SwiftUI
 
+struct AccountResolutionView: View {
+    @EnvironmentObject private var appSession: AppSession
+    let errorMessage: String?
+
+    var body: some View {
+        ZStack {
+            HomeyBackground()
+            VStack(spacing: 18) {
+                Image(systemName: errorMessage == nil ? "house.and.flag.fill" : "wifi.exclamationmark")
+                    .font(.system(size: 42, weight: .semibold))
+                    .foregroundStyle(HomeyColors.primary)
+
+                if let errorMessage {
+                    Text("Homey Couldn't Finish Setup")
+                        .font(HomeyTypography.title)
+                        .foregroundStyle(HomeyColors.text)
+                    Text(errorMessage)
+                        .font(.subheadline)
+                        .foregroundStyle(HomeyColors.secondaryText)
+                        .multilineTextAlignment(.center)
+                    Button("Try Again") {
+                        Task { await appSession.retryAccountResolution() }
+                    }
+                    .buttonStyle(HomeyButtonStyle())
+                    Button("Sign Out") { Task { await appSession.signOut() } }
+                        .buttonStyle(HomeyButtonStyle(secondary: true))
+                } else {
+                    ProgressView().controlSize(.large).tint(HomeyColors.primary)
+                    Text("Resolving Homey account…")
+                        .font(HomeyTypography.title)
+                        .foregroundStyle(HomeyColors.text)
+                    Text("Checking your Homes and invitations.")
+                        .font(.subheadline)
+                        .foregroundStyle(HomeyColors.secondaryText)
+                }
+            }
+            .padding(28)
+            .frame(maxWidth: 390)
+            .homeyCard()
+            .padding(20)
+        }
+    }
+}
+
+struct PendingInvitationsOnboardingView: View {
+    @EnvironmentObject private var appSession: AppSession
+    @State private var actionError: String?
+
+    private var invitations: [HomeInvitationDisplay] { appSession.homes.myPendingInvitations }
+    private var isBusy: Bool { appSession.homes.acceptingInvitationID != nil }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                HomeyBackground()
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 20) {
+                        HomeyBrandHeader(
+                            title: "Welcome to Homey",
+                            subtitle: invitations.count == 1
+                                ? "You've been invited to join a Home."
+                                : "You've been invited to join Homes."
+                        )
+
+                        if invitations.isEmpty, isBusy {
+                            HStack(spacing: 12) {
+                                ProgressView().tint(HomeyColors.primary)
+                                Text("Finishing your Home setup…")
+                                    .foregroundStyle(HomeyColors.secondaryText)
+                            }
+                            .frame(maxWidth: .infinity, minHeight: 150)
+                            .homeyCard()
+                        } else {
+                            ForEach(invitations) { invitation in
+                                invitationCard(invitation)
+                            }
+                        }
+
+                        if let error = actionError ?? appSession.accountResolutionErrorMessage {
+                            HomeyErrorView(message: error)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
+                        Button("Create My Own Home") {
+                            appSession.createOwnHomeFromInvitations()
+                        }
+                        .buttonStyle(HomeyButtonStyle(secondary: true))
+                        .disabled(isBusy)
+                    }
+                    .padding(20)
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Sign Out") { Task { await appSession.signOut() } }
+                        .disabled(isBusy)
+                }
+            }
+        }
+    }
+
+    private func invitationCard(_ invitation: HomeInvitationDisplay) -> some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "house.fill")
+                    .font(.title2)
+                    .foregroundStyle(HomeyColors.primary)
+                    .frame(width: 52, height: 52)
+                    .background(HomeyColors.primary.opacity(0.11), in: RoundedRectangle(cornerRadius: 16))
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(invitation.homeName ?? "A Homey Home")
+                        .font(HomeyTypography.title)
+                        .foregroundStyle(HomeyColors.text)
+                    if let inviter = invitation.inviterDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines), !inviter.isEmpty {
+                        Text("Invited by \(inviter)")
+                            .font(.subheadline)
+                            .foregroundStyle(HomeyColors.secondaryText)
+                    }
+                    Text("Role: \(invitation.role.displayName)")
+                        .font(.subheadline)
+                        .foregroundStyle(HomeyColors.secondaryText)
+                }
+                Spacer(minLength: 0)
+            }
+
+            Button {
+                Task { await join(invitation) }
+            } label: {
+                HStack {
+                    if appSession.homes.acceptingInvitationID == invitation.id {
+                        ProgressView().tint(.white)
+                    }
+                    Text("Join Home")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(HomeyButtonStyle())
+            .disabled(isBusy)
+        }
+        .homeyCard()
+    }
+
+    private func join(_ invitation: HomeInvitationDisplay) async {
+        actionError = nil
+        if !(await appSession.joinHomeFromOnboarding(invitation)) {
+            actionError = appSession.accountResolutionErrorMessage
+                ?? appSession.homeSwitchErrorMessage
+                ?? "We couldn't join this Home. Please try again."
+        }
+    }
+}
+
 struct CreateHomeView: View {
     @EnvironmentObject private var appSession: AppSession
     @State private var name = ""
@@ -20,14 +174,14 @@ struct CreateHomeView: View {
                         Button(action: create) {
                             if appSession.homes.isLoading { ProgressView().tint(.white) } else { Text("Create Home") }
                         }.buttonStyle(HomeyButtonStyle()).disabled(appSession.homes.isLoading)
-                        NavigationLink("View Home Invitations") { HomeInvitationsView() }
+                        NavigationLink("View Invites") { HomeInvitationsView() }
                             .buttonStyle(HomeyButtonStyle(secondary: true))
                     }.homeyCard().padding(.horizontal, 20).padding(.vertical, 28)
                 }.scrollDismissesKeyboard(.interactively)
             }.toolbar {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     NavigationLink { HomeInvitationsView() } label: { Image(systemName: "envelope.badge") }
-                        .accessibilityLabel("Home Invitations")
+                        .accessibilityLabel("Invites")
                     Button("Sign Out") { Task { await appSession.signOut() } }
                 }
             }
@@ -119,7 +273,7 @@ struct HomeSelectionView: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     NavigationLink { HomeInvitationsView() } label: { Image(systemName: "envelope.badge") }
-                        .accessibilityLabel("Home Invitations")
+                        .accessibilityLabel("Invites")
                         .disabled(appSession.isSwitchingHome)
                     Button("Sign Out") { Task { await appSession.signOut() } }
                         .disabled(appSession.isSwitchingHome)

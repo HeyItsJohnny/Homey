@@ -66,6 +66,7 @@ struct ProfileSheet: View {
                         }
                         if let profileError { HomeyErrorView(message: profileError).padding(14).background(Color.white.opacity(0.94), in: RoundedRectangle(cornerRadius: 16)) }
                         profileCard
+                        accountCard
                         homeCard
                         signOutButton
                     }
@@ -79,7 +80,10 @@ struct ProfileSheet: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .task(id: appSession.currentUser?.id) { await refreshProfile() }
+            .task(id: appSession.currentUser?.id) {
+                await refreshProfile()
+                await refreshInvitations()
+            }
             .sheet(isPresented: $showingEditor) {
                 EditProfileView { message in
                     statusMessage = message
@@ -126,6 +130,58 @@ struct ProfileSheet: View {
         let loaded = await appSession.authentication.refreshCurrentUserProfile()
         isRefreshingProfile = false
         if !loaded { profileError = appSession.authentication.errorMessage ?? "We couldn't load your profile." }
+    }
+
+    private func refreshInvitations() async {
+        guard let userID = appSession.currentUser?.id else { return }
+        await appSession.homes.loadMyPendingInvitations(userID: userID, forceRefresh: true)
+    }
+
+    private var accountCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            profileSectionTitle("Account", subtitle: "Manage invitations connected to your account")
+
+            NavigationLink {
+                HomeInvitationsView()
+            } label: {
+                HStack(spacing: 13) {
+                    Image(systemName: "envelope.badge")
+                        .foregroundStyle(HomeyColors.primary)
+                        .frame(width: 40, height: 40)
+                        .background(HomeyColors.primary.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Invites")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(HomeyColors.text)
+                        Text(invitationDetail)
+                            .font(.caption)
+                            .foregroundStyle(HomeyColors.secondaryText)
+                    }
+                    Spacer()
+                    if !appSession.homes.myPendingInvitations.isEmpty {
+                        Text("\(appSession.homes.myPendingInvitations.count)")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.white)
+                            .frame(minWidth: 24, minHeight: 24)
+                            .background(HomeyColors.primary, in: Capsule())
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption.bold())
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .homeyCard()
+    }
+
+    private var invitationDetail: String {
+        if appSession.homes.isLoadingMyInvitations { return "Checking for pending invitations…" }
+        if appSession.homes.myInvitationsErrorMessage != nil { return "Unable to load invitations — tap to retry" }
+        let count = appSession.homes.myPendingInvitations.count
+        if count == 0 { return "No pending invitations" }
+        return "\(count) pending invitation\(count == 1 ? "" : "s")"
     }
 
     private var homeCard: some View {

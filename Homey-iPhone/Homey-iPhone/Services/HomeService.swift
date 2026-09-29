@@ -31,23 +31,26 @@ final class HomeService: ObservableObject {
     private var loadingInvitationUserID: UUID?
     private var homesLoadID = UUID()
 
-    func loadHomes(for userID: UUID, preferredHomeID: UUID?) async {
+    @discardableResult
+    func loadHomes(for userID: UUID, preferredHomeID: UUID?) async -> Bool {
         let loadID = UUID()
         homesLoadID = loadID
         isLoading = true; errorMessage = nil
         defer { if homesLoadID == loadID { isLoading = false } }
         do {
             let loadedHomes = try await fetchHomes(for: userID)
-            guard homesLoadID == loadID else { return }
+            guard homesLoadID == loadID else { return false }
             homes = loadedHomes
             if homes.count == 1 { setSelectedHome(homes[0]) }
             else if let preferredHomeID { setSelectedHome(homes.first { $0.id == preferredHomeID }) }
             else { setSelectedHome(nil) }
+            return true
         } catch {
-            guard homesLoadID == loadID else { return }
+            guard homesLoadID == loadID else { return false }
             homes = []; setSelectedHome(nil)
             errorMessage = "We couldn't load your Homes. Check your connection and try again."
             debugLog(error, context: "LOAD HOMES")
+            return false
         }
     }
 
@@ -237,9 +240,10 @@ final class HomeService: ObservableObject {
         }
     }
 
-    func loadMyPendingInvitations(userID: UUID, forceRefresh: Bool = false) async {
-        if isLoadingMyInvitations { return }
-        if !forceRefresh, loadedInvitationUserID == userID { return }
+    @discardableResult
+    func loadMyPendingInvitations(userID: UUID, forceRefresh: Bool = false) async -> Bool {
+        if isLoadingMyInvitations { return false }
+        if !forceRefresh, loadedInvitationUserID == userID { return myInvitationsErrorMessage == nil }
         isLoadingMyInvitations = true
         loadingInvitationUserID = userID
         myInvitationsErrorMessage = nil
@@ -249,17 +253,23 @@ final class HomeService: ObservableObject {
                 .rpc("get_my_pending_home_invitations")
                 .execute()
                 .value
-            guard loadingInvitationUserID == userID else { return }
+            guard loadingInvitationUserID == userID else { return false }
             myPendingInvitations = HomeInvitationDisplay.sorted(rows.map(\.display))
             loadedInvitationUserID = userID
+            if loadingInvitationUserID == userID {
+                loadingInvitationUserID = nil
+                isLoadingMyInvitations = false
+            }
+            return true
         } catch {
-            guard loadingInvitationUserID == userID else { return }
+            guard loadingInvitationUserID == userID else { return false }
             myInvitationsErrorMessage = invitationErrorMessage(for: error)
             debugLog(error, context: "LOAD MY HOME INVITATIONS")
-        }
-        if loadingInvitationUserID == userID {
-            loadingInvitationUserID = nil
-            isLoadingMyInvitations = false
+            if loadingInvitationUserID == userID {
+                loadingInvitationUserID = nil
+                isLoadingMyInvitations = false
+            }
+            return false
         }
     }
 

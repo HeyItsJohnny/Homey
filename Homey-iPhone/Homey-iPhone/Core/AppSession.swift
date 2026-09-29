@@ -1,8 +1,9 @@
+import Auth
 import Combine
 import Foundation
 
 enum AppState: Equatable {
-    case loading, unauthenticated, emailVerificationRequired, needsHome, selectingHome, authenticated
+    case loading, unauthenticated, emailVerificationRequired, resolvingAccount, accountResolutionFailed, pendingInvitations, needsHome, selectingHome, authenticated
 }
 
 @MainActor
@@ -10,6 +11,7 @@ final class AppSession: ObservableObject {
     @Published private(set) var state: AppState = .loading
     @Published private(set) var switchingHomeID: UUID?
     @Published private(set) var homeSwitchErrorMessage: String?
+    @Published private(set) var accountResolutionErrorMessage: String?
     let authentication = AuthenticationService()
     let homes = HomeService()
     private let selectedHomeKey = "selectedHomeID"
@@ -41,15 +43,56 @@ final class AppSession: ObservableObject {
         await resolveHomes()
     }
 
-    func didAuthenticate() async { state = .loading; await resolveHomes() }
+    func didAuthenticate() async { await resolveHomes() }
     func requireEmailVerification() { state = .emailVerificationRequired }
     func returnToLogin() { state = .unauthenticated }
 
     func resolveHomes() async {
-        guard let userID = authentication.currentUser?.id else { state = .unauthenticated; return }
+        guard let userID = authentication.currentUser?.id,
+              let email = authentication.session?.user.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !email.isEmpty else {
+            state = .unauthenticated
+            return
+        }
+
+        state = .resolvingAccount
+        accountResolutionErrorMessage = nil
+        // Invitation discovery intentionally takes no email parameter. The backend RPC
+        // is responsible for resolving the normalized email from this authenticated session.
         let preferredID = UserDefaults.standard.string(forKey: selectedHomeKey).flatMap(UUID.init(uuidString:))
-        await homes.loadHomes(for: userID, preferredHomeID: preferredID)
-        routeFromHomes()
+        guard await homes.loadHomes(for: userID, preferredHomeID: preferredID) else {
+            failAccountResolution(homes.errorMessage ?? "We couldn't load your Homes. Check your connection and try again.")
+            return
+        }
+        guard await homes.loadMyPendingInvitations(userID: userID, forceRefresh: true) else {
+            failAccountResolution(homes.myInvitationsErrorMessage ?? "We couldn't load your invitations. Check your connection and try again.")
+            return
+        }
+        routeFromHomesAndInvitations()
+    }
+
+    func retryAccountResolution() async { await resolveHomes() }
+
+    func createOwnHomeFromInvitations() {
+        guard homes.homes.isEmpty else { routeFromHomesAndInvitations(); return }
+        accountResolutionErrorMessage = nil
+        state = .needsHome
+    }
+
+    @discardableResult
+    func joinHomeFromOnboarding(_ invitation: HomeInvitationDisplay) async -> Bool {
+        guard state == .pendingInvitations, homes.homes.isEmpty,
+              let userID = authentication.currentUser?.id else { return false }
+        accountResolutionErrorMessage = nil
+        guard let result = await homes.acceptInvitation(invitation, currentUserID: userID) else {
+            accountResolutionErrorMessage = homes.myInvitationsErrorMessage ?? "We couldn't join this Home. Please try again."
+            return false
+        }
+        guard let joinedHome = homes.homes.first(where: { $0.id == result.homeID }) else {
+            failAccountResolution("You joined the Home, but Homey couldn't load it yet. Try again to finish setup.")
+            return false
+        }
+        return await switchHome(to: joinedHome)
     }
 
     func selectHome(_ home: HomeSummary) {
@@ -118,6 +161,7 @@ final class AppSession: ObservableObject {
         UserDefaults.standard.removeObject(forKey: selectedHomeKey)
         switchingHomeID = nil
         homeSwitchErrorMessage = nil
+        accountResolutionErrorMessage = nil
         state = .unauthenticated
     }
 
@@ -132,11 +176,20 @@ final class AppSession: ObservableObject {
         }
     }
 
-    private func routeFromHomes() {
-        if homes.homes.isEmpty { state = .needsHome }
+    private func routeFromHomesAndInvitations() {
+        accountResolutionErrorMessage = nil
+        if homes.homes.isEmpty, !homes.myPendingInvitations.isEmpty { state = .pendingInvitations }
+        else if homes.homes.isEmpty { state = .needsHome }
         else if homes.homes.count == 1, let home = homes.homes.first { selectHome(home) }
         else if homes.selectedHome != nil { state = .authenticated }
         else { state = .selectingHome }
+    }
+
+    private func routeFromHomes() { routeFromHomesAndInvitations() }
+
+    private func failAccountResolution(_ message: String) {
+        accountResolutionErrorMessage = message
+        state = .accountResolutionFailed
     }
 }
 

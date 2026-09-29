@@ -6,12 +6,15 @@ struct HomeView: View {
     @State private var showingProfile = false
     @State private var showingHomeSettings = false
     @State private var showingMembers = false
-    @State private var showingInvitations = false
     let navigate: (DashboardDestination) -> Void
 
     private var firstName: String? {
         let value = appSession.currentUser?.displayName ?? appSession.currentUser?.firstName
         return value?.split(separator: " ").first.map(String.init)
+    }
+
+    private var dashboardScope: String {
+        "\(appSession.activeHome?.id.uuidString ?? "no-home")-\(appSession.currentUser?.id.uuidString ?? "no-user")-\(appSession.activeRole?.rawValue ?? "no-role")"
     }
 
     var body: some View {
@@ -21,16 +24,20 @@ struct HomeView: View {
                 LazyVStack(alignment: .leading, spacing: 26) {
                     header
                     attentionSection
-                    quickActionsSection
-                    upcomingSection
-                    groceryAndWeekSection
+                    todayEventsSection
+                    todayMealsSection
+                    todayChoresSection
+                    mealCountsSection
                     if !viewModel.snapshot.failedSections.isEmpty { partialFailure }
-                }.padding(.horizontal, 18).padding(.vertical, 16)
-            }.refreshable { await refresh(force: true) }
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 16)
+            }
+            .refreshable { await refresh(force: true) }
         }
         .toolbar(.hidden, for: .navigationBar)
-        .task(id: appSession.activeHome?.id) { await refresh(force: true) }
-        .onAppear { Task { await refresh() } }
+        .onAppear { Task { await refresh(force: true) } }
+        .onChange(of: dashboardScope) { _, _ in Task { await refresh(force: true) } }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyChoresDidChange"))) { _ in
             Task { await refresh(force: true) }
         }
@@ -54,13 +61,11 @@ struct HomeView: View {
         .sheet(isPresented: $showingMembers) {
             NavigationStack {
                 HomeMembersView()
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingMembers = false } } }
-            }
-        }
-        .sheet(isPresented: $showingInvitations) {
-            NavigationStack {
-                HomeInvitationsView()
-                    .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { showingInvitations = false } } }
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showingMembers = false }
+                        }
+                    }
             }
         }
     }
@@ -68,37 +73,27 @@ struct HomeView: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
-                Label("HOMEY", systemImage: "house.fill").font(.caption.weight(.bold)).foregroundStyle(HomeyColors.primary)
+                Label("HOMEY", systemImage: "house.fill")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(HomeyColors.primary)
                 Text(greeting).font(HomeyTypography.title).foregroundStyle(HomeyColors.text)
-                Text(appSession.activeHome?.name ?? "Your Home").font(.subheadline.weight(.medium)).foregroundStyle(HomeyColors.secondaryText)
+                Text(appSession.activeHome?.name ?? "Your Home")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(HomeyColors.secondaryText)
             }
             Spacer()
             Menu {
-                Button {
-                    showingProfile = true
-                } label: {
+                Button { showingProfile = true } label: {
                     Label("Profile", systemImage: "person.crop.circle")
                 }
-
-                Button {
-                    showingHomeSettings = true
-                } label: {
-                    Label("Home Settings", systemImage: "gearshape")
+                Button { showingHomeSettings = true } label: {
+                    Label("Settings", systemImage: "gearshape")
                 }
                 .disabled(appSession.activeHome == nil)
-
-                Button {
-                    showingMembers = true
-                } label: {
+                Button { showingMembers = true } label: {
                     Label("Members", systemImage: "person.2")
                 }
                 .disabled(appSession.activeHome == nil)
-
-                Button {
-                    showingInvitations = true
-                } label: {
-                    Label("Home Invitations", systemImage: "envelope.badge")
-                }
             } label: {
                 ProfileAvatarView(profile: appSession.currentUser, size: 44)
             }
@@ -109,82 +104,344 @@ struct HomeView: View {
     private var attentionSection: some View {
         DashboardSectionView(title: "Needs Attention") {
             if viewModel.isLoading && viewModel.lastLoadedAt == nil {
-                HStack { ProgressView(); Text("Checking your household…").foregroundStyle(HomeyColors.secondaryText) }.frame(maxWidth: .infinity, alignment: .leading).homeyCard()
-            } else if viewModel.snapshot.attentionItems.isEmpty {
-                HStack(spacing: 14) { Image(systemName: "checkmark.circle.fill").font(.title2).foregroundStyle(HomeyColors.success); VStack(alignment: .leading) { Text("You're all caught up.").font(.headline); Text("Nothing needs your attention right now.").font(.subheadline).foregroundStyle(HomeyColors.secondaryText) } }.frame(maxWidth: .infinity, alignment: .leading).homeyCard()
-            } else {
-                ForEach(viewModel.snapshot.attentionItems) { item in DashboardRow(title: item.title, detail: item.detail, systemImage: item.systemImage, tint: HomeyColors.danger) { navigate(item.destination) } }
-            }
-        }
-    }
-
-    private var quickActionsSection: some View {
-        DashboardSectionView(title: "Quick Actions") {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    if appSession.activeRole == .owner || appSession.activeRole == .admin {
-                        QuickAction(title: "Add Chore", icon: "plus.circle.fill") { navigate(.chores) }
-                    }
-                    QuickAction(title: "Add Event", icon: "calendar.badge.plus") { navigate(.calendar) }
-                    QuickAction(title: "Plan Meals", icon: "fork.knife") { navigate(.meals) }
-                    QuickAction(title: "Add Recipe", icon: "book.closed.fill") { navigate(.meals) }
-                    QuickAction(title: "Add Item", icon: "cart.badge.plus") { navigate(.groceries) }
+                HStack {
+                    ProgressView()
+                    Text("Checking your household…").foregroundStyle(HomeyColors.secondaryText)
                 }
-            }.contentMargins(.horizontal, 1)
-        }
-    }
-
-    private var upcomingSection: some View {
-        DashboardSectionView(title: "Upcoming") {
-            if let meal = viewModel.snapshot.tonightMeal { DashboardRow(title: "Tonight", detail: meal, systemImage: "fork.knife", tint: HomeyColors.primary) { navigate(.meals) } }
-            if let count = viewModel.snapshot.choresDueToday { DashboardRow(title: "Chores Today", detail: count == 0 ? "Nothing scheduled" : "\(count) chore\(count == 1 ? "" : "s") scheduled", systemImage: "checklist", tint: Color.orange) { navigate(.chores) } }
-            ForEach(viewModel.snapshot.upcomingEvents.prefix(3)) { item in DashboardRow(title: item.title, detail: item.detail, systemImage: "calendar", tint: Color(hex: item.colorHex) ?? HomeyColors.primary) { navigate(.calendar) } }
-            if viewModel.snapshot.tonightMeal == nil, viewModel.snapshot.choresDueToday == nil, viewModel.snapshot.upcomingEvents.isEmpty, !viewModel.isLoading {
-                Text("No upcoming details are available.").font(.subheadline).foregroundStyle(HomeyColors.secondaryText).frame(maxWidth: .infinity, alignment: .leading).homeyCard()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .homeyCard()
+            } else if viewModel.snapshot.attentionItems.isEmpty {
+                DashboardEmptyState(
+                    title: "You're all caught up.",
+                    detail: "Nothing needs your attention right now.",
+                    symbol: "checkmark.circle.fill"
+                )
+            } else {
+                ForEach(viewModel.snapshot.attentionItems) { item in
+                    DashboardRow(title: item.title, detail: item.detail, systemImage: item.systemImage, tint: HomeyColors.danger) {
+                        navigate(item.destination)
+                    }
+                }
             }
         }
     }
 
-    private var groceryAndWeekSection: some View {
-        DashboardSectionView(title: "This Week") {
-            Button { navigate(.groceries) } label: { HStack { Label("Groceries", systemImage: "cart.fill"); Spacer(); Text("Open list").foregroundStyle(HomeyColors.secondaryText); Image(systemName: "chevron.right") }.foregroundStyle(HomeyColors.text).homeyCard() }.buttonStyle(.plain)
-            HStack(spacing: 12) {
-                WeekMetric(value: viewModel.snapshot.dinnersPlanned.map { "\($0)/7" } ?? "—", label: "Dinners")
-                WeekMetric(value: viewModel.snapshot.upcomingEventCount.map(String.init) ?? "—", label: "Events")
-                WeekMetric(value: viewModel.snapshot.choresDueToday.map(String.init) ?? "—", label: "Chores Today")
+    private var todayEventsSection: some View {
+        DashboardSectionView(title: "Today’s Events") {
+            if viewModel.isLoading && viewModel.lastLoadedAt == nil {
+                DashboardLoadingCard()
+            } else if viewModel.snapshot.failedSections.contains(.calendar) {
+                DashboardUnavailableCard(detail: "Today's events couldn't be refreshed.")
+            } else if viewModel.snapshot.todayEvents.isEmpty {
+                DashboardEmptyState(title: "Nothing scheduled today", detail: "Your day is open.", symbol: "calendar.badge.checkmark")
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(viewModel.snapshot.todayEvents.enumerated()), id: \.element.id) { index, event in
+                        Button { navigate(.calendar) } label: {
+                            HStack(spacing: 12) {
+                                Circle()
+                                    .fill(Color(hex: event.colorHex) ?? HomeyColors.primary)
+                                    .frame(width: 10, height: 10)
+                                Text(event.isAllDay ? "All day" : eventTimeFormatter.string(from: event.startsAt))
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(HomeyColors.secondaryText)
+                                    .frame(width: 58, alignment: .leading)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(event.title).font(.subheadline.weight(.semibold)).foregroundStyle(HomeyColors.text)
+                                    if let location = event.location {
+                                        Label(location, systemImage: "mappin.and.ellipse")
+                                            .font(.caption)
+                                            .foregroundStyle(HomeyColors.secondaryText)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 12)
+                        }
+                        .buttonStyle(.plain)
+                        if index < viewModel.snapshot.todayEvents.count - 1 { Divider() }
+                    }
+                }
+                .homeyCard()
             }
         }
     }
 
-    private var partialFailure: some View { Label("Some household details couldn't be refreshed. Pull down to try again.", systemImage: "wifi.exclamationmark").font(.footnote).foregroundStyle(HomeyColors.secondaryText).padding(.bottom, 12) }
-    private var greeting: String { let hour = Calendar.current.component(.hour, from: Date()); let part = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : "Good Evening"; return firstName.map { "\(part), \($0)" } ?? part }
-    private func refresh(force: Bool = false) async { guard let home = appSession.activeHome else { return }; await viewModel.load(home: home, role: appSession.activeRole, force: force) }
+    private var todayMealsSection: some View {
+        DashboardSectionView(title: "Today’s Meals") {
+            if viewModel.isLoading && viewModel.lastLoadedAt == nil {
+                DashboardLoadingCard()
+            } else if viewModel.snapshot.failedSections.contains(.meals) {
+                DashboardUnavailableCard(detail: "Today's meals couldn't be refreshed.")
+            } else if viewModel.snapshot.todayMeals.isEmpty {
+                DashboardEmptyState(title: "Nothing planned today", detail: "Your meal plan is ready when you are.", symbol: "fork.knife")
+            } else {
+                Button { navigate(.meals) } label: {
+                    VStack(alignment: .leading, spacing: 16) {
+                        ForEach([MealType.breakfast, .lunch, .dinner]) { type in
+                            let meals = viewModel.snapshot.todayMeals.filter { $0.mealType == type }
+                            if !meals.isEmpty {
+                                VStack(alignment: .leading, spacing: 9) {
+                                    Label(type.title, systemImage: type.symbol)
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(HomeyColors.primary)
+                                    ForEach(meals) { meal in
+                                        HStack(spacing: 12) {
+                                            HomeRecipeThumbnail(path: meal.photoPath)
+                                                .frame(width: 44, height: 44)
+                                                .clipShape(RoundedRectangle(cornerRadius: 11))
+                                            Text(meal.title)
+                                                .font(.subheadline.weight(.semibold))
+                                                .foregroundStyle(HomeyColors.text)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                            Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .homeyCard()
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var todayChoresSection: some View {
+        DashboardSectionView(title: "Today’s Chores") {
+            if !viewModel.snapshot.choreRoleResolved {
+                DashboardEmptyState(
+                    title: "Resolving chore access",
+                    detail: "Household permissions are still loading.",
+                    symbol: "person.badge.shield.checkmark"
+                )
+            } else if viewModel.isLoading && viewModel.lastLoadedAt == nil {
+                DashboardLoadingCard()
+            } else if !viewModel.snapshot.choreDataLoaded {
+                DashboardUnavailableCard(detail: "Today's chores couldn't be refreshed.")
+            } else if viewModel.snapshot.todayChores.isEmpty {
+                DashboardEmptyState(
+                    title: appSession.activeRole == .member ? "You're all caught up today" : "No chores scheduled today",
+                    detail: "Everything scheduled for today is clear.",
+                    symbol: "checklist.checked"
+                )
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(viewModel.snapshot.todayChores.enumerated()), id: \.element.id) { index, chore in
+                        Button { navigate(.chores) } label: {
+                            DashboardChoreRow(chore: chore, showsAssignees: appSession.activeRole == .owner || appSession.activeRole == .admin)
+                                .padding(.vertical, 12)
+                        }
+                        .buttonStyle(.plain)
+                        if index < viewModel.snapshot.todayChores.count - 1 { Divider() }
+                    }
+                }
+                .homeyCard()
+            }
+        }
+    }
+
+    private var mealCountsSection: some View {
+        DashboardSectionView(title: "Meals Planned Today") {
+            Button { navigate(.meals) } label: {
+                HStack(spacing: 12) {
+                    MealCountMetric(type: .breakfast, count: mealCount(.breakfast))
+                    MealCountMetric(type: .lunch, count: mealCount(.lunch))
+                    MealCountMetric(type: .dinner, count: mealCount(.dinner))
+                }
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var partialFailure: some View {
+        Label("Some household details couldn't be refreshed. Pull down to try again.", systemImage: "wifi.exclamationmark")
+            .font(.footnote)
+            .foregroundStyle(HomeyColors.secondaryText)
+            .padding(.bottom, 12)
+    }
+
+    private var eventTimeFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.timeZone = appSession.activeTimezone
+        formatter.dateFormat = "h:mm a"
+        return formatter
+    }
+
+    private var greeting: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        let part = hour < 12 ? "Good Morning" : hour < 17 ? "Good Afternoon" : "Good Evening"
+        return firstName.map { "\(part), \($0)" } ?? part
+    }
+
+    private func refresh(force: Bool = false) async {
+        guard let home = appSession.activeHome else { return }
+        await viewModel.load(
+            home: home,
+            currentUserID: appSession.currentUser?.id,
+            role: appSession.activeRole,
+            force: force
+        )
+    }
+
+    private func mealCount(_ type: MealType) -> Int? {
+        viewModel.snapshot.failedSections.contains(.meals) ? nil : viewModel.snapshot.mealCounts[type]
+    }
 }
 
 private struct DashboardSectionView<Content: View>: View {
-    let title: String; @ViewBuilder let content: Content
-    var body: some View { VStack(alignment: .leading, spacing: 12) { Text(title).font(HomeyTypography.headline).foregroundStyle(HomeyColors.text); content } }
+    let title: String
+    @ViewBuilder let content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(HomeyTypography.headline).foregroundStyle(HomeyColors.text)
+            content
+        }
+    }
 }
 
 private struct DashboardRow: View {
-    let title, detail, systemImage: String; let tint: Color; let action: () -> Void
-    var body: some View { Button(action: action) { HStack(spacing: 14) { Image(systemName: systemImage).font(.title3).foregroundStyle(tint).frame(width: 42, height: 42).background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 13)); VStack(alignment: .leading, spacing: 3) { Text(title).font(.headline); Text(detail).font(.subheadline).foregroundStyle(HomeyColors.secondaryText) }; Spacer(); Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary) }.foregroundStyle(HomeyColors.text).frame(maxWidth: .infinity, alignment: .leading).homeyCard() }.buttonStyle(.plain) }
+    let title, detail, systemImage: String
+    let tint: Color
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: systemImage)
+                    .font(.title3)
+                    .foregroundStyle(tint)
+                    .frame(width: 42, height: 42)
+                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(.headline)
+                    Text(detail).font(.subheadline).foregroundStyle(HomeyColors.secondaryText)
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+            }
+            .foregroundStyle(HomeyColors.text)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .homeyCard()
+        }
+        .buttonStyle(.plain)
+    }
 }
 
-private struct QuickAction: View {
-    let title, icon: String; let action: () -> Void
-    var body: some View { Button(action: action) { VStack(alignment: .leading, spacing: 12) { Image(systemName: icon).font(.title3).foregroundStyle(HomeyColors.primary); Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(HomeyColors.text).lineLimit(1) }.frame(width: 92, height: 72, alignment: .leading).padding(14).background(.white.opacity(0.92), in: RoundedRectangle(cornerRadius: 18)).overlay { RoundedRectangle(cornerRadius: 18).stroke(HomeyColors.primary.opacity(0.10)) } }.buttonStyle(.plain) }
+private struct DashboardEmptyState: View {
+    let title, detail, symbol: String
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: symbol).font(.title2).foregroundStyle(HomeyColors.success)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.headline).foregroundStyle(HomeyColors.text)
+                Text(detail).font(.subheadline).foregroundStyle(HomeyColors.secondaryText)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .homeyCard()
+    }
 }
 
-private struct WeekMetric: View {
-    let value, label: String
-    var body: some View { VStack(spacing: 5) { Text(value).font(.title3.bold()).foregroundStyle(HomeyColors.primary); Text(label).font(.caption2).foregroundStyle(HomeyColors.secondaryText).multilineTextAlignment(.center).lineLimit(2) }.frame(maxWidth: .infinity).frame(height: 72).background(.white.opacity(0.9), in: RoundedRectangle(cornerRadius: 16)) }
+private struct DashboardLoadingCard: View {
+    var body: some View {
+        HStack { ProgressView(); Text("Loading today…").foregroundStyle(HomeyColors.secondaryText) }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .homeyCard()
+    }
+}
+
+private struct DashboardUnavailableCard: View {
+    let detail: String
+    var body: some View {
+        Label(detail, systemImage: "exclamationmark.triangle")
+            .font(.subheadline)
+            .foregroundStyle(HomeyColors.secondaryText)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .homeyCard()
+    }
+}
+
+private struct DashboardChoreRow: View {
+    let chore: DashboardTodayChore
+    let showsAssignees: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: statusSymbol)
+                .font(.title3)
+                .foregroundStyle(statusColor)
+                .frame(width: 36, height: 36)
+                .background(statusColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(chore.title).font(.subheadline.weight(.semibold)).foregroundStyle(HomeyColors.text)
+                HStack(spacing: 5) {
+                    Text(chore.status.displayName)
+                    if let roomName = chore.roomName { Text("•"); Text(roomName) }
+                    if showsAssignees, !chore.assigneeNames.isEmpty {
+                        Text("•")
+                        Text(chore.assigneeNames.joined(separator: ", "))
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(HomeyColors.secondaryText)
+                .lineLimit(1)
+            }
+            Spacer()
+            Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
+        }
+    }
+
+    private var statusSymbol: String {
+        switch chore.status {
+        case .notStarted: "circle"
+        case .inProgress: "clock.arrow.circlepath"
+        case .awaitingApproval: "checkmark.seal"
+        case .completed: "checkmark.circle.fill"
+        case .needsRedo: "arrow.counterclockwise.circle.fill"
+        case .skipped: "forward.end.circle"
+        case .cancelled: "xmark.circle"
+        }
+    }
+
+    private var statusColor: Color {
+        switch chore.status {
+        case .completed: HomeyColors.success
+        case .needsRedo: HomeyColors.danger
+        case .awaitingApproval: HomeyColors.primary
+        case .inProgress: .orange
+        case .notStarted, .skipped, .cancelled: HomeyColors.secondaryText
+        }
+    }
+}
+
+private struct MealCountMetric: View {
+    let type: MealType
+    let count: Int?
+    var body: some View {
+        VStack(spacing: 6) {
+            Image(systemName: type.symbol).foregroundStyle(HomeyColors.primary)
+            Text(count.map(String.init) ?? "—").font(.title3.bold()).foregroundStyle(HomeyColors.text)
+            Text(type.title).font(.caption2).foregroundStyle(HomeyColors.secondaryText)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 86)
+        .background(.white.opacity(0.9), in: RoundedRectangle(cornerRadius: 16))
+    }
 }
 
 private extension Color {
     init?(hex: String?) {
-        guard let hex else { return nil }; let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        guard let hex else { return nil }
+        let cleaned = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
         guard cleaned.count == 6, let value = UInt64(cleaned, radix: 16) else { return nil }
-        self.init(red: Double((value >> 16) & 255) / 255, green: Double((value >> 8) & 255) / 255, blue: Double(value & 255) / 255)
+        self.init(
+            red: Double((value >> 16) & 255) / 255,
+            green: Double((value >> 8) & 255) / 255,
+            blue: Double(value & 255) / 255
+        )
     }
 }

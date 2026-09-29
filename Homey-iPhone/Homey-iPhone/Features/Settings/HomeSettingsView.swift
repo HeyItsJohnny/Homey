@@ -41,7 +41,7 @@ struct HomeSettingsView: View {
                 .padding(18)
             }
         }
-        .navigationTitle("Home Settings")
+        .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .task(id: home?.id) { loadHome() }
         .sheet(isPresented: $showingTimezonePicker) {
@@ -55,7 +55,7 @@ struct HomeSettingsView: View {
                 }
             }
         }
-        .alert("Home Settings", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+        .alert("Settings", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(errorMessage ?? "") }
     }

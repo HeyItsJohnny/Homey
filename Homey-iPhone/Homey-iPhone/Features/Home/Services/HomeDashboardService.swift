@@ -4,55 +4,203 @@ import Supabase
 struct HomeDashboardService {
     private let client = SupabaseManager.shared.client
 
-    func load(home: HomeSummary, role: HomeMemberRole?) async -> HomeDashboardSnapshot {
+    func load(home: HomeSummary, currentUserID: UUID?, role: HomeMemberRole?) async -> HomeDashboardSnapshot {
         var snapshot = HomeDashboardSnapshot.empty
         let ranges = dateRanges(timezone: home.timezone, weekStartsOn: home.weekStartsOn)
 
         if role == .owner || role == .admin {
             do {
                 let count = try await pendingApprovalCount(homeID: home.id)
-                if count > 0 { snapshot.attentionItems.append(.init(id: "approvals", title: "\(count) Chore\(count == 1 ? "" : "s") Awaiting Approval", detail: "Review completed work", systemImage: "checkmark.seal.fill", destination: .chores)) }
-            } catch { snapshot.failedSections.insert(.chores); log(error, section: "chore approvals") }
+                if count > 0 {
+                    snapshot.attentionItems.append(.init(
+                        id: "approvals",
+                        title: "\(count) Chore\(count == 1 ? "" : "s") Awaiting Approval",
+                        detail: "Review completed work",
+                        systemImage: "checkmark.seal.fill",
+                        destination: .chores
+                    ))
+                }
+            } catch {
+                snapshot.failedSections.insert(.chores)
+                log(error, section: "chore approvals")
+            }
 
             do {
                 let count = try await pendingRewardCount(homeID: home.id)
-                if count > 0 { snapshot.attentionItems.append(.init(id: "rewards", title: "\(count) Reward Request\(count == 1 ? "" : "s")", detail: "Ready for fulfillment", systemImage: "gift.fill", destination: .chores)) }
-            } catch { snapshot.failedSections.insert(.rewards); log(error, section: "reward requests") }
-        }
-
-        do {
-            let occurrences: [ChoreOccurrenceRow] = try await client.from("chore_occurrences").select("id, due_at, status").eq("home_id", value: home.id.uuidString).gte("due_at", value: ranges.todayStart).lt("due_at", value: ranges.tomorrowStart).execute().value
-            snapshot.choresDueToday = occurrences.filter { !["completed", "skipped", "cancelled"].contains($0.status) }.count
-        } catch { snapshot.failedSections.insert(.chores); log(error, section: "today's chores") }
-
-        var weekEvents: [DashboardEventRow] = []
-        do {
-            let upcoming = try await fetchEvents(homeID: home.id, start: ranges.now, end: ranges.weekEnd)
-            weekEvents = try await fetchEvents(homeID: home.id, start: ranges.weekStart, end: ranges.weekEnd)
-            snapshot.upcomingEventCount = upcoming.count
-            snapshot.upcomingEvents = upcoming.prefix(5).map {
-                HomeUpcomingItem(id: $0.occurrenceID, title: $0.title, detail: eventDetail($0, timezone: ranges.calendar.timeZone), colorHex: $0.categoryColorHex, destination: .calendar)
-            }
-        } catch { snapshot.failedSections.insert(.calendar); log(error, section: "calendar") }
-
-        if snapshot.failedSections.contains(.calendar) {
-            snapshot.failedSections.insert(.meals)
-        } else {
-            do {
-                let details = try await mealDetails()
-                let mealEventIDs = Set(details.map(\.calendarEventID))
-                snapshot.upcomingEvents.removeAll { item in weekEvents.first(where: { $0.occurrenceID == item.id }).map { mealEventIDs.contains($0.eventID) } ?? false }
-                let eventByID: [UUID: DashboardEventRow] = Dictionary(uniqueKeysWithValues: weekEvents.map { ($0.eventID, $0) })
-                let dinners = details.filter { $0.mealType == "dinner" && eventByID[$0.calendarEventID] != nil }
-                snapshot.dinnersPlanned = Set(dinners.map { $0.calendarEventID }).count
-                snapshot.tonightMeal = dinners.compactMap { eventByID[$0.calendarEventID] }.first { ranges.calendar.isDate($0.occurrenceStartsAt, inSameDayAs: ranges.now) }?.title
-                if let dinnersPlanned = snapshot.dinnersPlanned, dinnersPlanned < 7, role == .owner || role == .admin {
-                    let remaining = 7 - dinnersPlanned
-                    snapshot.attentionItems.append(.init(id: "meals", title: "\(remaining) Dinner\(remaining == 1 ? "" : "s") Still Need Planning", detail: "Complete this week's meal plan", systemImage: "fork.knife", destination: .meals))
+                if count > 0 {
+                    snapshot.attentionItems.append(.init(
+                        id: "rewards",
+                        title: "\(count) Reward Request\(count == 1 ? "" : "s")",
+                        detail: "Ready for fulfillment",
+                        systemImage: "gift.fill",
+                        destination: .chores
+                    ))
                 }
-            } catch { snapshot.failedSections.insert(.meals); log(error, section: "meals") }
+            } catch {
+                snapshot.failedSections.insert(.rewards)
+                log(error, section: "reward requests")
+            }
         }
+
+        if let role, (role != .member || currentUserID != nil) {
+            snapshot.choreRoleResolved = true
+            do {
+                snapshot.todayChores = try await todayChores(
+                    homeID: home.id,
+                    localDate: localDateString(ranges.todayStart, calendar: ranges.calendar),
+                    currentUserID: currentUserID,
+                    role: role
+                )
+                snapshot.choreDataLoaded = true
+            } catch {
+                snapshot.failedSections.insert(.chores)
+                log(error, section: "today's chores")
+            }
+        } else {
+            snapshot.failedSections.insert(.chores)
+        }
+
+        do {
+            let weekEvents = try await fetchEvents(homeID: home.id, start: ranges.weekStart, end: ranges.weekEnd)
+            let details = try await mealDetails(eventIDs: Set(weekEvents.map(\.eventID)))
+            let detailsByEventID = Dictionary(uniqueKeysWithValues: details.map { ($0.calendarEventID, $0) })
+            let mealEventIDs = Set(detailsByEventID.keys)
+            let todayEvents = weekEvents.filter {
+                $0.occurrenceStartsAt < ranges.tomorrowStart && $0.occurrenceEndsAt > ranges.todayStart
+            }
+
+            snapshot.todayEvents = todayEvents
+                .filter { !mealEventIDs.contains($0.eventID) }
+                .map {
+                    DashboardTodayEvent(
+                        id: $0.occurrenceID,
+                        title: $0.title,
+                        startsAt: $0.occurrenceStartsAt,
+                        isAllDay: $0.isAllDay,
+                        location: $0.location?.trimmedNonEmpty,
+                        colorHex: $0.categoryColorHex
+                    )
+                }
+
+            let todayMealEvents = todayEvents.compactMap { event -> (DashboardEventRow, DashboardMealDetailRow)? in
+                guard let detail = detailsByEventID[event.eventID], [.breakfast, .lunch, .dinner].contains(detail.mealType) else { return nil }
+                return (event, detail)
+            }
+            let meals = try await meals(homeID: home.id, ids: Set(todayMealEvents.map { $0.1.mealID }))
+            let mealsByID = Dictionary(uniqueKeysWithValues: meals.map { ($0.id, $0) })
+            snapshot.todayMeals = todayMealEvents.map { event, detail in
+                let meal = mealsByID[detail.mealID]
+                return DashboardTodayMeal(
+                    id: event.occurrenceID,
+                    mealID: detail.mealID,
+                    title: meal?.name ?? event.title,
+                    mealType: detail.mealType,
+                    photoPath: meal?.primaryPhotoPath
+                )
+            }.sorted { lhs, rhs in
+                let order: [MealType: Int] = [.breakfast: 0, .lunch: 1, .dinner: 2]
+                let lhsOrder = order[lhs.mealType] ?? 3
+                let rhsOrder = order[rhs.mealType] ?? 3
+                if lhsOrder != rhsOrder { return lhsOrder < rhsOrder }
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
+
+            snapshot.mealCounts = DashboardMealCounts(
+                breakfast: snapshot.todayMeals.filter { $0.mealType == .breakfast }.count,
+                lunch: snapshot.todayMeals.filter { $0.mealType == .lunch }.count,
+                dinner: snapshot.todayMeals.filter { $0.mealType == .dinner }.count
+            )
+
+            if role == .owner || role == .admin {
+                let dinnerCount = weekEvents.filter { detailsByEventID[$0.eventID]?.mealType == .dinner }.count
+                if dinnerCount < 7 {
+                    let remaining = 7 - dinnerCount
+                    snapshot.attentionItems.append(.init(
+                        id: "meals",
+                        title: "\(remaining) Dinner\(remaining == 1 ? "" : "s") Still Need Planning",
+                        detail: "Complete this week's meal plan",
+                        systemImage: "fork.knife",
+                        destination: .meals
+                    ))
+                }
+            }
+        } catch {
+            snapshot.failedSections.insert(.calendar)
+            snapshot.failedSections.insert(.meals)
+            log(error, section: "calendar and meals")
+        }
+
         return snapshot
+    }
+
+    private func todayChores(
+        homeID: UUID,
+        localDate: String,
+        currentUserID: UUID?,
+        role: HomeMemberRole
+    ) async throws -> [DashboardTodayChore] {
+        let occurrences: [PhoneChoreOccurrence] = try await client
+            .from("chore_occurrences")
+            .select("id, template_id, assignment_mode, points_value_snapshot, requires_approval_snapshot, due_local_date, status, claimed_by")
+            .eq("home_id", value: homeID.uuidString)
+            .eq("due_local_date", value: localDate)
+            .execute().value
+        let activeOccurrences = occurrences.filter { ![.skipped, .cancelled].contains($0.status) }
+        guard !activeOccurrences.isEmpty else { return [] }
+
+        let occurrenceIDs = Set(activeOccurrences.map(\.id))
+        let templateIDs = Set(activeOccurrences.map(\.templateID))
+        let members: [DashboardChoreMemberRow] = try await client
+            .rpc("get_home_members", params: DashboardHomeMembersParameters(homeID: homeID))
+            .execute().value
+
+        async let templatesRequest: [PhoneChoreTemplate] = client
+            .from("chore_templates")
+            .select("id, room_id, title, description, instructions, points_value")
+            .eq("home_id", value: homeID.uuidString)
+            .in("id", values: templateIDs.map(\.uuidString))
+            .execute().value
+        async let assigneesRequest: [PhoneOccurrenceAssignee] = client
+            .from("chore_occurrence_assignees")
+            .select("occurrence_id, user_id, status")
+            .in("occurrence_id", values: occurrenceIDs.map(\.uuidString))
+            .execute().value
+        async let roomsRequest: [DashboardChoreRoomRow] = client
+            .from("chore_rooms")
+            .select("id, name")
+            .eq("home_id", value: homeID.uuidString)
+            .execute().value
+
+        let (templates, assignees, rooms) = try await (templatesRequest, assigneesRequest, roomsRequest)
+        let templatesByID = Dictionary(uniqueKeysWithValues: templates.map { ($0.id, $0) })
+        let roomsByID = Dictionary(uniqueKeysWithValues: rooms.map { ($0.id, $0.name) })
+        let memberNamesByID = Dictionary(uniqueKeysWithValues: members.map { ($0.userID, $0.displayName) })
+        let assigneesByOccurrence = Dictionary(grouping: assignees, by: \.occurrenceID)
+
+        return activeOccurrences.compactMap { occurrence in
+            let assignedRows = assigneesByOccurrence[occurrence.id] ?? []
+            if role == .member {
+                guard let currentUserID,
+                      occurrence.claimedBy == currentUserID || assignedRows.contains(where: { $0.userID == currentUserID })
+                else { return nil }
+            }
+            guard let template = templatesByID[occurrence.templateID] else { return nil }
+            let assigneeIDs = Set(assignedRows.map(\.userID) + [occurrence.claimedBy].compactMap { $0 })
+            let assigneeNames = assigneeIDs.compactMap { memberNamesByID[$0] }.sorted()
+            let roomName = template.roomID.flatMap { roomsByID[$0] }?.trimmedNonEmpty
+            return DashboardTodayChore(
+                id: occurrence.id,
+                title: template.title,
+                roomName: roomName,
+                assigneeNames: assigneeNames,
+                status: occurrence.status
+            )
+        }.sorted { lhs, rhs in
+            if choreStatusOrder(lhs.status) != choreStatusOrder(rhs.status) {
+                return choreStatusOrder(lhs.status) < choreStatusOrder(rhs.status)
+            }
+            return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+        }
     }
 
     private func pendingApprovalCount(homeID: UUID) async throws -> Int {
@@ -71,30 +219,61 @@ struct HomeDashboardService {
     }
 
     private func fetchEvents(homeID: UUID, start: Date, end: Date) async throws -> [DashboardEventRow] {
-        let rows: [DashboardEventRow] = try await client.rpc("get_calendar_events", params: CalendarRangeParameters(targetHomeID: homeID, rangeStart: start, rangeEnd: end)).execute().value
+        let rows: [DashboardEventRow] = try await client.rpc(
+            "get_calendar_events",
+            params: CalendarRangeParameters(targetHomeID: homeID, rangeStart: start, rangeEnd: end)
+        ).execute().value
         return rows.filter { $0.occurrenceEndsAt > start }.sorted { $0.occurrenceStartsAt < $1.occurrenceStartsAt }
     }
 
-    private func mealDetails() async throws -> [MealDetailRow] {
-        try await client.from("meal_event_details").select("calendar_event_id, meal_type").execute().value
+    private func mealDetails(eventIDs: Set<UUID>) async throws -> [DashboardMealDetailRow] {
+        guard !eventIDs.isEmpty else { return [] }
+        return try await client.from("meal_event_details")
+            .select("calendar_event_id, meal_id, meal_type")
+            .in("calendar_event_id", values: eventIDs.map(\.uuidString))
+            .execute().value
     }
 
-    private func eventDetail(_ event: DashboardEventRow, timezone: TimeZone) -> String {
-        if event.isAllDay { return "All day" }
-        let formatter = DateFormatter()
-        formatter.timeZone = timezone
-        formatter.dateFormat = "EEE, h:mm a"
-        return formatter.string(from: event.occurrenceStartsAt)
+    private func meals(homeID: UUID, ids: Set<UUID>) async throws -> [DashboardMealRow] {
+        guard !ids.isEmpty else { return [] }
+        return try await client.from("meals")
+            .select("id, name, primary_photo_path")
+            .eq("home_id", value: homeID.uuidString)
+            .in("id", values: ids.map(\.uuidString))
+            .execute().value
+    }
+
+    private func choreStatusOrder(_ status: PhoneChoreOccurrenceStatus) -> Int {
+        switch status {
+        case .needsRedo: 0
+        case .inProgress: 1
+        case .notStarted: 2
+        case .awaitingApproval: 3
+        case .completed: 4
+        case .skipped, .cancelled: 5
+        }
+    }
+
+    private func localDateString(_ date: Date, calendar: Calendar) -> String {
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
     }
 
     private func dateRanges(timezone: String?, weekStartsOn: Int) -> DashboardDateRanges {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = timezone.flatMap(TimeZone.init(identifier:)) ?? .current
         calendar.firstWeekday = weekStartsOn == 2 ? 2 : 1
-        let now = Date(), today = calendar.startOfDay(for: now)
+        let now = Date()
+        let today = calendar.startOfDay(for: now)
         let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) ?? now
         let week = calendar.dateInterval(of: .weekOfYear, for: now)
-        return DashboardDateRanges(now: now, todayStart: today, tomorrowStart: tomorrow, weekStart: week?.start ?? today, weekEnd: week?.end ?? tomorrow, calendar: calendar)
+        return DashboardDateRanges(
+            todayStart: today,
+            tomorrowStart: tomorrow,
+            weekStart: week?.start ?? today,
+            weekEnd: week?.end ?? tomorrow,
+            calendar: calendar
+        )
     }
 
     private func log(_ error: Error, section: String) {
@@ -104,16 +283,99 @@ struct HomeDashboardService {
     }
 }
 
-private struct DashboardDateRanges { let now, todayStart, tomorrowStart, weekStart, weekEnd: Date; let calendar: Calendar }
+private struct DashboardDateRanges {
+    let todayStart, tomorrowStart, weekStart, weekEnd: Date
+    let calendar: Calendar
+}
+
 private struct IDRow: Decodable { let id: UUID }
 private struct OccurrenceIDRow: Decodable { let id: UUID }
-private struct SubmissionRow: Decodable { let occurrenceID: UUID; enum CodingKeys: String, CodingKey { case occurrenceID = "occurrence_id" } }
-private struct AssigneeRow: Decodable { let occurrenceID: UUID; enum CodingKeys: String, CodingKey { case occurrenceID = "occurrence_id" } }
-private struct ChoreOccurrenceRow: Decodable { let id: UUID; let dueAt: Date; let status: String; enum CodingKeys: String, CodingKey { case id, status; case dueAt = "due_at" } }
-private struct MealDetailRow: Decodable { let calendarEventID: UUID; let mealType: String; enum CodingKeys: String, CodingKey { case calendarEventID = "calendar_event_id"; case mealType = "meal_type" } }
-private struct CalendarRangeParameters: Encodable { let targetHomeID: UUID; let rangeStart, rangeEnd: Date; enum CodingKeys: String, CodingKey { case targetHomeID = "target_home_id"; case rangeStart = "range_start"; case rangeEnd = "range_end" } }
+private struct SubmissionRow: Decodable {
+    let occurrenceID: UUID
+    enum CodingKeys: String, CodingKey { case occurrenceID = "occurrence_id" }
+}
+private struct AssigneeRow: Decodable {
+    let occurrenceID: UUID
+    enum CodingKeys: String, CodingKey { case occurrenceID = "occurrence_id" }
+}
+private struct DashboardMealDetailRow: Decodable {
+    let calendarEventID: UUID
+    let mealID: UUID
+    let mealType: MealType
+    enum CodingKeys: String, CodingKey {
+        case calendarEventID = "calendar_event_id"
+        case mealID = "meal_id"
+        case mealType = "meal_type"
+    }
+}
+private struct DashboardMealRow: Decodable {
+    let id: UUID
+    let name: String
+    let primaryPhotoPath: String?
+    enum CodingKeys: String, CodingKey { case id, name; case primaryPhotoPath = "primary_photo_path" }
+}
+private struct DashboardChoreRoomRow: Decodable { let id: UUID; let name: String }
+private struct DashboardChoreMemberRow: Decodable {
+    let userID: UUID
+    let firstName: String?
+    let lastName: String?
+    let profileDisplayName: String?
+    let email: String?
+    var displayName: String {
+        let preferred = profileDisplayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !preferred.isEmpty { return preferred }
+        let fullName = [firstName, lastName]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        if !fullName.isEmpty { return fullName }
+        return email?.split(separator: "@").first.map(String.init) ?? "Home Member"
+    }
+    enum CodingKeys: String, CodingKey {
+        case userID = "user_id"
+        case firstName = "first_name"
+        case lastName = "last_name"
+        case profileDisplayName = "display_name"
+        case email
+    }
+}
+private struct DashboardHomeMembersParameters: Encodable {
+    let homeID: UUID
+    enum CodingKeys: String, CodingKey { case homeID = "target_home_id" }
+}
+private struct CalendarRangeParameters: Encodable {
+    let targetHomeID: UUID
+    let rangeStart, rangeEnd: Date
+    enum CodingKeys: String, CodingKey {
+        case targetHomeID = "target_home_id"
+        case rangeStart = "range_start"
+        case rangeEnd = "range_end"
+    }
+}
 private struct DashboardEventRow: Decodable {
-    let eventID: UUID; let occurrenceID: String; let occurrenceStartsAt, startsAt, endsAt: Date; let title: String; let isAllDay: Bool; let categoryColorHex: String?
+    let eventID: UUID
+    let occurrenceID: String
+    let occurrenceStartsAt, startsAt, endsAt: Date
+    let title: String
+    let isAllDay: Bool
+    let location: String?
+    let categoryColorHex: String?
     var occurrenceEndsAt: Date { occurrenceStartsAt.addingTimeInterval(endsAt.timeIntervalSince(startsAt)) }
-    enum CodingKeys: String, CodingKey { case eventID = "event_id"; case occurrenceID = "occurrence_id"; case occurrenceStartsAt = "occurrence_starts_at"; case startsAt = "starts_at"; case endsAt = "ends_at"; case title; case isAllDay = "is_all_day"; case categoryColorHex = "category_color_hex" }
+    enum CodingKeys: String, CodingKey {
+        case eventID = "event_id"
+        case occurrenceID = "occurrence_id"
+        case occurrenceStartsAt = "occurrence_starts_at"
+        case startsAt = "starts_at"
+        case endsAt = "ends_at"
+        case title, location
+        case isAllDay = "is_all_day"
+        case categoryColorHex = "category_color_hex"
+    }
+}
+
+private extension String {
+    var trimmedNonEmpty: String? {
+        let value = trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
 }
