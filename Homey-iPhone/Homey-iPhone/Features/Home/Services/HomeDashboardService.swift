@@ -68,15 +68,22 @@ struct HomeDashboardService {
 
         do {
             let weekEvents = try await fetchEvents(homeID: home.id, start: ranges.weekStart, end: ranges.weekEnd)
+            let integrationMetadata = try await PhoneCalendarService().fetchIntegrationMetadata(
+                homeID: home.id,
+                eventIDs: Set(weekEvents.map(\.eventID))
+            )
             let details = try await mealDetails(eventIDs: Set(weekEvents.map(\.eventID)))
             let detailsByEventID = Dictionary(uniqueKeysWithValues: details.map { ($0.calendarEventID, $0) })
-            let mealEventIDs = Set(detailsByEventID.keys)
+            let integrationCategoryIDs = PhoneCalendarVisibility.excludedIntegrationCategoryIDs(from: integrationMetadata.categories)
             let todayEvents = weekEvents.filter {
                 $0.occurrenceStartsAt < ranges.tomorrowStart && $0.occurrenceEndsAt > ranges.todayStart
             }
 
             snapshot.todayEvents = todayEvents
-                .filter { !mealEventIDs.contains($0.eventID) }
+                .filter {
+                    !integrationMetadata.linkedEventIDs.contains($0.eventID)
+                        && !($0.categoryID.map(integrationCategoryIDs.contains) ?? false)
+                }
                 .map {
                     DashboardTodayEvent(
                         id: $0.occurrenceID,
@@ -368,6 +375,7 @@ private struct DashboardEventRow: Decodable {
     let occurrenceID: String
     let occurrenceStartsAt, startsAt, endsAt: Date
     let title: String
+    let categoryID: UUID?
     let isAllDay: Bool
     let location: String?
     let categoryColorHex: String?
@@ -379,6 +387,7 @@ private struct DashboardEventRow: Decodable {
         case startsAt = "starts_at"
         case endsAt = "ends_at"
         case title, location
+        case categoryID = "category_id"
         case isAllDay = "is_all_day"
         case categoryColorHex = "category_color_hex"
     }

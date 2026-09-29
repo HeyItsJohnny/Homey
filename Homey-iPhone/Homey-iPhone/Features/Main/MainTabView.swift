@@ -7,7 +7,7 @@ struct MainTabView: View {
     var body: some View {
         TabView(selection: $selection) {
             NavigationStack { HomeView(navigate: navigate) }.tabItem { Label("Home", systemImage: "house.fill") }.tag(MainTab.home)
-            tab("Calendar", "calendar").tabItem { Label("Calendar", systemImage: "calendar") }.tag(MainTab.calendar)
+            NavigationStack { CalendarRootView() }.tabItem { Label("Calendar", systemImage: "calendar") }.tag(MainTab.calendar)
             ChoresRootView().tabItem { Label("Chores", systemImage: "checklist") }.tag(MainTab.chores)
             MealsRootView().tabItem { Label("Meals", systemImage: "fork.knife") }.tag(MainTab.meals)
             NavigationStack { GroceriesView(isActive: selection == .groceries) }.tabItem { Label("Groceries", systemImage: "cart") }.tag(MainTab.groceries)
