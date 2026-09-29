@@ -56,6 +56,8 @@ struct HomeDashboardSnapshot {
     var todayMeals: [DashboardTodayMeal] = []
     var todayChores: [DashboardTodayChore] = []
     var mealCounts = DashboardMealCounts()
+    var calendarDataLoaded = false
+    var mealDataLoaded = false
     var choreRoleResolved = false
     var choreDataLoaded = false
     var failedSections: Set<DashboardSection> = []
@@ -63,4 +65,4 @@ struct HomeDashboardSnapshot {
     static let empty = HomeDashboardSnapshot()
 }
 
-enum DashboardSection: String, Hashable { case chores, rewards, calendar, meals }
+enum DashboardSection: String, Hashable { case approvals, chores, rewards, calendar, meals }

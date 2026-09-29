@@ -4,7 +4,7 @@ import Supabase
 struct HomeDashboardService {
     private let client = SupabaseManager.shared.client
 
-    func load(home: HomeSummary, currentUserID: UUID?, role: HomeMemberRole?) async -> HomeDashboardSnapshot {
+    func load(home: HomeSummary, currentUserID: UUID?, role: HomeMemberRole?) async throws -> HomeDashboardSnapshot {
         var snapshot = HomeDashboardSnapshot.empty
         let ranges = dateRanges(timezone: home.timezone, weekStartsOn: home.weekStartsOn)
 
@@ -20,8 +20,10 @@ struct HomeDashboardService {
                         destination: .chores
                     ))
                 }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
-                snapshot.failedSections.insert(.chores)
+                snapshot.failedSections.insert(.approvals)
                 log(error, section: "chore approvals")
             }
 
@@ -36,6 +38,8 @@ struct HomeDashboardService {
                         destination: .chores
                     ))
                 }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 snapshot.failedSections.insert(.rewards)
                 log(error, section: "reward requests")
@@ -52,6 +56,8 @@ struct HomeDashboardService {
                     role: role
                 )
                 snapshot.choreDataLoaded = true
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 snapshot.failedSections.insert(.chores)
                 log(error, section: "today's chores")
@@ -110,6 +116,8 @@ struct HomeDashboardService {
                 lunch: snapshot.todayMeals.filter { $0.mealType == .lunch }.count,
                 dinner: snapshot.todayMeals.filter { $0.mealType == .dinner }.count
             )
+            snapshot.calendarDataLoaded = true
+            snapshot.mealDataLoaded = true
 
             if role == .owner || role == .admin {
                 let dinnerCount = weekEvents.filter { detailsByEventID[$0.eventID]?.mealType == .dinner }.count
@@ -124,6 +132,8 @@ struct HomeDashboardService {
                     ))
                 }
             }
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             snapshot.failedSections.insert(.calendar)
             snapshot.failedSections.insert(.meals)
@@ -206,6 +216,7 @@ struct HomeDashboardService {
     private func pendingApprovalCount(homeID: UUID) async throws -> Int {
         let occurrences: [OccurrenceIDRow] = try await client.from("chore_occurrences").select("id").eq("home_id", value: homeID.uuidString).execute().value
         let homeIDs = Set(occurrences.map(\.id))
+        guard !homeIDs.isEmpty else { return 0 }
         let submissions: [SubmissionRow] = try await client.from("chore_submissions").select("occurrence_id").eq("status", value: "pending").execute().value
         let pendingIDs = Set(submissions.map(\.occurrenceID)).intersection(homeIDs)
         guard !pendingIDs.isEmpty else { return 0 }

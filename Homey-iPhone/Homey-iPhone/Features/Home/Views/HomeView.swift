@@ -36,8 +36,7 @@ struct HomeView: View {
             .refreshable { await refresh(force: true) }
         }
         .toolbar(.hidden, for: .navigationBar)
-        .onAppear { Task { await refresh(force: true) } }
-        .onChange(of: dashboardScope) { _, _ in Task { await refresh(force: true) } }
+        .task(id: dashboardScope) { await refresh() }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("homeyChoresDidChange"))) { _ in
             Task { await refresh(force: true) }
         }
@@ -130,7 +129,7 @@ struct HomeView: View {
         DashboardSectionView(title: "Today’s Events") {
             if viewModel.isLoading && viewModel.lastLoadedAt == nil {
                 DashboardLoadingCard()
-            } else if viewModel.snapshot.failedSections.contains(.calendar) {
+            } else if !viewModel.snapshot.calendarDataLoaded {
                 DashboardUnavailableCard(detail: "Today's events couldn't be refreshed.")
             } else if viewModel.snapshot.todayEvents.isEmpty {
                 DashboardEmptyState(title: "Nothing scheduled today", detail: "Your day is open.", symbol: "calendar.badge.checkmark")
@@ -173,7 +172,7 @@ struct HomeView: View {
         DashboardSectionView(title: "Today’s Meals") {
             if viewModel.isLoading && viewModel.lastLoadedAt == nil {
                 DashboardLoadingCard()
-            } else if viewModel.snapshot.failedSections.contains(.meals) {
+            } else if !viewModel.snapshot.mealDataLoaded {
                 DashboardUnavailableCard(detail: "Today's meals couldn't be refreshed.")
             } else if viewModel.snapshot.todayMeals.isEmpty {
                 DashboardEmptyState(title: "Nothing planned today", detail: "Your meal plan is ready when you are.", symbol: "fork.knife")
@@ -289,7 +288,7 @@ struct HomeView: View {
     }
 
     private func mealCount(_ type: MealType) -> Int? {
-        viewModel.snapshot.failedSections.contains(.meals) ? nil : viewModel.snapshot.mealCounts[type]
+        viewModel.snapshot.mealDataLoaded ? viewModel.snapshot.mealCounts[type] : nil
     }
 }
 

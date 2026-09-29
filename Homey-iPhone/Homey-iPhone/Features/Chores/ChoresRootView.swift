@@ -2,9 +2,9 @@ import SwiftUI
 
 enum ChoresSection: String, CaseIterable, Identifiable {
     case chores = "Chores"
+    case tasks = "Tasks"
     case rewards = "Rewards"
     case approvals = "Approvals"
-    case history = "History"
 
     var id: Self { self }
 }
@@ -13,6 +13,7 @@ struct ChoresRootView: View {
     @EnvironmentObject private var appSession: AppSession
     @State private var section: ChoresSection = .chores
     @State private var creationDestination: ChoreCreationPlaceholder?
+    @State private var showingHistory = false
     @State private var refreshToken = UUID()
 
     var body: some View {
@@ -44,6 +45,13 @@ struct ChoresRootView: View {
                 if creationDestination == .adjustments {
                     creationDestination = nil
                 }
+                showingHistory = false
+            }
+            .navigationDestination(isPresented: $showingHistory) {
+                ChoreHistoryView()
+                    .navigationTitle("History")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar(.visible, for: .navigationBar)
             }
             .sheet(item: $creationDestination) { destination in
                 if destination == .roomAndChores {
@@ -133,6 +141,11 @@ struct ChoresRootView: View {
                             }
                         }
                     }
+                    Section("History") {
+                        Button("History", systemImage: "clock.arrow.circlepath") {
+                            showingHistory = true
+                        }
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                         .font(.title3.weight(.semibold))
@@ -163,8 +176,12 @@ struct ChoresRootView: View {
         case .rewards:
             ChoreRewardsView()
                 .id(refreshToken)
-        case .history:
-            ChoreHistoryView()
+        case .tasks:
+            ChorePlaceholderView(
+                title: "Tasks",
+                message: "Tasks will appear here.",
+                symbol: "list.bullet.clipboard"
+            )
         }
     }
 }
