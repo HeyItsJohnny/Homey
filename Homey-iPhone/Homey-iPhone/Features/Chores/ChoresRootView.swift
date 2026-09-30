@@ -3,8 +3,8 @@ import SwiftUI
 enum ChoresSection: String, CaseIterable, Identifiable {
     case chores = "Chores"
     case tasks = "Tasks"
-    case rewards = "Rewards"
     case approvals = "Approvals"
+    case rewards = "Rewards"
 
     var id: Self { self }
 }
@@ -42,7 +42,7 @@ struct ChoresRootView: View {
                 if section == .approvals && !canAccessApprovals {
                     section = .chores
                 }
-                if creationDestination == .adjustments {
+                if creationDestination == .adjustments || creationDestination == .task {
                     creationDestination = nil
                 }
                 showingHistory = false
@@ -89,6 +89,14 @@ struct ChoresRootView: View {
                         refreshToken = UUID()
                         NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: nil)
                     }
+                } else if destination == .task {
+                    PhoneDailyTaskEditorView(
+                        homeID: appSession.activeHome?.id,
+                        role: appSession.activeRole,
+                        task: nil
+                    ) {
+                        refreshToken = UUID()
+                    }
                 } else {
                     ChoreCreationPlaceholderView(destination: destination)
                 }
@@ -124,6 +132,11 @@ struct ChoresRootView: View {
                         }
                         Button("Chore", systemImage: "checkmark.circle") {
                             creationDestination = .chore
+                        }
+                        if canAccessApprovals {
+                            Button("Task", systemImage: "checklist") {
+                                creationDestination = .task
+                            }
                         }
                     }
                     Section("Chores") {
@@ -177,11 +190,8 @@ struct ChoresRootView: View {
             ChoreRewardsView()
                 .id(refreshToken)
         case .tasks:
-            ChorePlaceholderView(
-                title: "Tasks",
-                message: "Tasks will appear here.",
-                symbol: "list.bullet.clipboard"
-            )
+            PhoneDailyTasksView()
+                .id("\(refreshToken.uuidString)-\(navigationScope)")
         }
     }
 }
@@ -192,6 +202,7 @@ private enum ChoreCreationPlaceholder: String, Identifiable {
     case reschedule = "Reschedule"
     case reward = "Add Reward"
     case adjustments = "Adjustments"
+    case task = "Add Task"
 
     var id: Self { self }
     var symbol: String {
@@ -201,6 +212,7 @@ private enum ChoreCreationPlaceholder: String, Identifiable {
         case .reschedule: "calendar.badge.clock"
         case .reward: "gift"
         case .adjustments: "plusminus.circle"
+        case .task: "checklist"
         }
     }
 }

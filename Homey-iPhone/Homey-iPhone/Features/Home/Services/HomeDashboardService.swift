@@ -119,9 +119,9 @@ struct HomeDashboardService {
             }
 
             snapshot.mealCounts = DashboardMealCounts(
-                breakfast: snapshot.todayMeals.filter { $0.mealType == .breakfast }.count,
-                lunch: snapshot.todayMeals.filter { $0.mealType == .lunch }.count,
-                dinner: snapshot.todayMeals.filter { $0.mealType == .dinner }.count
+                breakfast: weekEvents.filter { detailsByEventID[$0.eventID]?.mealType == .breakfast }.count,
+                lunch: weekEvents.filter { detailsByEventID[$0.eventID]?.mealType == .lunch }.count,
+                dinner: weekEvents.filter { detailsByEventID[$0.eventID]?.mealType == .dinner }.count
             )
             snapshot.calendarDataLoaded = true
             snapshot.mealDataLoaded = true

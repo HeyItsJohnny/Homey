@@ -245,7 +245,7 @@ struct HomeView: View {
     }
 
     private var mealCountsSection: some View {
-        DashboardSectionView(title: "Meals Planned Today") {
+        DashboardSectionView(title: "Meals Planned This Week") {
             Button { navigate(.meals) } label: {
                 HStack(spacing: 12) {
                     MealCountMetric(type: .breakfast, count: mealCount(.breakfast))
@@ -423,7 +423,7 @@ private struct MealCountMetric: View {
     var body: some View {
         VStack(spacing: 6) {
             Image(systemName: type.symbol).foregroundStyle(HomeyColors.primary)
-            Text(count.map(String.init) ?? "—").font(.title3.bold()).foregroundStyle(HomeyColors.text)
+            Text(count.map { "\($0)/7" } ?? "—/7").font(.title3.bold()).foregroundStyle(HomeyColors.text)
             Text(type.title).font(.caption2).foregroundStyle(HomeyColors.secondaryText)
         }
         .frame(maxWidth: .infinity)

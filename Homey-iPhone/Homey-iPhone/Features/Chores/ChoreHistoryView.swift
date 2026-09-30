@@ -24,6 +24,12 @@ struct ChoreHistoryView: View {
                 } else {
                     activityList
 
+                    if let errorMessage = model.errorMessage {
+                        Label(errorMessage, systemImage: "exclamationmark.circle")
+                            .font(.footnote)
+                            .foregroundStyle(HomeyColors.danger)
+                    }
+
                     if model.hasMoreActivities {
                         Button {
                             Task { await model.loadMore() }
@@ -113,8 +119,8 @@ struct ChoreHistoryView: View {
 
     private var emptyState: some View {
         ChorePlaceholderView(
-            title: "No chore history yet",
-            message: model.selectedMemberName.map { "No chore history for \($0) yet." } ?? "Completed chore activity will appear here.",
+            title: "No history yet",
+            message: model.selectedMemberName.map { "No history for \($0) yet." } ?? "Chore, Task, and Reward activity will appear here.",
             symbol: "clock.arrow.circlepath"
         )
     }
@@ -156,7 +162,7 @@ private struct PhoneChoreHistoryRow: View {
                     .foregroundStyle(HomeyColors.text)
                     .lineLimit(2)
 
-                Text(item.memberName)
+                Text(item.attribution)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(HomeyColors.secondaryText)
 
@@ -165,7 +171,7 @@ private struct PhoneChoreHistoryRow: View {
                     .foregroundStyle(HomeyColors.secondaryText)
                     .lineLimit(1)
 
-                if let subtitle = item.activity.subtitle, !subtitle.isEmpty {
+                if !item.isDailyTask, let subtitle = item.activity.subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.caption)
                         .foregroundStyle(HomeyColors.secondaryText)
@@ -175,7 +181,7 @@ private struct PhoneChoreHistoryRow: View {
 
             Spacer(minLength: 8)
 
-            if let points = item.activity.pointsDelta {
+            if let points = item.activity.pointsDelta, points != 0 {
                 Text("\(points >= 0 ? "+" : "−")\(abs(points)) pts")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(points >= 0 ? HomeyColors.success : HomeyColors.danger)
@@ -188,9 +194,21 @@ private struct PhoneChoreHistoryRow: View {
 }
 
 private struct PhoneChoreHistoryItem: Identifiable, Hashable {
+    let source: PhoneHistorySource
     let activity: PhoneChoreHistoryActivity
     let memberName: String
-    var id: String { "\(activity.id):\(memberName)" }
+    var id: String { "\(source.rawValue):\(activity.id):\(memberName)" }
+    var isDailyTask: Bool { source == .dailyTask }
+    var attribution: String {
+        guard isDailyTask else { return memberName }
+        let type = activity.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(memberName) • \((type?.isEmpty == false ? type : nil) ?? "Daily Task")"
+    }
+}
+
+private enum PhoneHistorySource: String, Hashable {
+    case chore
+    case dailyTask
 }
 
 private struct PhoneHomeMember: Decodable, Identifiable, Hashable {
@@ -263,10 +281,11 @@ private enum PhoneChoreHistoryActivityType: String, Decodable, Hashable {
     case rewardRefunded = "reward_refunded"
     case rewardFulfilled = "reward_fulfilled"
     case rewardCancelled = "reward_cancelled"
+    case taskCompleted = "task_completed"
 
     var iconName: String {
         switch self {
-        case .choreApproved, .choreCompleted, .pointsEarned: "checkmark"
+        case .choreApproved, .choreCompleted, .pointsEarned, .taskCompleted: "checkmark"
         case .choreSubmitted: "paperplane.fill"
         case .choreNeedsRedo: "arrow.counterclockwise"
         case .choreAssigned: "person.crop.circle.badge.checkmark"
@@ -281,7 +300,7 @@ private enum PhoneChoreHistoryActivityType: String, Decodable, Hashable {
 
     var tint: Color {
         switch self {
-        case .choreApproved, .choreCompleted, .pointsEarned, .rewardRefunded, .rewardFulfilled: HomeyColors.success
+        case .choreApproved, .choreCompleted, .pointsEarned, .taskCompleted, .rewardRefunded, .rewardFulfilled: HomeyColors.success
         case .choreNeedsRedo, .choreCancelled, .rewardCancelled: HomeyColors.danger
         case .choreSubmitted: .orange
         default: HomeyColors.secondaryText
@@ -347,6 +366,26 @@ private final class PhoneChoreHistoryRepository {
             .execute()
             .value
     }
+
+    func fetchTaskHistory(homeID: UUID, userID: UUID, limit: Int, offset: Int) async throws -> [PhoneChoreHistoryActivity] {
+        try await client
+            .rpc(
+                "get_daily_task_history",
+                params: PhoneChoreHistoryParameters(homeID: homeID, userID: userID, limit: max(limit, 1), offset: max(offset, 0))
+            )
+            .execute()
+            .value
+    }
+
+    func fetchHomeTaskHistory(homeID: UUID, limit: Int, offset: Int) async throws -> [PhoneChoreHistoryActivity] {
+        try await client
+            .rpc(
+                "get_home_daily_task_history",
+                params: PhoneHomeChoreHistoryParameters(homeID: homeID, limit: max(limit, 1), offset: max(offset, 0))
+            )
+            .execute()
+            .value
+    }
 }
 
 @MainActor
@@ -366,7 +405,11 @@ private final class PhoneChoreHistoryViewModel: ObservableObject {
     private var activeHomeID: UUID?
     private var currentUserID: UUID?
     private var activeRole: HomeMemberRole?
-    private var nextOffset = 0
+    private var choreActivities: [PhoneChoreHistoryActivity] = []
+    private var taskActivities: [PhoneChoreHistoryActivity] = []
+    private var choreHasMore = true
+    private var taskHasMore = true
+    private var displayLimit = 0
     private var loadID = UUID()
 
     var selectedMemberName: String? {
@@ -387,6 +430,7 @@ private final class PhoneChoreHistoryViewModel: ObservableObject {
         if contextChanged {
             loadID = UUID()
             activities = []
+            resetPagination()
             errorMessage = nil
             selectedMemberID = nextCanViewAllUsers ? nil : currentUser.id
         }
@@ -405,6 +449,7 @@ private final class PhoneChoreHistoryViewModel: ObservableObject {
                     self.selectedMemberID = nil
                 }
             } catch {
+                if isCancellation(error) { return }
                 fail(error, message: "We couldn't load the members for this Home.")
                 return
             }
@@ -440,22 +485,33 @@ private final class PhoneChoreHistoryViewModel: ObservableObject {
         isLoadingMore = true
         errorMessage = nil
         defer { isLoadingMore = false }
-        await fetchNextPages(replacing: false)
+        let pageSize = currentPageSize
+        let previousDisplayLimit = displayLimit
+        displayLimit += pageSize
+        if !(await fetchToDisplayLimit()) {
+            displayLimit = previousDisplayLimit
+        }
     }
 
     private func reload() async {
         loadID = UUID()
-        nextOffset = 0
+        resetPagination()
+        displayLimit = currentPageSize
         activities = []
         hasMoreActivities = false
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
-        await fetchNextPages(replacing: true)
+        _ = await fetchToDisplayLimit()
     }
 
-    private func fetchNextPages(replacing: Bool) async {
-        guard let homeID = activeHomeID, let currentUserID else { return }
+    private var currentPageSize: Int {
+        let isAllUsersRequest = Self.hasHouseholdHistoryAccess(activeRole) && selectedMemberID == nil
+        return isAllUsersRequest ? homePageSize : individualPageSize
+    }
+
+    private func fetchToDisplayLimit() async -> Bool {
+        guard let homeID = activeHomeID, let currentUserID else { return false }
         let requestedLoadID = loadID
 
         do {
@@ -464,29 +520,93 @@ private final class PhoneChoreHistoryViewModel: ObservableObject {
             let hasHouseholdAccess = Self.hasHouseholdHistoryAccess(activeRole)
             let isAllUsersRequest = hasHouseholdAccess && selectedMemberID == nil
             let pageSize = isAllUsersRequest ? homePageSize : individualPageSize
-            let page: [PhoneChoreHistoryActivity]
+            let requestedUserID = isAllUsersRequest ? nil : (hasHouseholdAccess ? selectedMemberID : currentUserID)
+            if !isAllUsersRequest, requestedUserID == nil { return false }
 
-            if isAllUsersRequest {
-                page = try await repository.fetchHomeHistory(homeID: homeID, limit: pageSize, offset: nextOffset)
-            } else {
-                let requestedUserID = hasHouseholdAccess ? selectedMemberID : currentUserID
-                guard let requestedUserID else { return }
-                page = try await repository.fetchHistory(homeID: homeID, userID: requestedUserID, limit: pageSize, offset: nextOffset)
+            var nextChoreActivities = choreActivities
+            var nextTaskActivities = taskActivities
+            var nextChoreHasMore = choreHasMore
+            var nextTaskHasMore = taskHasMore
+
+            while nextChoreActivities.count < displayLimit && nextChoreHasMore {
+                let page: [PhoneChoreHistoryActivity]
+                if isAllUsersRequest {
+                    page = try await repository.fetchHomeHistory(
+                        homeID: homeID,
+                        limit: pageSize,
+                        offset: nextChoreActivities.count
+                    )
+                } else {
+                    page = try await repository.fetchHistory(
+                        homeID: homeID,
+                        userID: requestedUserID!,
+                        limit: pageSize,
+                        offset: nextChoreActivities.count
+                    )
+                }
+                nextChoreActivities.append(contentsOf: page)
+                nextChoreHasMore = page.count == pageSize
             }
 
-            guard loadID == requestedLoadID, activeHomeID == homeID else { return }
+            while nextTaskActivities.count < displayLimit && nextTaskHasMore {
+                let page: [PhoneChoreHistoryActivity]
+                if isAllUsersRequest {
+                    page = try await repository.fetchHomeTaskHistory(
+                        homeID: homeID,
+                        limit: pageSize,
+                        offset: nextTaskActivities.count
+                    )
+                } else {
+                    page = try await repository.fetchTaskHistory(
+                        homeID: homeID,
+                        userID: requestedUserID!,
+                        limit: pageSize,
+                        offset: nextTaskActivities.count
+                    )
+                }
+                nextTaskActivities.append(contentsOf: page)
+                nextTaskHasMore = page.count == pageSize
+            }
+
+            guard loadID == requestedLoadID, activeHomeID == homeID else { return false }
+            choreActivities = nextChoreActivities
+            taskActivities = nextTaskActivities
+            choreHasMore = nextChoreHasMore
+            taskHasMore = nextTaskHasMore
+
             let namesByUserID = Dictionary(uniqueKeysWithValues: members.map { ($0.userID, $0.displayName) })
-            let newItems = page.map { activity in
-                PhoneChoreHistoryItem(activity: activity, memberName: namesByUserID[activity.userID] ?? "Home Member")
+            let choreItems = choreActivities.map { activity in
+                PhoneChoreHistoryItem(
+                    source: .chore,
+                    activity: activity,
+                    memberName: namesByUserID[activity.userID] ?? "Home Member"
+                )
             }
-
-            let combined = replacing ? newItems : activities + newItems
-            activities = combined
-            nextOffset += page.count
-            hasMoreActivities = page.count == pageSize
+            let taskItems = taskActivities.map { activity in
+                PhoneChoreHistoryItem(
+                    source: .dailyTask,
+                    activity: activity,
+                    memberName: namesByUserID[activity.userID] ?? "Home Member"
+                )
+            }
+            let merged = (choreItems + taskItems).sorted(by: Self.historyOrder)
+            activities = Array(merged.prefix(displayLimit))
+            hasMoreActivities = merged.count > displayLimit || choreHasMore || taskHasMore
+            return true
+        } catch is CancellationError {
+            return false
         } catch {
-            fail(error, message: "We couldn't load chore history.")
+            if isCancellation(error) { return false }
+            fail(error, message: "We couldn't load History.")
+            return false
         }
+    }
+
+    private static func historyOrder(_ lhs: PhoneChoreHistoryItem, _ rhs: PhoneChoreHistoryItem) -> Bool {
+        if lhs.activity.occurredAt != rhs.activity.occurredAt {
+            return lhs.activity.occurredAt > rhs.activity.occurredAt
+        }
+        return lhs.id > rhs.id
     }
 
     private func fail(_ error: Error, message: String) {
@@ -498,6 +618,22 @@ private final class PhoneChoreHistoryViewModel: ObservableObject {
 
     private static func hasHouseholdHistoryAccess(_ role: HomeMemberRole?) -> Bool {
         role == .owner || role == .admin
+    }
+
+    private func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let value = error as NSError
+        if value.domain == NSURLErrorDomain && value.code == NSURLErrorCancelled { return true }
+        if let underlying = value.userInfo[NSUnderlyingErrorKey] as? Error { return isCancellation(underlying) }
+        return false
+    }
+
+    private func resetPagination() {
+        choreActivities = []
+        taskActivities = []
+        choreHasMore = true
+        taskHasMore = true
+        displayLimit = 0
     }
 
     private func reset() {
@@ -512,7 +648,7 @@ private final class PhoneChoreHistoryViewModel: ObservableObject {
         isLoadingMore = false
         hasMoreActivities = false
         errorMessage = nil
-        nextOffset = 0
+        resetPagination()
     }
 }
 

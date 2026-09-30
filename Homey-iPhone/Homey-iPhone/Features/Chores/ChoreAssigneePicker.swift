@@ -15,16 +15,10 @@ struct ChoreSingleAssigneePicker: View {
                 Button {
                     selection = option.id
                 } label: {
-                    HStack {
-                        Image(systemName: selection == option.id ? "checkmark.circle.fill" : "circle")
-                        Text(option.name)
-                        Spacer()
-                    }
-                    .contentShape(Rectangle())
+                    ChoreAssigneePickerRow(option: option, isSelected: selection == option.id)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(selection == option.id ? HomeyColors.primary : HomeyColors.text)
-                .padding(.vertical, 5)
             }
 
             if selection == nil {
@@ -33,6 +27,48 @@ struct ChoreSingleAssigneePicker: View {
                     .foregroundStyle(HomeyColors.danger)
             }
         }
+    }
+}
+
+struct ChoreMultiAssigneePicker: View {
+    let options: [ChoreAssigneeOption]
+    @Binding var selection: Set<UUID>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(options) { option in
+                let isSelected = selection.contains(option.id)
+                Button {
+                    if isSelected { selection.remove(option.id) }
+                    else { selection.insert(option.id) }
+                } label: {
+                    ChoreAssigneePickerRow(option: option, isSelected: isSelected)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(isSelected ? HomeyColors.primary : HomeyColors.text)
+            }
+
+            if selection.isEmpty {
+                Text("Select at least one person to assign this task to.")
+                    .font(.footnote)
+                    .foregroundStyle(HomeyColors.danger)
+            }
+        }
+    }
+}
+
+private struct ChoreAssigneePickerRow: View {
+    let option: ChoreAssigneeOption
+    let isSelected: Bool
+
+    var body: some View {
+        HStack {
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+            Text(option.name)
+            Spacer()
+        }
+        .contentShape(Rectangle())
+        .padding(.vertical, 5)
     }
 }
 
