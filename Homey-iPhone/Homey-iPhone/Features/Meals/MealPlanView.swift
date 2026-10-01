@@ -61,10 +61,6 @@ struct MealPlanView: View {
             }
         }
         .task(id: dayIdentifier) { await model.refreshPlan(home: home, containing: selectedDay) }
-        .onChange(of: home.id) {
-            selectedDate = today
-            Task { await model.refreshPlan(home: home, containing: today) }
-        }
     }
 
     private var dateNavigation: some View {

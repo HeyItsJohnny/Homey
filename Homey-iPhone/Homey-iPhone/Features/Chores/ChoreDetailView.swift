@@ -360,14 +360,14 @@ final class PhoneChoreDetailService {
     func load(templateID: UUID, occurrenceID: UUID, homeID: UUID) async throws -> PhoneChoreDetail {
         _ = try await client.auth.session
         let templates: [PhoneTemplateDetailRow] = try await client.from("chore_templates").select("id,home_id,title,description,instructions,category_id,room_id,assignment_mode,completion_mode,points_value,requires_approval,requires_photo,contributes_to_room_cleaning").eq("id", value: templateID.uuidString).eq("home_id", value: homeID.uuidString).limit(1).execute().value
-        guard let template = templates.first else { throw ChoreCalendarInfrastructureError.repositoryOperationFailed }
+        guard let template = templates.first else { throw ChoreScheduleInfrastructureError.repositoryOperationFailed }
         let recurrenceRows: [PhoneRecurrenceRow] = try await client.from("chore_recurrence_rules").select("frequency,interval_value,start_date,due_time,duration_minutes,is_all_day,weekdays,day_of_month,month_of_year,end_type,ends_on,occurrence_count,timezone").eq("template_id", value: templateID.uuidString).limit(1).execute().value
-        guard let recurrence = recurrenceRows.first else { throw ChoreCalendarInfrastructureError.repositoryOperationFailed }
+        guard let recurrence = recurrenceRows.first else { throw ChoreScheduleInfrastructureError.repositoryOperationFailed }
         let assignees: [PhoneTemplateAssigneeRow] = try await client.from("chore_template_assignees").select("user_id").eq("template_id", value: templateID.uuidString).execute().value
         let rooms: [PhoneEditRoom] = try await client.from("chore_rooms").select("id,name,room_type").eq("home_id", value: homeID.uuidString).order("sort_order").execute().value
         let members: [PhoneDetailMemberRow] = try await client.rpc("get_home_members", params: PhoneDetailMembersParams(homeID: homeID)).execute().value
         let occurrences: [PhoneDetailOccurrenceRow] = try await client.from("chore_occurrences").select("status").eq("id", value: occurrenceID.uuidString).eq("home_id", value: homeID.uuidString).limit(1).execute().value
-        guard let occurrence = occurrences.first else { throw ChoreCalendarInfrastructureError.repositoryOperationFailed }
+        guard let occurrence = occurrences.first else { throw ChoreScheduleInfrastructureError.repositoryOperationFailed }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: recurrence.timezone) ?? .current
         let todayStart = calendar.startOfDay(for: Date())
@@ -376,7 +376,7 @@ final class PhoneChoreDetailService {
             .eq("home_id", value: homeID.uuidString)
             .eq("template_id", value: templateID.uuidString)
             .eq("status", value: "not_started")
-            .gte("due_at", value: ChoreCalendarDateFormatting.timestamp(todayStart))
+            .gte("due_at", value: ChoreScheduleDateFormatting.timestamp(todayStart))
             .order("due_at", ascending: true).limit(1).execute().value
         let names = Dictionary(uniqueKeysWithValues: members.map { ($0.userID, $0.name) })
         return PhoneChoreDetail(id: template.id, occurrenceID: occurrenceID, homeID: template.homeID, title: template.title,

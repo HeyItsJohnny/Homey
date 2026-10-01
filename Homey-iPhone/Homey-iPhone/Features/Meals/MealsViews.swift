@@ -31,6 +31,9 @@ import Combine
         }
         activeHomeID = home.id
         isLoading = true
+        defer {
+            if activeLoadID == loadID { isLoading = false }
+        }
         do {
             async let h = service.homeRecipes(homeId: home.id)
             async let f = service.favoriteIDs()
@@ -50,9 +53,9 @@ import Combine
             recipesRevision += 1
         } catch {
             guard activeLoadID == loadID, activeHomeID == home.id else { return }
+            guard !Self.isCancellation(error) else { return }
             errorMessage = error.localizedDescription
         }
-        if activeLoadID == loadID { isLoading = false }
     }
     func refreshRecipesAfterSave(home: HomeSummary) async throws {
         let loadedRecipes = try await service.homeRecipes(homeId: home.id)
@@ -81,6 +84,7 @@ import Combine
             mealPlanItems = Self.resolve(entries: entries, recipes: recipes)
         } catch {
             guard activePlanLoadID == loadID, activeHomeID == home.id else { return }
+            guard !Self.isCancellation(error) else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -411,6 +415,18 @@ import Combine
     private static func inclusiveEnd(of interval: DateInterval, home: HomeSummary) -> Date {
         calendar(home).date(byAdding: .day, value: -1, to: interval.end) ?? interval.start
     }
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
+            return true
+        }
+        if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? Error {
+            return isCancellation(underlyingError)
+        }
+        return false
+    }
     static func calendar(_ home:HomeSummary)->Calendar { var c=Calendar(identifier:.gregorian); c.timeZone=home.timezone.flatMap(TimeZone.init(identifier:)) ?? .current; c.firstWeekday=home.weekStartsOn == 2 ? 2:1; return c }
     static func week(containing date:Date,home:HomeSummary)->DateInterval { let c=calendar(home); return c.dateInterval(of:.weekOfYear,for:date) ?? .init(start:c.startOfDay(for:date),duration:604800) }
 }
@@ -556,7 +572,12 @@ struct MealsRootView: View {
                 Task { await model.load(home: home) }
             }
             .refreshable {
-                if let home = session.activeHome { await model.load(home: home) }
+                guard let home = session.activeHome else { return }
+                if section == 0 {
+                    await model.refreshPlan(home: home, containing: selectedMealPlanDate)
+                } else {
+                    await model.load(home: home)
+                }
             }
             .alert("Meals", isPresented: .init(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
                 Button("OK", role: .cancel) {}

@@ -14,7 +14,6 @@ struct EditChoreView: View {
     @State private var partialFailure: ChoreRecurringEditPartialFailure?
     @State private var snapshotRefreshPending = false
     @State private var confirmsDelete = false
-    @State private var failedDeleteCalendarEventIDs: [UUID] = []
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @FocusState private var focusedField: EditChoreField?
     private let service = PhoneChoreEditService()
@@ -76,10 +75,11 @@ struct EditChoreView: View {
                     Button { dismiss() } label: { Label("Chores", systemImage: "chevron.left").font(.headline) }.disabled(saving)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { Task { await save() } } label: {
-                        Text("Save").font(.system(size: 14, weight: .semibold)).padding(.horizontal, 15).frame(height: 44)
-                    }.buttonStyle(.plain).foregroundStyle(.white)
-                        .background(HomeyColors.primary, in: Capsule())
+                    Button("Save") { Task { await save() } }
+                        .font(.system(size: 14, weight: .semibold))
+                        .buttonStyle(.borderedProminent)
+                        .buttonBorderShape(.capsule)
+                        .tint(HomeyColors.primary)
                         .disabled(!valid || saving || !initial.canSafelyEdit)
                 }
                 ToolbarItemGroup(placement: .keyboard) {
@@ -235,7 +235,7 @@ struct EditChoreView: View {
         Button {
             confirmsDelete = true
         } label: {
-            Label(failedDeleteCalendarEventIDs.isEmpty ? "Delete Chore" : "Retry Calendar Cleanup", systemImage: "trash")
+            Label("Delete Chore", systemImage: "trash")
                 .font(.system(size: 14, weight: .semibold)).frame(maxWidth: .infinity).padding(.vertical, 15)
         }
         .buttonStyle(.plain).foregroundStyle(HomeyColors.danger)
@@ -276,7 +276,7 @@ struct EditChoreView: View {
             #endif
         } catch let failure as ChoreRecurringEditPartialFailure {
             #if DEBUG
-            print("[Homey] CHORE EDIT: \(failure.stage.rawValue) failed template_id=\(failure.templateId.uuidString) error=\(failure.underlyingDescription)")
+            print("[Homey] CHORE EDIT: \(failure.stage.rawValue) failed template_id=\(failure.templateID.uuidString) error=\(failure.underlyingDescription)")
             #endif
             partialFailure = failure
             snapshotRefreshPending = false
@@ -294,19 +294,9 @@ struct EditChoreView: View {
         guard savePhase == nil, appSession.activeHome?.id == home.id else { return }
         savePhase = .deleting; error = nil
         do {
-            try await service.retire(
-                draft: draft,
-                retryCalendarEventIDs: failedDeleteCalendarEventIDs
-            ) { phase in savePhase = phase }
-            failedDeleteCalendarEventIDs = []
+            try await service.retire(draft: draft) { phase in savePhase = phase }
             savePhase = .refreshing
             await onSaved()
-        } catch let partial as PhoneChoreDeletePartialFailure {
-            failedDeleteCalendarEventIDs = partial.remainingCalendarEventIDs
-            self.error = partial.localizedDescription
-            #if DEBUG
-            print("[Homey] CHORE DELETE: calendar cleanup failed template_id=\(draft.id.uuidString) remaining=\(partial.remainingCalendarEventIDs.count)")
-            #endif
         } catch {
             self.error = "The chore could not be deleted. \(error.localizedDescription)"
             #if DEBUG
@@ -338,12 +328,11 @@ private extension View {
 }
 
 enum PhoneChoreSavePhase {
-    case saving, futureChores, calendar, refreshing, deleting
+    case saving, futureChores, refreshing, deleting
     var message: String {
         switch self {
         case .saving: "Saving Chore..."
         case .futureChores: "Updating future chores..."
-        case .calendar: "Updating calendar..."
         case .refreshing: "Refreshing chores..."
         case .deleting: "Deleting chore..."
         }
@@ -362,32 +351,14 @@ final class PhoneChoreEditService {
 
     func retire(
         draft: PhoneChoreDetail,
-        retryCalendarEventIDs: [UUID],
         progress: @escaping (PhoneChoreSavePhase) -> Void
     ) async throws {
         _ = try await client.auth.session
-        let calendarEventIDs: [UUID]
-        if retryCalendarEventIDs.isEmpty {
-            progress(.deleting)
-            let rows: [PhoneRetiredOccurrenceRow] = try await client.rpc(
-                "retire_chore_template",
-                params: PhoneRetireChoreParameters(templateID: draft.id, effectiveFrom: Date())
-            ).execute().value
-            calendarEventIDs = rows.compactMap(\.calendarEventID)
-        } else {
-            calendarEventIDs = retryCalendarEventIDs
-        }
-        progress(.calendar)
-        let calendarService = ChoreCalendarService()
-        var failedEventIDs: [UUID] = []
-        for eventID in calendarEventIDs {
-            do { try await calendarService.deleteEvent(eventId: eventID) }
-            catch { failedEventIDs.append(eventID) }
-        }
-        if !failedEventIDs.isEmpty {
-            NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: nil)
-            throw PhoneChoreDeletePartialFailure(remainingCalendarEventIDs: failedEventIDs)
-        }
+        progress(.deleting)
+        let _: [PhoneRetiredOccurrenceRow] = try await client.rpc(
+            "retire_chore_template",
+            params: PhoneRetireChoreParameters(templateID: draft.id, effectiveFrom: Date())
+        ).execute().value
         progress(.refreshing)
         postRefresh()
     }
@@ -400,19 +371,19 @@ final class PhoneChoreEditService {
         progress: @escaping (PhoneChoreSavePhase) -> Void
     ) async throws {
         guard draft.homeID == original.homeID, draft.canSafelyEdit, draft.assigneeIDs.count == 1 else {
-            throw ChoreCalendarInfrastructureError.repositoryOperationFailed
+            throw ChoreScheduleInfrastructureError.repositoryOperationFailed
         }
         let snapshotChanged = hasSnapshotChanges(draft, original)
         let scheduleChanged = hasScheduleChanges(draft, original)
 
         if retrySnapshotRefreshOnly {
             try await refreshUntouchedOccurrences(draft, progress: progress)
-            postRefresh(includeCalendar: false)
+            postRefresh()
             return
         }
         if !snapshotChanged && !scheduleChanged {
             progress(.refreshing)
-            postRefresh(includeCalendar: false)
+            postRefresh()
             return
         }
         let basis = max(Date(), draft.startDate)
@@ -421,23 +392,25 @@ final class PhoneChoreEditService {
         if let partialFailure, partialFailure.stage == .replaceOccurrences {
             throw partialFailure
         } else if let partialFailure {
-            try await coordinator.resumeRecurringSchedule(homeId: draft.homeID,
+            try await coordinator.resumeRecurringSchedule(
                 generateThrough: through, timezone: draft.timezone,
                 failure: partialFailure,
                 progress: { progress(Self.phase($0)) })
             if snapshotChanged { try await refreshUntouchedOccurrences(draft, progress: progress) }
+            postRefresh()
         } else if !scheduleChanged {
             progress(.saving)
             _ = try await saveTemplate(draft)
             try await refreshUntouchedOccurrences(draft, progress: progress)
-            postRefresh(includeCalendar: false)
+            postRefresh()
         } else {
-            _ = try await coordinator.replaceRecurringSchedule(homeId: draft.homeID,
+            _ = try await coordinator.replaceRecurringSchedule(
                 effectiveFrom: effectiveDate(timezone: draft.timezone), generateThrough: through, timezone: draft.timezone,
                 progress: { stage in progress(Self.phase(stage)) }) {
                     try await self.saveTemplate(draft)
                 }
             if snapshotChanged { try await refreshUntouchedOccurrences(draft, progress: progress) }
+            postRefresh()
         }
         progress(.refreshing)
     }
@@ -479,7 +452,7 @@ final class PhoneChoreEditService {
         progress(.futureChores)
         do {
             _ = try await coordinator.refreshAssignmentsOnly(
-                templateId: draft.id,
+                templateID: draft.id,
                 effectiveFrom: effectiveDate(timezone: draft.timezone)
             )
         } catch {
@@ -510,7 +483,7 @@ final class PhoneChoreEditService {
         value.frequency == .none || value.endType == .afterCount ? value.occurrenceCount : nil
     }
     private func dateOnly(_ value: Date, timezone: String) -> String {
-        ChoreCalendarDateFormatting.date(value, timezone: timezone)
+        ChoreScheduleDateFormatting.date(value, timezone: timezone)
     }
 
     private func saveTemplate(_ draft: PhoneChoreDetail) async throws -> UUID {
@@ -521,17 +494,13 @@ final class PhoneChoreEditService {
         var calendar = Calendar(identifier: .gregorian); calendar.timeZone = TimeZone(identifier: timezone) ?? .current
         return calendar.startOfDay(for: Date())
     }
-    private func postRefresh(includeCalendar: Bool = true) {
+    private func postRefresh() {
         NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: nil)
-        if includeCalendar {
-            NotificationCenter.default.post(name: Notification.Name("homeyCalendarEventsDidChange"), object: nil)
-        }
     }
     private static func phase(_ value: ChoreRecurringEditProgress) -> PhoneChoreSavePhase {
         switch value {
         case .savingTemplate: .saving
         case .replacingOccurrences: .futureChores
-        case .updatingCalendar: .calendar
         case .refreshing: .refreshing
         }
     }
@@ -545,19 +514,12 @@ private struct PhoneChoreSnapshotRefreshPartialFailure: LocalizedError {
     }
 }
 
-private struct PhoneChoreDeletePartialFailure: LocalizedError {
-    let remainingCalendarEventIDs: [UUID]
-    var errorDescription: String? {
-        "The chore was deleted, but some future calendar events could not be removed. Tap Retry Calendar Cleanup to finish."
-    }
-}
-
 private struct PhoneRetireChoreParameters: Encodable {
     let templateID: UUID
     let effectiveFrom: String
     init(templateID: UUID, effectiveFrom: Date) {
         self.templateID = templateID
-        self.effectiveFrom = ChoreCalendarDateFormatting.timestamp(effectiveFrom)
+        self.effectiveFrom = ChoreScheduleDateFormatting.timestamp(effectiveFrom)
     }
     enum CodingKeys: String, CodingKey {
         case templateID = "requested_template_id"
@@ -567,11 +529,7 @@ private struct PhoneRetireChoreParameters: Encodable {
 
 private struct PhoneRetiredOccurrenceRow: Decodable {
     let occurrenceID: UUID
-    let calendarEventID: UUID?
-    enum CodingKeys: String, CodingKey {
-        case occurrenceID = "occurrence_id"
-        case calendarEventID = "calendar_event_id"
-    }
+    enum CodingKeys: String, CodingKey { case occurrenceID = "occurrence_id" }
 }
 
 private struct PhoneEditSaveParameters: Encodable {
@@ -583,10 +541,10 @@ private struct PhoneEditSaveParameters: Encodable {
         homeID=d.homeID; templateID=d.id; title=d.title.trimmingCharacters(in:.whitespacesAndNewlines); description=d.description.phoneNilIfBlank
         instructions=d.instructions.phoneNilIfBlank; categoryID=d.categoryID; roomID=d.roomID; assignmentMode=d.assignmentMode
         completionMode=d.completionMode.rawValue; points=d.pointsValue; approval=d.requiresApproval; photo=d.requiresPhoto
-        frequency=d.frequency.rawValue; interval=d.intervalValue; startDate=ChoreCalendarDateFormatting.date(d.startDate, timezone:d.timezone)
+        frequency=d.frequency.rawValue; interval=d.intervalValue; startDate=ChoreScheduleDateFormatting.date(d.startDate, timezone:d.timezone)
         dueTime=d.isAllDay ? nil:d.dueTime; duration=d.durationMinutes; allDay=d.isAllDay; weekdays=Array(d.weekdays).sorted()
         day=d.dayOfMonth; month=d.monthOfYear; endType=d.frequency == .none ? "after_count":d.endType.rawValue
-        endsOn=d.endType == .onDate ? d.endsOn.map { ChoreCalendarDateFormatting.date($0, timezone:d.timezone) }:nil
+        endsOn=d.endType == .onDate ? d.endsOn.map { ChoreScheduleDateFormatting.date($0, timezone:d.timezone) }:nil
         count=d.frequency == .none ? 1:(d.endType == .afterCount ? d.occurrenceCount:nil); timezone=d.timezone; assignees=d.assigneeIDs
     }
     enum CodingKeys:String,CodingKey { case homeID="requested_home_id",templateID="requested_template_id",title="requested_title",description="requested_description",instructions="requested_instructions",categoryID="requested_category_id",roomID="requested_room_id",assignmentMode="requested_assignment_mode",completionMode="requested_completion_mode",points="requested_points_value",approval="requested_requires_approval",photo="requested_requires_photo",frequency="requested_frequency",interval="requested_interval_value",startDate="requested_start_date",dueTime="requested_due_time",duration="requested_duration_minutes",allDay="requested_is_all_day",weekdays="requested_weekdays",day="requested_day_of_month",month="requested_month_of_year",endType="requested_end_type",endsOn="requested_ends_on",count="requested_occurrence_count",timezone="requested_timezone",assignees="requested_assignee_ids" }

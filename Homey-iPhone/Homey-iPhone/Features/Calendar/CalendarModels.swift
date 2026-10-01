@@ -75,32 +75,6 @@ struct PhoneCalendarEvent: Decodable, Identifiable, Hashable {
     }
 }
 
-extension PhoneCalendarCategory {
-    var isChoreCategory: Bool {
-        guard isSystem else { return false }
-        return systemKey == "chore"
-    }
-}
-
-enum PhoneCalendarVisibility {
-    static func excludedChoreCategoryIDs(from categories: [PhoneCalendarCategory]) -> Set<UUID> {
-        Set(categories.filter(\.isChoreCategory).map(\.id))
-    }
-
-    static func userEvents(
-        _ events: [PhoneCalendarEvent],
-        categories: [PhoneCalendarCategory],
-        linkedChoreEventIDs: Set<UUID>
-    ) -> [PhoneCalendarEvent] {
-        let excluded = excludedChoreCategoryIDs(from: categories)
-        return events.filter { event in
-            guard !linkedChoreEventIDs.contains(event.eventID) else { return false }
-            guard let categoryID = event.categoryID else { return true }
-            return !excluded.contains(categoryID)
-        }
-    }
-}
-
 enum PhoneCalendarRecurrenceFrequency: String, Codable, CaseIterable, Identifiable, Hashable {
     case daily, weekly, monthly, yearly
     var id: Self { self }

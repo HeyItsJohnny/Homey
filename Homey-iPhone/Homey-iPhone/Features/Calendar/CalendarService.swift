@@ -11,17 +11,9 @@ struct PhoneCalendarService {
                 params: PhoneCalendarRangeParameters(homeID: homeID, start: start, end: end)
             ).execute().value
             let unique = Dictionary(grouping: events, by: \.occurrenceID).compactMap { $0.value.max(by: { $0.occurrenceStartsAt < $1.occurrenceStartsAt }) }
-            let metadata = try await fetchChoreMetadata(
-                homeID: homeID,
-                eventIDs: Set(unique.map(\.eventID))
-            )
             return (
-                PhoneCalendarVisibility.userEvents(
-                    unique,
-                    categories: metadata.categories,
-                    linkedChoreEventIDs: metadata.linkedEventIDs
-                ).sortedForCalendar,
-                metadata.categories
+                unique.sortedForCalendar,
+                try await fetchCategories(homeID: homeID)
             )
         } catch {
             if isCancellation(error) { throw CancellationError() }
@@ -41,31 +33,6 @@ struct PhoneCalendarService {
         } catch {
             if isCancellation(error) { throw CancellationError() }
             throw error
-        }
-    }
-
-    func fetchChoreMetadata(homeID: UUID, eventIDs: Set<UUID>) async throws -> PhoneCalendarChoreMetadata {
-        let categories = try await fetchCategories(homeID: homeID)
-        guard !eventIDs.isEmpty else {
-            return PhoneCalendarChoreMetadata(categories: categories, linkedEventIDs: [])
-        }
-
-        let encodedIDs = eventIDs.map(\.uuidString)
-        do {
-            let choreRows: [PhoneCalendarEventLinkRow] = try await client
-                .from("chore_occurrences")
-                .select("calendar_event_id")
-                .eq("home_id", value: homeID.uuidString)
-                .in("calendar_event_id", values: encodedIDs)
-                .execute().value
-            return PhoneCalendarChoreMetadata(
-                categories: categories,
-                linkedEventIDs: Set(choreRows.map(\.calendarEventID))
-            )
-        } catch {
-            if isCancellation(error) { throw CancellationError() }
-            log(error, operation: "load_chore_metadata", id: homeID)
-            throw PhoneCalendarError.loadFailed
         }
     }
 
@@ -175,11 +142,6 @@ struct PhoneCalendarService {
     }
 }
 
-struct PhoneCalendarChoreMetadata {
-    let categories: [PhoneCalendarCategory]
-    let linkedEventIDs: Set<UUID>
-}
-
 enum PhoneCalendarError: LocalizedError {
     case loadFailed, emptyTitle, invalidRange, saveFailed, deleteFailed
     var errorDescription: String? {
@@ -215,11 +177,6 @@ private struct PhoneCalendarRangeParameters: Encodable {
         self.end = PhoneCalendarRPCDate.string(end)
     }
     enum CodingKeys: String, CodingKey { case homeID = "target_home_id", start = "range_start", end = "range_end" }
-}
-
-private struct PhoneCalendarEventLinkRow: Decodable {
-    let calendarEventID: UUID
-    enum CodingKeys: String, CodingKey { case calendarEventID = "calendar_event_id" }
 }
 
 private struct PhoneCreateCalendarEventParameters: Encodable {

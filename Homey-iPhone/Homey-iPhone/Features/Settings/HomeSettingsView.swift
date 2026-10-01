@@ -298,9 +298,9 @@ private enum HomeClearAction: String, Identifiable {
         case .meals:
             "This permanently deletes this Home's recipes, recipe details, photos, favorites, collections, and meal plans. Global and Community Recipes are preserved."
         case .calendar:
-            "This permanently deletes regular calendar events for this Home. Chore-linked events, meal plans, recipes, chores, and rewards are preserved."
+            "This permanently deletes Calendar events for this Home. Meal plans, recipes, chores, and rewards are preserved."
         case .chores:
-            "This permanently deletes all chore templates, schedules, occurrences, assignments, claims, submissions, approvals, points activity, rooms, chore categories, rewards, redemptions, and linked chore calendar events for this Home."
+            "This permanently deletes all chore templates, schedules, occurrences, assignments, claims, submissions, approvals, Chore points activity, rooms, chore categories, rewards, and redemptions for this Home. Daily Task points are preserved."
         }
     }
 }
@@ -368,7 +368,6 @@ private struct ClearHomeDataSheet: View {
                 let result = try await repository.clearChores(homeID: home.id)
                 message = "Chore data cleared (\(result.choreDefinitionsDeleted) chore\(result.choreDefinitionsDeleted == 1 ? "" : "s"))."
                 NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: nil)
-                NotificationCenter.default.post(name: Notification.Name("homeyCalendarEventsDidChange"), object: nil)
             }
             isClearing = false
             onSuccess(message)

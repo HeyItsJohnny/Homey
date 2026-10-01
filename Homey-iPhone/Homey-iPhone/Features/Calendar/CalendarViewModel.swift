@@ -19,7 +19,7 @@ final class PhoneCalendarViewModel: ObservableObject {
     private(set) var calendar = Calendar(identifier: .gregorian)
     private(set) var timezone = TimeZone.current
 
-    var userCategories: [PhoneCalendarCategory] { categories.filter { !$0.isChoreCategory } }
+    var userCategories: [PhoneCalendarCategory] { categories }
     var monthTitle: String { formatter("MMMM yyyy").string(from: visibleMonth) }
     var selectedDateTitle: String { formatter("EEEE, MMMM d").string(from: selectedDate) }
     var weekdaySymbols: [String] {

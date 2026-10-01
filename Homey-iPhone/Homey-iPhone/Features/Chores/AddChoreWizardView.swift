@@ -314,7 +314,6 @@ struct AddChoreWizardView: View {
             try await service.save(homeID: homeID, roomID: roomID, draft: draft, timezone: timezone)
             guard self.homeID == homeID else { return }
             NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: nil)
-            NotificationCenter.default.post(name: Notification.Name("homeyCalendarEventsDidChange"), object: nil)
             onFinished()
             dismiss()
         } catch { draft.errorMessage = error.localizedDescription }
