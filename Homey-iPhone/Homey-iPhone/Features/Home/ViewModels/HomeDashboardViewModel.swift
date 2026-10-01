@@ -75,8 +75,11 @@ private extension HomeDashboardSnapshot {
         }
         if !mealDataLoaded, previous.mealDataLoaded {
             result.todayMeals = previous.todayMeals
-            result.mealCounts = previous.mealCounts
             result.mealDataLoaded = true
+        }
+        if !mealCountsDataLoaded, previous.mealCountsDataLoaded {
+            result.mealCounts = previous.mealCounts
+            result.mealCountsDataLoaded = true
         }
         if choreRoleResolved, !choreDataLoaded, previous.choreRoleResolved, previous.choreDataLoaded {
             result.todayChores = previous.todayChores
@@ -85,7 +88,7 @@ private extension HomeDashboardSnapshot {
 
         result.preserveAttentionItem(id: "approvals", from: previous, when: failedSections.contains(.approvals))
         result.preserveAttentionItem(id: "rewards", from: previous, when: failedSections.contains(.rewards))
-        result.preserveAttentionItem(id: "meals", from: previous, when: failedSections.contains(.meals))
+        result.preserveAttentionItem(id: "meals", from: previous, when: failedSections.contains(.mealSummary))
         return result
     }
 

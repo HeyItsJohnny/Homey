@@ -6,21 +6,27 @@ import Combine
     @Published var homeRecipes: [HomeyMeal] = []
     @Published private(set) var recipesRevision = 0
     @Published var favoriteIDs: Set<UUID> = []
-    @Published var planned: [PlannedMeal] = []
+    @Published var mealPlanItems: [MealPlanItem] = []
     @Published var isLoading = false
     @Published private(set) var isAutoPlanning = false
     @Published private(set) var isAddingMealPlanToGroceries = false
+    @Published var autoPlanNotice: String?
     @Published var errorMessage: String?
     private let service = MealsService()
     private let groceryRepository = GroceryRepository()
     private var activeHomeID: UUID?
     private var activeLoadID = UUID()
+    private var activePlanLoadID = UUID()
+    private var pendingAutoPlanAttempt: AutoPlanAttempt?
     func load(home: HomeSummary) async {
         let loadID = UUID()
         activeLoadID = loadID
+        activePlanLoadID = loadID
         if activeHomeID != home.id {
             homeRecipes = []
-            planned = []
+            mealPlanItems = []
+            pendingAutoPlanAttempt = nil
+            autoPlanNotice = nil
             errorMessage = nil
         }
         activeHomeID = home.id
@@ -29,10 +35,18 @@ import Combine
             async let h = service.homeRecipes(homeId: home.id)
             async let f = service.favoriteIDs()
             let week = Self.week(containing: Date(), home: home)
-            async let p = service.plannedMeals(home: home, week: week)
+            async let p = service.mealPlanEntries(
+                homeID: home.id,
+                startDate: Self.localDate(week.start, home: home),
+                endDate: Self.localDate(Self.inclusiveEnd(of: week, home: home), home: home)
+            )
             let result = try await (h, f, p)
             guard activeLoadID == loadID, activeHomeID == home.id else { return }
-            (homeRecipes, favoriteIDs, planned) = result
+            homeRecipes = result.0
+            favoriteIDs = result.1
+            if activePlanLoadID == loadID {
+                mealPlanItems = Self.resolve(entries: result.2, recipes: result.0)
+            }
             recipesRevision += 1
         } catch {
             guard activeLoadID == loadID, activeHomeID == home.id else { return }
@@ -45,21 +59,47 @@ import Combine
         guard activeHomeID == home.id else { return }
         recipesRevision += 1
         homeRecipes = loadedRecipes
+        mealPlanItems = Self.resolve(entries: mealPlanItems.map(\.entry), recipes: loadedRecipes)
     }
     func refreshPlan(home: HomeSummary, containing date: Date = Date()) async {
+        let loadID = UUID()
+        activePlanLoadID = loadID
         do {
-            let loadedPlan = try await service.plannedMeals(home: home, week: Self.week(containing: date, home: home))
-            guard activeHomeID == home.id else { return }
-            planned = loadedPlan
+            let week = Self.week(containing: date, home: home)
+            async let entriesRequest = service.mealPlanEntries(
+                homeID: home.id,
+                startDate: Self.localDate(week.start, home: home),
+                endDate: Self.localDate(Self.inclusiveEnd(of: week, home: home), home: home)
+            )
+            let recipes = homeRecipes.isEmpty ? try await service.homeRecipes(homeId: home.id) : homeRecipes
+            let entries = try await entriesRequest
+            guard activePlanLoadID == loadID, activeHomeID == home.id else { return }
+            if homeRecipes.isEmpty {
+                homeRecipes = recipes
+                recipesRevision += 1
+            }
+            mealPlanItems = Self.resolve(entries: entries, recipes: recipes)
         } catch {
-            guard activeHomeID == home.id else { return }
+            guard activePlanLoadID == loadID, activeHomeID == home.id else { return }
             errorMessage = error.localizedDescription
         }
     }
     func toggleFavorite(_ meal: HomeyMeal) async { let next = !favoriteIDs.contains(meal.id); do { try await service.setFavorite(mealId:meal.id,isFavorite:next); if next { favoriteIDs.insert(meal.id) } else { favoriteIDs.remove(meal.id) } } catch { errorMessage=error.localizedDescription } }
     @discardableResult func schedule(_ meal: HomeyMeal,type:MealType,day:Date,home:HomeSummary) async -> Bool {
         do {
-            try await service.schedule(meal,type:type,day:day,home:home)
+            let date = Self.localDate(day, home: home)
+            let existing = try await service.mealPlanEntries(homeID: home.id, startDate: date, endDate: date)
+            let nextSortOrder = (existing.filter { $0.mealType == type }.map(\.sortOrder).max() ?? -1) + 1
+            try await service.saveMealPlanEntry(
+                homeID: home.id,
+                entryID: nil,
+                mealID: meal.id,
+                plannedDate: date,
+                mealType: type,
+                plannedServings: meal.servings,
+                mealNotes: nil,
+                sortOrder: nextSortOrder
+            )
             await refreshPlan(home:home, containing:day)
             return true
         } catch {
@@ -70,11 +110,18 @@ import Combine
             return false
         }
     }
-    @discardableResult func replace(_ item: PlannedMeal, with meal: HomeyMeal, type: MealType, day: Date, home: HomeSummary) async -> Bool {
+    @discardableResult func replace(_ item: MealPlanItem, with meal: HomeyMeal, type: MealType, day: Date, home: HomeSummary) async -> Bool {
         do {
-            // Create first so a failed replacement never removes the existing entry.
-            try await service.schedule(meal, type: type, day: day, home: home)
-            try await service.removePlanned(item.eventId)
+            try await service.saveMealPlanEntry(
+                homeID: home.id,
+                entryID: item.entry.id,
+                mealID: meal.id,
+                plannedDate: Self.localDate(day, home: home),
+                mealType: type,
+                plannedServings: item.entry.plannedServings,
+                mealNotes: item.entry.mealNotes,
+                sortOrder: item.entry.sortOrder
+            )
             await refreshPlan(home: home, containing: day)
             return true
         } catch {
@@ -83,79 +130,41 @@ import Combine
             return false
         }
     }
-    func remove(_ item: PlannedMeal,home:HomeSummary, containing date:Date = Date()) async { do { try await service.removePlanned(item.eventId); await refreshPlan(home:home, containing:date) } catch { errorMessage=error.localizedDescription } }
-    func autoPlanDay(home: HomeSummary, date: Date) async {
-        guard !isAutoPlanning else { return }
-        isAutoPlanning = true
-        defer { isAutoPlanning = false }
-
-        let calendar = Self.calendar(home)
-        let selectedDay = calendar.startOfDay(for: date)
-        let visibleTypes: [MealType] = [.breakfast, .lunch, .dinner]
-
+    func move(_ item: MealPlanItem, to date: Date, home: HomeSummary) async -> Bool {
         do {
-            planned = try await service.plannedMeals(home: home, week: Self.week(containing: selectedDay, home: home))
+            let plannedDate = Self.localDate(date, home: home)
+            let existing = try await service.mealPlanEntries(homeID: home.id, startDate: plannedDate, endDate: plannedDate)
+            let nextSortOrder = (existing.filter { $0.mealType == item.entry.mealType }.map(\.sortOrder).max() ?? -1) + 1
+            try await service.saveMealPlanEntry(
+                homeID: home.id,
+                entryID: item.entry.id,
+                mealID: item.entry.mealID,
+                plannedDate: plannedDate,
+                mealType: item.entry.mealType,
+                plannedServings: item.entry.plannedServings,
+                mealNotes: item.entry.mealNotes,
+                sortOrder: nextSortOrder
+            )
+            await refreshPlan(home: home, containing: date)
+            return true
         } catch {
-            errorMessage = "Homey couldn't load this day's meals. Please try again."
-            return
-        }
-
-        let dayMeals = planned.filter { calendar.isDate($0.startsAt, inSameDayAs: selectedDay) }
-        let missingTypes = visibleTypes.filter { type in
-            !dayMeals.contains { $0.mealType == type }
-        }
-
-        guard !missingTypes.isEmpty else {
-            errorMessage = "All meals are planned for this day."
-            return
-        }
-        guard !homeRecipes.isEmpty else {
-            errorMessage = "Add some Home Recipes before using Auto Plan."
-            return
-        }
-
-        var usedRecipeIDs = Set(dayMeals.map(\.meal.id))
-        var created = 0
-        var failed = 0
-        var unavailableTypes: [MealType] = []
-
-        for type in missingTypes {
-            let eligible = homeRecipes.filter { $0.mealTypes.isEmpty || $0.mealTypes.contains(type) }
-            guard !eligible.isEmpty else {
-                unavailableTypes.append(type)
-                continue
-            }
-
-            let unused = eligible.filter { !usedRecipeIDs.contains($0.id) }
-            guard let selected = (unused.isEmpty ? eligible : unused).randomElement() else { continue }
-            do {
-                try await service.schedule(selected, type: type, day: selectedDay, home: home)
-                usedRecipeIDs.insert(selected.id)
-                created += 1
-            } catch {
-                failed += 1
-                #if DEBUG
-                print("[AutoPlan] FAILED mealType=\(type.rawValue)")
-                print("[AutoPlan] message=\(error.localizedDescription)")
-                #endif
-            }
-        }
-
-        await refreshPlan(home: home, containing: selectedDay)
-
-        if failed > 0 {
-            errorMessage = created > 0
-                ? "Homey planned some meals, but couldn't finish the entire day."
-                : "Homey couldn't plan this day. Please try again."
-        } else if created == 0, !unavailableTypes.isEmpty {
-            let names = unavailableTypes.map(\.title).joined(separator: ", ")
-            errorMessage = "No eligible \(names) recipes are available yet."
+            errorMessage = "Homey couldn't move this planned recipe. Please try again."
+            return false
         }
     }
-    func plannedMealsForDay(home: HomeSummary, date: Date) async throws -> [PlannedMeal] {
-        let calendar = Self.calendar(home)
-        return try await service.plannedMeals(home: home, week: Self.week(containing: date, home: home))
-            .filter { calendar.isDate($0.startsAt, inSameDayAs: date) }
+    func remove(_ item: MealPlanItem,home:HomeSummary, containing date:Date = Date()) async { do { try await service.deleteMealPlanEntry(homeID: home.id, entryID: item.entry.id); await refreshPlan(home:home, containing:date) } catch { errorMessage=error.localizedDescription } }
+    func mealPlanItemsForDay(home: HomeSummary, date: Date) async throws -> [MealPlanItem] {
+        guard activeHomeID == home.id else {
+            throw MealsError.message("The active Home changed. Reopen Leftovers and try again.")
+        }
+        let localDate = Self.localDate(date, home: home)
+        async let entriesRequest = service.mealPlanEntries(homeID: home.id, startDate: localDate, endDate: localDate)
+        let recipes = homeRecipes.isEmpty ? try await service.homeRecipes(homeId: home.id) : homeRecipes
+        let entries = try await entriesRequest
+        guard activeHomeID == home.id else {
+            throw MealsError.message("The active Home changed. Reopen Leftovers and try again.")
+        }
+        return Self.resolve(entries: entries, recipes: recipes)
     }
 
     func addMealPlanDayToGroceries(home: HomeSummary, date: Date) async -> String {
@@ -166,28 +175,29 @@ import Combine
         let selectedDay = calendar.startOfDay(for: date)
 
         do {
-            let dayMeals = try await plannedMealsForDay(home: home, date: selectedDay)
-                .filter { [.breakfast, .lunch, .dinner].contains($0.mealType) }
+            let dayMeals = try await mealPlanItemsForDay(home: home, date: selectedDay)
+                .filter { [.breakfast, .lunch, .dinner].contains($0.entry.mealType) }
             guard !dayMeals.isEmpty else { return "No meals are planned for this day." }
             let inputs = dayMeals.map {
-                GroceryMealEventInput(
-                    eventID: $0.eventId,
-                    mealID: $0.meal.id,
+                GroceryMealPlanEntryInput(
+                    entryID: $0.entry.id,
+                    mealID: $0.entry.mealID,
+                    plannedDate: $0.entry.plannedDate,
                     label: $0.meal.name,
-                    isLeftover: $0.isLeftover
+                    isLeftover: $0.entry.isLeftover
                 )
             }
-            let result = try await groceryRepository.addMealPlanDay(
+            let result = try await groceryRepository.addMealPlanEntryDay(
                 inputs,
-                selectedDate: selectedDay,
-                homeID: home.id,
-                calendar: calendar
+                homeID: home.id
             )
             if result.leftoverCount == dayMeals.count {
                 return "No new groceries are needed for this day."
             }
             if result.addedCount == 0, result.failureCount == 0 {
-                return "No new groceries to add."
+                return result.alreadyProcessedCount > 0
+                    ? "Groceries are already up to date."
+                    : "No new groceries to add."
             }
 
             var messages: [String] = []
@@ -216,28 +226,191 @@ import Combine
         }
     }
 
-    func assignLeftovers(
+    func assignMealPlanLeftovers(
         home: HomeSummary,
-        sourceCalendarEventIDs: [UUID],
+        sourceEntryIDs: [UUID],
         destinationDate: Date,
         conflictMode: LeftoverConflictMode,
         idempotencyKey: UUID
-    ) async throws -> AssignLeftoversRPCResponse {
+    ) async throws -> AssignMealPlanLeftoversResponse {
         guard activeHomeID == home.id else {
             throw MealsError.message("The active Home changed. Reopen Leftovers and try again.")
         }
-        guard !sourceCalendarEventIDs.isEmpty else {
+        guard !sourceEntryIDs.isEmpty else {
             throw MealsError.message("Choose at least one meal.")
         }
-        return try await service.assignLeftovers(
-            home: home,
-            sourceCalendarEventIDs: sourceCalendarEventIDs,
-            destinationDate: destinationDate,
+        return try await service.assignMealPlanLeftovers(
+            homeID: home.id,
+            sourceEntryIDs: sourceEntryIDs,
+            destinationDate: Self.localDate(destinationDate, home: home),
             conflictMode: conflictMode,
             idempotencyKey: idempotencyKey
         )
     }
-    func autoPlan(home: HomeSummary, types: Set<MealType>, favoritesOnly: Bool) async { let calendar=Self.calendar(home); let week=Self.week(containing:Date(),home:home); let candidates=(favoritesOnly ? homeRecipes.filter{favoriteIDs.contains($0.id)}:homeRecipes); guard !candidates.isEmpty else { errorMessage="Add recipes to this Home before auto-planning."; return }; var index=0; for offset in 0..<7 { guard let day=calendar.date(byAdding:.day,value:offset,to:week.start), day >= calendar.startOfDay(for:Date()) else { continue }; for type in types { let occupied=planned.contains{calendar.isDate($0.startsAt,inSameDayAs:day) && $0.mealType == type}; guard !occupied else {continue}; let preferred=candidates.filter{$0.mealTypes.isEmpty || $0.mealTypes.contains(type)}; let pool=preferred.isEmpty ? candidates:preferred; do { try await service.schedule(pool[index % pool.count],type:type,day:day,home:home); index += 1 } catch { errorMessage=error.localizedDescription; await refreshPlan(home:home); return } }; await refreshPlan(home:home) } }
+    @discardableResult
+    func autoPlan(home: HomeSummary, anchorDate: Date, types: Set<MealType>, favoritesOnly: Bool) async -> Bool {
+        guard !isAutoPlanning, activeHomeID == home.id else { return false }
+        let supportedTypes = [MealType.breakfast, .lunch, .dinner].filter(types.contains)
+        guard !supportedTypes.isEmpty else {
+            errorMessage = "Choose at least one meal type."
+            return false
+        }
+
+        let calendar = Self.calendar(home)
+        let week = Self.week(containing: anchorDate, home: home)
+        let today = calendar.startOfDay(for: Date())
+        let rangeEnd = Self.inclusiveEnd(of: week, home: home)
+        let rangeStart = max(calendar.startOfDay(for: week.start), today)
+        guard rangeStart <= rangeEnd else {
+            errorMessage = "Auto Plan can't add meals to past days."
+            return false
+        }
+
+        let signature = AutoPlanSignature(
+            homeID: home.id,
+            startDate: Self.localDate(rangeStart, home: home),
+            endDate: Self.localDate(rangeEnd, home: home),
+            mealTypes: supportedTypes,
+            favoritesOnly: favoritesOnly
+        )
+
+        isAutoPlanning = true
+        autoPlanNotice = nil
+        errorMessage = nil
+        defer { isAutoPlanning = false }
+
+        do {
+            let attempt: AutoPlanAttempt
+            if let pendingAutoPlanAttempt, pendingAutoPlanAttempt.signature == signature {
+                attempt = pendingAutoPlanAttempt
+            } else {
+                pendingAutoPlanAttempt = nil
+                let existing = try await service.mealPlanEntries(
+                    homeID: home.id,
+                    startDate: signature.startDate,
+                    endDate: signature.endDate
+                )
+                let candidates = favoritesOnly
+                    ? homeRecipes.filter { favoriteIDs.contains($0.id) }
+                    : homeRecipes
+                guard !candidates.isEmpty else {
+                    errorMessage = favoritesOnly
+                        ? "Add some favorite Home Recipes before using Auto Plan."
+                        : "Add some Home Recipes before using Auto Plan."
+                    return false
+                }
+
+                let occupied = Set(existing.map { AutoPlanSlot(date: $0.plannedDate, mealType: $0.mealType) })
+                var openSlots: [AutoPlanSlot] = []
+                var day = rangeStart
+                while day <= rangeEnd {
+                    let localDate = Self.localDate(day, home: home)
+                    for mealType in supportedTypes {
+                        let slot = AutoPlanSlot(date: localDate, mealType: mealType)
+                        if !occupied.contains(slot) { openSlots.append(slot) }
+                    }
+                    guard let nextDay = calendar.date(byAdding: .day, value: 1, to: day) else { break }
+                    day = nextDay
+                }
+
+                guard !openSlots.isEmpty else {
+                    errorMessage = "All selected meal slots are already planned."
+                    return false
+                }
+
+                let favoriteTarget = favoritesOnly
+                    ? openSlots.count
+                    : Int((Double(openSlots.count) * 0.35).rounded())
+                let favoriteSlotIndexes = Set(openSlots.indices.shuffled().prefix(favoriteTarget))
+                var usedMealIDs = Set(existing.map(\.mealID))
+                var proposedEntries: [MealAutoPlanEntry] = []
+
+                for (index, slot) in openSlots.enumerated() {
+                    var eligible = candidates.filter {
+                        $0.mealTypes.isEmpty || $0.mealTypes.contains(slot.mealType)
+                    }
+                    if eligible.isEmpty { eligible = candidates }
+
+                    let unused = eligible.filter { !usedMealIDs.contains($0.id) }
+                    let available = unused.isEmpty ? eligible : unused
+                    let wantsFavorite = favoriteSlotIndexes.contains(index)
+                    let weighted = available.filter {
+                        favoriteIDs.contains($0.id) == wantsFavorite
+                    }
+                    guard let selected = (weighted.isEmpty ? available : weighted).randomElement() else { continue }
+                    usedMealIDs.insert(selected.id)
+                    proposedEntries.append(MealAutoPlanEntry(
+                        mealID: selected.id,
+                        plannedDate: slot.date,
+                        mealType: slot.mealType,
+                        plannedServings: selected.servings
+                    ))
+                }
+
+                guard !proposedEntries.isEmpty else {
+                    errorMessage = "No eligible recipes are available for the selected meal types."
+                    return false
+                }
+                attempt = AutoPlanAttempt(signature: signature, entries: proposedEntries, idempotencyKey: UUID())
+                pendingAutoPlanAttempt = attempt
+            }
+
+            let response = try await service.applyMealAutoPlan(
+                homeID: home.id,
+                entries: attempt.entries,
+                idempotencyKey: attempt.idempotencyKey
+            )
+            guard response.homeID == home.id,
+                  response.idempotencyKey == attempt.idempotencyKey,
+                  response.requestedCount == attempt.entries.count
+            else {
+                throw MealsError.message("Homey received an unexpected Auto Plan response. Retry to confirm the same request safely.")
+            }
+            guard activeHomeID == home.id else { return false }
+            pendingAutoPlanAttempt = nil
+            await refreshPlan(home: home, containing: anchorDate)
+            if response.skippedCount > 0 {
+                autoPlanNotice = "Meal plan updated. \(response.skippedCount) slot\(response.skippedCount == 1 ? " was" : "s were") already planned."
+            }
+            return true
+        } catch {
+            guard activeHomeID == home.id else { return false }
+            #if DEBUG
+            print("[AutoPlan] FAILED: \(String(reflecting: error))")
+            #endif
+            errorMessage = "Homey couldn't apply Auto Plan. Check your connection and try again; the same safe request will be reused."
+            return false
+        }
+    }
+    private struct AutoPlanSlot: Hashable {
+        let date: String
+        let mealType: MealType
+    }
+    private struct AutoPlanSignature: Hashable {
+        let homeID: UUID
+        let startDate: String
+        let endDate: String
+        let mealTypes: [MealType]
+        let favoritesOnly: Bool
+    }
+    private struct AutoPlanAttempt {
+        let signature: AutoPlanSignature
+        let entries: [MealAutoPlanEntry]
+        let idempotencyKey: UUID
+    }
+    private static func resolve(entries: [MealPlanEntry], recipes: [HomeyMeal]) -> [MealPlanItem] {
+        let recipesByID = Dictionary(uniqueKeysWithValues: recipes.map { ($0.id, $0) })
+        return entries.compactMap { entry in
+            recipesByID[entry.mealID].map { MealPlanItem(entry: entry, meal: $0) }
+        }
+    }
+    static func localDate(_ date: Date, home: HomeSummary) -> String {
+        let components = calendar(home).dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+    }
+    private static func inclusiveEnd(of interval: DateInterval, home: HomeSummary) -> Date {
+        calendar(home).date(byAdding: .day, value: -1, to: interval.end) ?? interval.start
+    }
     static func calendar(_ home:HomeSummary)->Calendar { var c=Calendar(identifier:.gregorian); c.timeZone=home.timezone.flatMap(TimeZone.init(identifier:)) ?? .current; c.firstWeekday=home.weekStartsOn == 2 ? 2:1; return c }
     static func week(containing date:Date,home:HomeSummary)->DateInterval { let c=calendar(home); return c.dateInterval(of:.weekOfYear,for:date) ?? .init(start:c.startOfDay(for:date),duration:604800) }
 }
@@ -250,6 +423,7 @@ struct MealsRootView: View {
     @State private var creationPresentation: RecipeCreationPresentation?
     @State private var pendingEditorPresentation: RecipeCreationPresentation?
     @State private var selectedMealPlanDate = Date()
+    @State private var showAutoPlan = false
     @State private var showLeftovers = false
     @State private var dayGroceryMessage: String?
 
@@ -267,8 +441,7 @@ struct MealsRootView: View {
                         if section == 0, session.activeHome != nil {
                             Menu {
                                 Button("Auto Plan", systemImage: "wand.and.sparkles") {
-                                    guard let home = session.activeHome else { return }
-                                    Task { await model.autoPlanDay(home: home, date: selectedMealPlanDate) }
+                                    showAutoPlan = true
                                 }
                                 .disabled(model.isAutoPlanning)
                                 Button("Leftovers", systemImage: "takeoutbag.and.cup.and.straw") { showLeftovers = true }
@@ -363,6 +536,15 @@ struct MealsRootView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showAutoPlan) {
+                if let home = session.activeHome {
+                    AutoPlanSheet(
+                        home: home,
+                        anchorDate: selectedMealPlanDate,
+                        model: model
+                    )
+                }
+            }
             .task(id: session.activeHome?.id) {
                 if let home = session.activeHome {
                     selectedMealPlanDate = Self.startOfToday(home: home)
@@ -384,6 +566,11 @@ struct MealsRootView: View {
             } message: {
                 Text(dayGroceryMessage ?? "")
             }
+            .alert("Auto Plan", isPresented: .init(get: { model.autoPlanNotice != nil }, set: { if !$0 { model.autoPlanNotice = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(model.autoPlanNotice ?? "")
+            }
         }
     }
 
@@ -393,12 +580,13 @@ struct MealsRootView: View {
 
     private var hasMealsForSelectedDay: Bool {
         guard let home = session.activeHome else { return false }
-        let calendar = MealsViewModel.calendar(home)
-        return model.planned.contains {
-            calendar.isDate($0.startsAt, inSameDayAs: selectedMealPlanDate)
-                && [.breakfast, .lunch, .dinner].contains($0.mealType)
+        let selectedDate = MealsViewModel.localDate(selectedMealPlanDate, home: home)
+        return model.mealPlanItems.contains {
+            $0.entry.plannedDate == selectedDate
+                && [.breakfast, .lunch, .dinner].contains($0.entry.mealType)
         }
     }
+
 }
 
 struct RecipePickerView: View {
@@ -529,7 +717,69 @@ private struct RecipePickerRow: View {
 }
 
 struct RecipePlanSheet:View{let meal:HomeyMeal,home:HomeSummary;@ObservedObject var model:MealsViewModel;@Environment(\.dismiss)var dismiss;@State var day=Date();@State var type=MealType.dinner;var body:some View{NavigationStack{Form{DatePicker("Day",selection:$day,displayedComponents:.date);Picker("Meal",selection:$type){ForEach([MealType.breakfast,.lunch,.dinner]){Text($0.title).tag($0)}}}.navigationTitle("Add to Meal Plan").toolbar{ToolbarItem(placement:.cancellationAction){Button("Cancel"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("Add"){Task{await model.schedule(meal,type:type,day:day,home:home);dismiss()}}}}}}}
-struct AutoPlanSheet:View{let home:HomeSummary;@ObservedObject var model:MealsViewModel;@Environment(\.dismiss)var dismiss;@State var types:Set<MealType>=[];@State var favoritesOnly=false;var body:some View{NavigationStack{Form{Section("Fill empty slots"){ForEach([MealType.breakfast,.lunch,.dinner]){type in Toggle(type.title,isOn:.init(get:{types.contains(type)},set:{types.set(type,included:$0)}))}};Section("Recipe pool"){Toggle("Favorites only",isOn:$favoritesOnly);Text("Past days and existing planned meals are preserved.").font(.caption).foregroundStyle(.secondary)}}.navigationTitle("Auto Plan").toolbar{ToolbarItem(placement:.cancellationAction){Button("Cancel"){dismiss()}};ToolbarItem(placement:.confirmationAction){Button("Plan"){Task{await model.autoPlan(home:home,types:types,favoritesOnly:favoritesOnly);dismiss()}}.disabled(types.isEmpty)}}}}}
+struct AutoPlanSheet: View {
+    let home: HomeSummary
+    let anchorDate: Date
+    @ObservedObject var model: MealsViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var types: Set<MealType> = []
+    @State private var favoritesOnly = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Fill empty slots") {
+                    ForEach([MealType.breakfast, .lunch, .dinner]) { type in
+                        Toggle(type.title, isOn: .init(
+                            get: { types.contains(type) },
+                            set: { types.set(type, included: $0) }
+                        ))
+                    }
+                }
+                Section("Recipe pool") {
+                    Toggle("Favorites only", isOn: $favoritesOnly)
+                    Text("Past days and existing planned meals are preserved.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .navigationTitle("Auto Plan")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(model.isAutoPlanning)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        Task {
+                            if await model.autoPlan(
+                                home: home,
+                                anchorDate: anchorDate,
+                                types: types,
+                                favoritesOnly: favoritesOnly
+                            ) {
+                                dismiss()
+                            }
+                        }
+                    } label: {
+                        if model.isAutoPlanning { ProgressView() }
+                        else { Text("Plan") }
+                    }
+                    .disabled(types.isEmpty || model.isAutoPlanning)
+                }
+            }
+            .interactiveDismissDisabled(model.isAutoPlanning)
+            .alert("Auto Plan", isPresented: .init(
+                get: { model.errorMessage != nil },
+                set: { if !$0 { model.errorMessage = nil } }
+            )) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(model.errorMessage ?? "")
+            }
+        }
+    }
+}
 
 private struct RecipeScanComingSoonView: View {
     @Environment(\.dismiss) private var dismiss

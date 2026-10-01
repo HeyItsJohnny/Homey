@@ -18,7 +18,7 @@ enum GroceryCategory: String, Codable, CaseIterable, Identifiable {
 
 enum GrocerySourceType: String, Codable, CaseIterable {
     case homeRecipe = "home_recipe"
-    case mealEvent = "meal_event"
+    case mealPlanEntry = "meal_plan_entry"
 }
 
 struct GroceryList: Identifiable, Decodable, Hashable {
@@ -234,31 +234,32 @@ struct AddHomeRecipeToGroceriesResult: Equatable {
     var isPartialSuccess: Bool { successfulCount > 0 && failureCount > 0 }
 }
 
-struct GroceryMealEventInput: Hashable {
-    let eventID: UUID
+struct GroceryMealPlanEntryInput: Hashable {
+    let entryID: UUID
     let mealID: UUID
+    let plannedDate: String
     let label: String
     let isLeftover: Bool
 }
 
-struct GroceryMealEventResult: Identifiable, Equatable {
+struct GroceryMealPlanEntryResult: Identifiable, Equatable {
     enum Status: Equatable {
         case added, alreadyProcessed, leftoverSkipped, noIngredients, failed
     }
 
-    let eventID: UUID
+    let entryID: UUID
     let label: String
     let status: Status
-    var id: UUID { eventID }
+    var id: UUID { entryID }
 }
 
-struct AddMealPlanDayToGroceriesResult: Equatable {
-    let meals: [GroceryMealEventResult]
-    var addedCount: Int { meals.count { $0.status == .added } }
-    var alreadyProcessedCount: Int { meals.count { $0.status == .alreadyProcessed } }
-    var leftoverCount: Int { meals.count { $0.status == .leftoverSkipped } }
-    var noIngredientsCount: Int { meals.count { $0.status == .noIngredients } }
-    var failureCount: Int { meals.count { $0.status == .failed } }
+struct AddMealPlanEntryDayToGroceriesResult: Equatable {
+    let entries: [GroceryMealPlanEntryResult]
+    var addedCount: Int { entries.count { $0.status == .added } }
+    var alreadyProcessedCount: Int { entries.count { $0.status == .alreadyProcessed } }
+    var leftoverCount: Int { entries.count { $0.status == .leftoverSkipped } }
+    var noIngredientsCount: Int { entries.count { $0.status == .noIngredients } }
+    var failureCount: Int { entries.count { $0.status == .failed } }
 }
 
 enum GroceryNameNormalizer {

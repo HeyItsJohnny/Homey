@@ -112,12 +112,13 @@ struct MealPlanView: View {
         let week = MealsViewModel.week(containing: selectedDay, home: home)
         return (0..<7).compactMap { calendar.date(byAdding: .day, value: $0, to: week.start) }
     }
-    private func plannedMeals(for type: MealType) -> [PlannedMeal] {
-        model.planned.filter {
-            calendar.isDate($0.startsAt, inSameDayAs: selectedDay) && $0.mealType == type
+    private func plannedMeals(for type: MealType) -> [MealPlanItem] {
+        let selectedDate = MealsViewModel.localDate(selectedDay, home: home)
+        return model.mealPlanItems.filter {
+            $0.entry.plannedDate == selectedDate && $0.entry.mealType == type
         }.sorted {
-            if $0.startsAt != $1.startsAt { return $0.startsAt < $1.startsAt }
-            return $0.id < $1.id
+            if $0.entry.sortOrder != $1.entry.sortOrder { return $0.entry.sortOrder < $1.entry.sortOrder }
+            return $0.id.uuidString < $1.id.uuidString
         }
     }
     private func changeDay(by days: Int) {
@@ -129,28 +130,28 @@ struct MealPlanView: View {
         transitionDirection = today >= selectedDay ? 1 : -1
         withAnimation(.easeInOut(duration: 0.22)) { selectedDate = today }
     }
-    private func move(_ item: PlannedMeal, to date: Date) async {
-        await model.remove(item, home: home, containing: selectedDay)
-        await model.schedule(item.meal, type: item.mealType, day: date, home: home)
-        selectedDate = date
+    private func move(_ item: MealPlanItem, to date: Date) async {
+        if await model.move(item, to: date, home: home) {
+            selectedDate = date
+        }
     }
 }
 
 private struct MealPlanSlot: Identifiable {
     let day: Date
     let type: MealType
-    var replacing: PlannedMeal? = nil
+    var replacing: MealPlanItem? = nil
     var id: String { "\(day.timeIntervalSinceReferenceDate)-\(type.rawValue)" }
 }
 
 private struct MealPlanSlotCard<Detail: View>: View {
     let type: MealType
-    let items: [PlannedMeal]
+    let items: [MealPlanItem]
     let add: () -> Void
-    let change: (PlannedMeal) -> Void
+    let change: (MealPlanItem) -> Void
     let moveDates: [Date]
-    let move: (PlannedMeal, Date) -> Void
-    let remove: (PlannedMeal) -> Void
+    let move: (MealPlanItem, Date) -> Void
+    let remove: (MealPlanItem) -> Void
     @ViewBuilder let detail: (HomeyMeal) -> Detail
 
     private var accent: Color {
@@ -187,11 +188,11 @@ private struct MealPlanSlotCard<Detail: View>: View {
                                     RecipeBadgeFlow(spacing: 7) {
                                         let total = (item.meal.prepTimeMinutes ?? 0) + (item.meal.cookTimeMinutes ?? 0)
                                         if total > 0 { Label("\(total) min", systemImage: "clock") }
-                                        if let servings = item.meal.servings, servings > 0 {
+                                        if let servings = item.entry.plannedServings ?? item.meal.servings, servings > 0 {
                                             Label("\(servings.formatted()) servings", systemImage: "person.2")
                                         }
                                     }.font(.caption).foregroundStyle(HomeyColors.secondaryText)
-                                    if item.isLeftover {
+                                    if item.entry.isLeftover {
                                         Label("Leftovers", systemImage: "arrow.triangle.2.circlepath")
                                             .font(.caption2.weight(.semibold))
                                             .foregroundStyle(HomeyColors.recipeGreenAccent)

@@ -239,7 +239,7 @@ struct GroceriesView: View {
     private func sourceContext(_ source: GrocerySource) -> String {
         switch source.sourceType {
         case .homeRecipe: return "Home Recipe"
-        case .mealEvent:
+        case .mealPlanEntry:
             guard let sourceDate = source.sourceDate,
                   let date = sourceDate.date(in: session.activeTimezone)
             else { return "Planned meal" }

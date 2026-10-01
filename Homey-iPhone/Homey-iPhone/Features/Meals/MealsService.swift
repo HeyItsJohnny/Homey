@@ -276,120 +276,84 @@ final class MealsService {
         return path
     }
 
-    func plannedMeals(home: HomeSummary, week: DateInterval) async throws -> [PlannedMeal] {
-        let events: [CalendarMealEvent] = try await client.rpc("get_calendar_events", params: CalendarRange(homeId: home.id, start: week.start, end: week.end)).execute().value
-        guard !events.isEmpty else { return [] }
-        let details: [MealEventDetailRow] = try await client.from("meal_event_details").select("calendar_event_id, meal_id, meal_type, is_leftover, leftover_from_calendar_event_id").execute().value
-        let eventIDs = Set(events.map(\.eventId)); let matching = details.filter { eventIDs.contains($0.calendarEventId) }
-        let meals = try await homeRecipes(homeId: home.id); let mealByID = Dictionary(uniqueKeysWithValues: meals.map { ($0.id, $0) }); let eventByID = Dictionary(uniqueKeysWithValues: events.map { ($0.eventId, $0) })
-        return matching.compactMap { d in guard let e = eventByID[d.calendarEventId], let m = mealByID[d.mealId] else { return nil }; return PlannedMeal(eventId: e.eventId, occurrenceId: e.occurrenceId, startsAt: e.occurrenceStartsAt, mealType: d.mealType, meal: m, isLeftover: d.isLeftover, leftoverFromCalendarEventID: d.leftoverFromCalendarEventID) }.sorted {
-            if $0.startsAt != $1.startsAt { return $0.startsAt < $1.startsAt }
-            return $0.occurrenceId < $1.occurrenceId
+    func mealPlanEntries(homeID: UUID, startDate: String, endDate: String) async throws -> [MealPlanEntry] {
+        let entries: [MealPlanEntry] = try await client.rpc(
+            "get_meal_plan_entries",
+            params: MealPlanRangeParameters(homeID: homeID, startDate: startDate, endDate: endDate)
+        ).execute().value
+        return entries.sorted {
+            if $0.plannedDate != $1.plannedDate { return $0.plannedDate < $1.plannedDate }
+            if $0.mealType != $1.mealType { return $0.mealType.rawValue < $1.mealType.rawValue }
+            if $0.sortOrder != $1.sortOrder { return $0.sortOrder < $1.sortOrder }
+            return $0.id.uuidString < $1.id.uuidString
         }
     }
 
-    @discardableResult
-    func schedule(
-        _ meal: HomeyMeal,
-        type: MealType,
-        day: Date,
-        home: HomeSummary
-    ) async throws -> UUID {
-        var calendar = Calendar(identifier: .gregorian); calendar.timeZone = home.timezone.flatMap(TimeZone.init(identifier:)) ?? .current
-        let start = calendar.date(bySettingHour: type.hour, minute: 0, second: 0, of: day) ?? day
-
-        let categoryId: UUID
-        do {
-            categoryId = try await resolveMealCategory(homeId: home.id)
-        } catch {
-            logSchedulingFailure(error, stage: "categoryLookup")
-            throw error
-        }
-
-        let eventId: UUID
-        do {
-            eventId = try await client.rpc("create_calendar_event", params: CreateEvent(home: home, meal: meal, start: start, categoryId: categoryId)).execute().value
-        } catch {
-            logSchedulingFailure(error, stage: "calendarInsert")
-            throw error
-        }
-        do {
-            let user = try await client.auth.session.user.id
-            try await client.from("meal_event_details").insert(CreateMealDetail(
-                eventId: eventId,
-                mealId: meal.id,
-                mealType: type,
-                userId: user,
-                isLeftover: false,
-                leftoverFromCalendarEventID: nil
-            )).execute()
-        } catch {
-            logSchedulingFailure(error, stage: "mealInsert")
-            try? await removePlanned(eventId)
-            throw error
-        }
-        return eventId
+    func saveMealPlanEntry(
+        homeID: UUID,
+        entryID: UUID?,
+        mealID: UUID,
+        plannedDate: String,
+        mealType: MealType,
+        plannedServings: Double?,
+        mealNotes: String?,
+        sortOrder: Int
+    ) async throws {
+        try await client.rpc(
+            "save_meal_plan_entry",
+            params: SaveMealPlanEntryParameters(
+                homeID: homeID,
+                entryID: entryID,
+                mealID: mealID,
+                plannedDate: plannedDate,
+                mealType: mealType,
+                plannedServings: plannedServings,
+                mealNotes: mealNotes,
+                sortOrder: sortOrder
+            )
+        ).execute()
     }
 
-    private func resolveMealCategory(homeId: UUID) async throws -> UUID {
-        let categories: [CategoryRow] = try await client.from("calendar_categories")
-            .select("id")
-            .eq("home_id", value: homeId.uuidString)
-            .eq("system_key", value: "meal")
-            .eq("is_system", value: true)
-            .limit(2)
-            .execute()
-            .value
-        if let categoryId = categories.first?.id { return categoryId }
+    func deleteMealPlanEntry(homeID: UUID, entryID: UUID) async throws {
+        try await client.rpc(
+            "delete_meal_plan_entry",
+            params: DeleteMealPlanEntryParameters(homeID: homeID, entryID: entryID)
+        ).execute()
+    }
 
-        // Match the iPad recovery path: repair or create the Home's canonical
-        // Meal system category through the existing idempotent backend RPC.
-        return try await client.rpc(
-            "ensure_meal_calendar_category",
-            params: EnsureMealCategory(homeId: homeId)
+    func applyMealAutoPlan(
+        homeID: UUID,
+        entries: [MealAutoPlanEntry],
+        idempotencyKey: UUID
+    ) async throws -> ApplyMealAutoPlanResponse {
+        try await client.rpc(
+            "apply_meal_auto_plan",
+            params: ApplyMealAutoPlanParameters(
+                homeID: homeID,
+                entries: entries,
+                idempotencyKey: idempotencyKey
+            )
         ).execute().value
     }
 
-    private func logSchedulingFailure(_ error: Error, stage: String) {
-        #if DEBUG
-        print("[MealPlan] FAILED stage=\(stage)")
-        if let postgrestError = error as? PostgrestError {
-            print("[MealPlan] code=\(postgrestError.code ?? "")")
-            print("[MealPlan] message=\(postgrestError.message)")
-        } else {
-            print("[MealPlan] code=\(String(reflecting: type(of: error)))")
-            print("[MealPlan] message=\(error.localizedDescription)")
-        }
-        #endif
-    }
-
-    func assignLeftovers(
-        home: HomeSummary,
-        sourceCalendarEventIDs: [UUID],
-        destinationDate: Date,
+    func assignMealPlanLeftovers(
+        homeID: UUID,
+        sourceEntryIDs: [UUID],
+        destinationDate: String,
         conflictMode: LeftoverConflictMode,
         idempotencyKey: UUID
-    ) async throws -> AssignLeftoversRPCResponse {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = home.timezone.flatMap(TimeZone.init(identifier:)) ?? .current
-        let components = calendar.dateComponents([.year, .month, .day], from: destinationDate)
-        let date = String(
-            format: "%04d-%02d-%02d",
-            components.year ?? 0,
-            components.month ?? 0,
-            components.day ?? 0
-        )
-        let parameters = AssignLeftoversParameters(
-            homeID: home.id,
-            sourceCalendarEventIDs: sourceCalendarEventIDs,
-            destinationDate: date,
+    ) async throws -> AssignMealPlanLeftoversResponse {
+        let parameters = AssignMealPlanLeftoversParameters(
+            homeID: homeID,
+            sourceEntryIDs: sourceEntryIDs,
+            destinationDate: destinationDate,
             conflictMode: conflictMode,
             idempotencyKey: idempotencyKey
         )
 
         do {
-            let response: AssignLeftoversRPCResponse = try await client
-                .rpc("assign_meal_leftovers", params: parameters)
+            let response: AssignMealPlanLeftoversResponse = try await client
+                .rpc("assign_meal_plan_leftovers", params: parameters)
                 .execute().value
             return response
         } catch {
@@ -400,8 +364,6 @@ final class MealsService {
         }
     }
 
-    func removePlanned(_ eventId: UUID) async throws { try await client.rpc("delete_calendar_event", params: DeleteEvent(eventId: eventId)).execute() }
-
 }
 
 enum LeftoverConflictMode: String, Codable, Equatable {
@@ -410,25 +372,40 @@ enum LeftoverConflictMode: String, Codable, Equatable {
     var title: String { self == .add ? "Add Anyway" : "Replace" }
 }
 
-struct AssignLeftoversRPCResponse: Decodable {
-    let createdCalendarEventIDs: [UUID]
+struct AssignMealPlanLeftoversResponse: Decodable {
+    let homeID: UUID
+    let sourceDate: String
+    let destinationDate: String
+    let conflictMode: LeftoverConflictMode
+    let createdEntryIDs: [UUID]
+    let deletedEntryIDs: [UUID]
     let createdCount: Int
-    let deletedCalendarEventIDs: [UUID]
     let deletedCount: Int
+    let idempotencyKey: UUID
 
     enum CodingKeys: String, CodingKey {
-        case createdCalendarEventIDs = "created_calendar_event_ids"
+        case homeID = "home_id"
+        case sourceDate = "source_date"
+        case destinationDate = "destination_date"
+        case conflictMode = "conflict_mode"
+        case createdEntryIDs = "created_entry_ids"
+        case deletedEntryIDs = "deleted_entry_ids"
         case createdCount = "created_count"
-        case deletedCalendarEventIDs = "deleted_calendar_event_ids"
         case deletedCount = "deleted_count"
+        case idempotencyKey = "idempotency_key"
     }
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        createdCalendarEventIDs = try values.decode([UUID].self, forKey: .createdCalendarEventIDs)
+        homeID = try values.decode(UUID.self, forKey: .homeID)
+        sourceDate = try values.decode(String.self, forKey: .sourceDate)
+        destinationDate = try values.decode(String.self, forKey: .destinationDate)
+        conflictMode = try values.decode(LeftoverConflictMode.self, forKey: .conflictMode)
+        createdEntryIDs = try values.decode([UUID].self, forKey: .createdEntryIDs)
+        deletedEntryIDs = try values.decodeIfPresent([UUID].self, forKey: .deletedEntryIDs) ?? []
         createdCount = try values.decode(Int.self, forKey: .createdCount)
-        deletedCalendarEventIDs = try values.decodeIfPresent([UUID].self, forKey: .deletedCalendarEventIDs) ?? []
         deletedCount = try values.decodeIfPresent(Int.self, forKey: .deletedCount) ?? 0
+        idempotencyKey = try values.decode(UUID.self, forKey: .idempotencyKey)
     }
 }
 
@@ -436,49 +413,85 @@ enum MealsError: LocalizedError { case message(String); var errorDescription: St
 private struct FavoritePayload: Encodable { let mealId, userId: UUID; enum CodingKeys: String, CodingKey { case mealId = "meal_id", userId = "user_id" } }
 private struct AddGlobalParams: Encodable { let globalId, homeId: UUID; enum CodingKeys: String, CodingKey { case globalId = "requested_global_meal_id", homeId = "requested_home_id" } }
 private struct ImportErrorEnvelope: Decodable { struct Body: Decodable { let message: String }; let error: Body }
-private struct CalendarRange: Encodable { let homeId: UUID; let start, end: Date; enum CodingKeys: String, CodingKey { case homeId = "target_home_id", start = "range_start", end = "range_end" } }
-private struct CategoryRow: Decodable { let id: UUID }
-private struct EnsureMealCategory: Encodable {
-    let homeId: UUID
-    enum CodingKeys: String, CodingKey { case homeId = "requested_home_id" }
-}
-private struct DeleteEvent: Encodable { let eventId: UUID; enum CodingKeys: String, CodingKey { case eventId = "target_event_id" } }
-private struct AssignLeftoversParameters: Encodable {
+private struct MealPlanRangeParameters: Encodable {
     let homeID: UUID
-    let sourceCalendarEventIDs: [UUID]
+    let startDate: String
+    let endDate: String
+    enum CodingKeys: String, CodingKey {
+        case homeID = "requested_home_id"
+        case startDate = "requested_start_date"
+        case endDate = "requested_end_date"
+    }
+}
+private struct SaveMealPlanEntryParameters: Encodable {
+    let homeID: UUID
+    let entryID: UUID?
+    let mealID: UUID
+    let plannedDate: String
+    let mealType: MealType
+    let plannedServings: Double?
+    let mealNotes: String?
+    let sortOrder: Int
+
+    enum CodingKeys: String, CodingKey {
+        case homeID = "requested_home_id"
+        case entryID = "requested_entry_id"
+        case mealID = "requested_meal_id"
+        case plannedDate = "requested_planned_date"
+        case mealType = "requested_meal_type"
+        case plannedServings = "requested_planned_servings"
+        case mealNotes = "requested_meal_notes"
+        case sortOrder = "requested_sort_order"
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(homeID, forKey: .homeID)
+        if let entryID { try values.encode(entryID, forKey: .entryID) }
+        else { try values.encodeNil(forKey: .entryID) }
+        try values.encode(mealID, forKey: .mealID)
+        try values.encode(plannedDate, forKey: .plannedDate)
+        try values.encode(mealType, forKey: .mealType)
+        if let plannedServings { try values.encode(plannedServings, forKey: .plannedServings) }
+        else { try values.encodeNil(forKey: .plannedServings) }
+        if let mealNotes { try values.encode(mealNotes, forKey: .mealNotes) }
+        else { try values.encodeNil(forKey: .mealNotes) }
+        try values.encode(sortOrder, forKey: .sortOrder)
+    }
+}
+private struct DeleteMealPlanEntryParameters: Encodable {
+    let homeID: UUID
+    let entryID: UUID
+    enum CodingKeys: String, CodingKey {
+        case homeID = "requested_home_id"
+        case entryID = "requested_entry_id"
+    }
+}
+private struct ApplyMealAutoPlanParameters: Encodable {
+    let homeID: UUID
+    let entries: [MealAutoPlanEntry]
+    let idempotencyKey: UUID
+    enum CodingKeys: String, CodingKey {
+        case homeID = "requested_home_id"
+        case entries = "requested_entries"
+        case idempotencyKey = "requested_idempotency_key"
+    }
+}
+private struct AssignMealPlanLeftoversParameters: Encodable {
+    let homeID: UUID
+    let sourceEntryIDs: [UUID]
     let destinationDate: String
     let conflictMode: LeftoverConflictMode
     let idempotencyKey: UUID
 
     enum CodingKeys: String, CodingKey {
         case homeID = "requested_home_id"
-        case sourceCalendarEventIDs = "requested_source_calendar_event_ids"
+        case sourceEntryIDs = "requested_source_entry_ids"
         case destinationDate = "requested_destination_date"
         case conflictMode = "requested_conflict_mode"
         case idempotencyKey = "requested_idempotency_key"
     }
 }
-private struct CreateMealDetail: Encodable {
-    let eventId, mealId: UUID
-    let mealType: MealType
-    let shoppingGenerated = false
-    let userId: UUID
-    let isLeftover: Bool
-    let leftoverFromCalendarEventID: UUID?
-    enum CodingKeys: String, CodingKey {
-        case eventId = "calendar_event_id", mealId = "meal_id", mealType = "meal_type"
-        case shoppingGenerated = "shopping_generated", userId = "created_by"
-        case isLeftover = "is_leftover", leftoverFromCalendarEventID = "leftover_from_calendar_event_id"
-    }
-}
-private struct CreateEvent: Encodable {
-    let homeId: UUID, title: String, start, end, timezone: String, categoryId: UUID?
-    init(home: HomeSummary, meal: HomeyMeal, start: Date, categoryId: UUID?) { homeId = home.id; title = meal.name; self.start = ISO8601DateFormatter().string(from: start); end = ISO8601DateFormatter().string(from: start.addingTimeInterval(3600)); timezone = home.timezone ?? TimeZone.current.identifier; self.categoryId = categoryId }
-    enum CodingKeys: String, CodingKey { case homeId = "target_home_id", title = "event_title", start = "event_starts_at", end = "event_ends_at", timezone = "event_timezone", categoryId = "event_category_id" }
-    func encode(to encoder: Encoder) throws { var c = encoder.container(keyedBy: CodingKeys.self); try c.encode(homeId, forKey: .homeId); try c.encode(title, forKey: .title); try c.encode(start, forKey: .start); try c.encode(end, forKey: .end); try c.encode(timezone, forKey: .timezone); try c.encodeIfPresent(categoryId, forKey: .categoryId); var dynamic = encoder.container(keyedBy: DynamicKey.self); try dynamic.encode(false, forKey: .init("event_is_all_day")); try dynamic.encode([UUID](), forKey: .init("assigned_user_ids")); try dynamic.encode(1, forKey: .init("event_recurrence_interval")) }
-    struct DynamicKey: CodingKey { let stringValue: String; let intValue: Int? = nil; init(_ value: String) { stringValue = value }; init?(stringValue: String) { self.init(stringValue) }; init?(intValue: Int) { return nil } }
-}
-
 struct SaveMealParams: Encodable {
     let photoPath: String?
     let homeId: UUID, mealId: UUID?, name: String, description: String?, mealTypes: [String], cuisine: String?, difficulty: String?, prep, cook: Int?, servings: Double?, sourceName, sourceURL, notes: String?, tags: [String], ingredients: [Ingredient], steps: [Step]

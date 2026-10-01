@@ -5,7 +5,6 @@ enum MealType: String, Codable, CaseIterable, Identifiable, Hashable {
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
     var symbol: String { switch self { case .breakfast: "sunrise.fill"; case .lunch: "sun.max.fill"; case .dinner: "moon.stars.fill"; case .snack: "takeoutbag.and.cup.and.straw.fill"; case .dessert: "birthday.cake.fill"; case .drink: "cup.and.saucer.fill" } }
-    var hour: Int { switch self { case .breakfast: 8; case .lunch: 12; case .dinner: 18; case .snack: 15; case .dessert: 19; case .drink: 10 } }
 }
 
 enum MealDifficulty: String, Codable, CaseIterable { case easy, medium, hard }
@@ -60,35 +59,102 @@ struct RecipeImportResponse: Decodable, Hashable { let importId: UUID; let globa
 struct ImportedRecipePreview: Decodable, Hashable { let title: String; let description, imageUrl: String?; let prepTimeMinutes, cookTimeMinutes, totalTimeMinutes: Int?; let servings, cuisine: String?; let mealTypes, keywords: [String]; let ingredients: [ImportedRecipeIngredient]; let steps: [ImportedRecipeStep]; let source: ImportedRecipeSource }
 struct ImportedRecipeSource: Decodable, Hashable { let originalUrl, normalizedUrl, domain: String; let name: String? }
 
-struct PlannedMeal: Identifiable, Hashable {
-    let eventId: UUID
-    let occurrenceId: String
-    let startsAt: Date
+struct MealPlanEntry: Identifiable, Decodable, Hashable {
+    let id: UUID
+    let homeID: UUID
+    let mealID: UUID
+    let plannedDate: String
     let mealType: MealType
-    let meal: HomeyMeal
+    let plannedServings: Double?
+    let mealNotes: String?
+    let sortOrder: Int
+    let shoppingGenerated: Bool
     let isLeftover: Bool
-    let leftoverFromCalendarEventID: UUID?
-    var id: String { occurrenceId }
-}
-struct CalendarMealEvent: Decodable { let eventId: UUID; let occurrenceId: String; let occurrenceStartsAt: Date; enum CodingKeys: String, CodingKey { case eventId = "event_id", occurrenceId = "occurrence_id", occurrenceStartsAt = "occurrence_starts_at" } }
-struct MealEventDetailRow: Decodable {
-    let calendarEventId, mealId: UUID
-    let mealType: MealType
-    let isLeftover: Bool
-    let leftoverFromCalendarEventID: UUID?
+    let leftoverFromEntryID: UUID?
+    let createdBy: UUID?
+    let updatedBy: UUID?
+    let createdAt: Date
+    let updatedAt: Date
 
     enum CodingKeys: String, CodingKey {
-        case calendarEventId = "calendar_event_id", mealId = "meal_id", mealType = "meal_type"
-        case isLeftover = "is_leftover", leftoverFromCalendarEventID = "leftover_from_calendar_event_id"
+        case id = "entry_id"
+        case homeID = "home_id"
+        case mealID = "meal_id"
+        case plannedDate = "planned_date"
+        case mealType = "meal_type"
+        case plannedServings = "planned_servings"
+        case mealNotes = "meal_notes"
+        case sortOrder = "sort_order"
+        case shoppingGenerated = "shopping_generated"
+        case isLeftover = "is_leftover"
+        case leftoverFromEntryID = "leftover_from_entry_id"
+        case createdBy = "created_by"
+        case updatedBy = "updated_by"
+        case createdAt = "created_at"
+        case updatedAt = "updated_at"
+    }
+}
+
+struct MealPlanItem: Identifiable, Hashable {
+    let entry: MealPlanEntry
+    let meal: HomeyMeal
+    var id: UUID { entry.id }
+}
+
+struct MealAutoPlanEntry: Encodable, Hashable {
+    let mealID: UUID
+    let plannedDate: String
+    let mealType: MealType
+    let plannedServings: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case mealID = "meal_id"
+        case plannedDate = "planned_date"
+        case mealType = "meal_type"
+        case plannedServings = "planned_servings"
+    }
+}
+
+struct MealAutoPlanSkippedSlot: Decodable, Hashable {
+    let plannedDate: String
+    let mealType: MealType
+    let reason: String
+
+    enum CodingKeys: String, CodingKey {
+        case plannedDate = "planned_date"
+        case mealType = "meal_type"
+        case reason
+    }
+}
+
+struct ApplyMealAutoPlanResponse: Decodable, Hashable {
+    let homeID: UUID
+    let requestedCount: Int
+    let createdCount: Int
+    let skippedCount: Int
+    let createdEntryIDs: [UUID]
+    let skippedSlots: [MealAutoPlanSkippedSlot]
+    let idempotencyKey: UUID
+
+    enum CodingKeys: String, CodingKey {
+        case homeID = "home_id"
+        case requestedCount = "requested_count"
+        case createdCount = "created_count"
+        case skippedCount = "skipped_count"
+        case createdEntryIDs = "created_entry_ids"
+        case skippedSlots = "skipped_slots"
+        case idempotencyKey = "idempotency_key"
     }
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        calendarEventId = try container.decode(UUID.self, forKey: .calendarEventId)
-        mealId = try container.decode(UUID.self, forKey: .mealId)
-        mealType = try container.decode(MealType.self, forKey: .mealType)
-        isLeftover = try container.decodeIfPresent(Bool.self, forKey: .isLeftover) ?? false
-        leftoverFromCalendarEventID = try container.decodeIfPresent(UUID.self, forKey: .leftoverFromCalendarEventID)
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        homeID = try values.decode(UUID.self, forKey: .homeID)
+        requestedCount = try values.decode(Int.self, forKey: .requestedCount)
+        createdCount = try values.decode(Int.self, forKey: .createdCount)
+        skippedCount = try values.decodeIfPresent(Int.self, forKey: .skippedCount) ?? 0
+        createdEntryIDs = try values.decodeIfPresent([UUID].self, forKey: .createdEntryIDs) ?? []
+        skippedSlots = try values.decodeIfPresent([MealAutoPlanSkippedSlot].self, forKey: .skippedSlots) ?? []
+        idempotencyKey = try values.decode(UUID.self, forKey: .idempotencyKey)
     }
 }
 

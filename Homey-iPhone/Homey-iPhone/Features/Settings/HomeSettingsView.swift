@@ -288,17 +288,17 @@ private enum HomeClearAction: String, Identifiable {
     var icon: String { switch self { case .meals: "fork.knife"; case .calendar: "calendar.badge.minus"; case .chores: "checklist" } }
     var summary: String {
         switch self {
-        case .meals: "Home recipes, meal plans, and linked meal events"
-        case .calendar: "Regular events; meal and chore data stay intact"
+        case .meals: "Home recipes and meal plans"
+        case .calendar: "Regular events; chore data stays intact"
         case .chores: "Chores, rooms, rewards, approvals, and points activity"
         }
     }
     var message: String {
         switch self {
         case .meals:
-            "This permanently deletes this Home's recipes, recipe details, photos, favorites, collections, meal plans, and linked meal calendar events. Global and Community Recipes are preserved."
+            "This permanently deletes this Home's recipes, recipe details, photos, favorites, collections, and meal plans. Global and Community Recipes are preserved."
         case .calendar:
-            "This permanently deletes regular calendar events for this Home. Meal-linked and chore-linked events, meal plans, recipes, chores, and rewards are preserved."
+            "This permanently deletes regular calendar events for this Home. Chore-linked events, meal plans, recipes, chores, and rewards are preserved."
         case .chores:
             "This permanently deletes all chore templates, schedules, occurrences, assignments, claims, submissions, approvals, points activity, rooms, chore categories, rewards, redemptions, and linked chore calendar events for this Home."
         }
@@ -360,7 +360,6 @@ private struct ClearHomeDataSheet: View {
                 let result = try await repository.clearMeals(homeID: home.id)
                 message = "Meals cleared (\(result.mealsDeleted) Home recipe\(result.mealsDeleted == 1 ? "" : "s"))."
                 NotificationCenter.default.post(name: Notification.Name("homeyMealsDidChange"), object: nil)
-                NotificationCenter.default.post(name: Notification.Name("homeyCalendarEventsDidChange"), object: nil)
             case .calendar:
                 let result = try await repository.clearCalendar(homeID: home.id)
                 message = "Calendar cleared (\(result.calendarEventsDeleted) event\(result.calendarEventsDeleted == 1 ? "" : "s"))."

@@ -138,8 +138,7 @@ final class GroceryRepository {
         type: GrocerySourceType,
         referenceID: UUID,
         label: String,
-        date: Date? = nil,
-        calendar: Calendar? = nil
+        dateOnly: String? = nil
     ) async throws -> GrocerySource {
         if let existing = try await fetchSource(listID: listID, type: type, referenceID: referenceID) { return existing }
         if let inactive = try await fetchAnySource(listID: listID, type: type, referenceID: referenceID) {
@@ -157,7 +156,7 @@ final class GroceryRepository {
                     sourceType: type,
                     sourceRefID: referenceID,
                     sourceLabel: label,
-                    sourceDate: date.map { Self.dateOnlyString($0, calendar: calendar ?? .autoupdatingCurrent) },
+                    sourceDate: dateOnly,
                     createdBy: userID
                 ))
                 .select().single().execute().value
@@ -296,88 +295,66 @@ final class GroceryRepository {
         )
     }
 
-    func addMealEvent(
-        eventID: UUID,
-        mealID: UUID,
-        label: String,
-        date: Date,
-        isLeftover: Bool,
-        listID: UUID,
+    func addMealPlanEntryDay(
+        _ entries: [GroceryMealPlanEntryInput],
         homeID: UUID
-    ) async throws -> [GroceryItem] {
-        guard !isLeftover else { return [] }
-        let source = try await findOrCreateSource(
-            listID: listID,
-            homeID: homeID,
-            type: .mealEvent,
-            referenceID: eventID,
-            label: label,
-            date: date
-        )
-        return try await addIngredients(
-            try await ingredientNames(mealID: mealID),
-            listID: listID,
-            homeID: homeID,
-            source: source
-        )
-    }
-
-    func addMealPlanDay(
-        _ meals: [GroceryMealEventInput],
-        selectedDate: Date,
-        homeID: UUID,
-        calendar: Calendar
-    ) async throws -> AddMealPlanDayToGroceriesResult {
-        let freshMeals = meals.filter { !$0.isLeftover }
-        guard !freshMeals.isEmpty else {
-            return AddMealPlanDayToGroceriesResult(meals: meals.map {
-                GroceryMealEventResult(eventID: $0.eventID, label: $0.label, status: .leftoverSkipped)
+    ) async throws -> AddMealPlanEntryDayToGroceriesResult {
+        let freshEntries = entries.filter { !$0.isLeftover }
+        guard !freshEntries.isEmpty else {
+            return AddMealPlanEntryDayToGroceriesResult(entries: entries.map {
+                GroceryMealPlanEntryResult(entryID: $0.entryID, label: $0.label, status: .leftoverSkipped)
             })
         }
-        let ingredientsByMealID = try await ingredientNamesByMealID(Set(freshMeals.map(\.mealID)))
-        let hasAnyIngredient = freshMeals.contains { meal in
-            (ingredientsByMealID[meal.mealID] ?? []).contains {
+
+        let ingredientsByMealID = try await ingredientNamesByMealID(Set(freshEntries.map(\.mealID)))
+        let hasAnyIngredient = freshEntries.contains { entry in
+            (ingredientsByMealID[entry.mealID] ?? []).contains {
                 !GroceryNameNormalizer.normalize($0).isEmpty
             }
         }
         guard hasAnyIngredient else {
-            return AddMealPlanDayToGroceriesResult(meals: meals.map {
-                GroceryMealEventResult(
-                    eventID: $0.eventID,
+            return AddMealPlanEntryDayToGroceriesResult(entries: entries.map {
+                GroceryMealPlanEntryResult(
+                    entryID: $0.entryID,
                     label: $0.label,
                     status: $0.isLeftover ? .leftoverSkipped : .noIngredients
                 )
             })
         }
-        let list = try await defaultList(homeID: homeID)
-        var results: [GroceryMealEventResult] = []
 
-        for meal in meals {
-            if meal.isLeftover {
-                results.append(.init(eventID: meal.eventID, label: meal.label, status: .leftoverSkipped))
+        let list = try await defaultList(homeID: homeID)
+        var results: [GroceryMealPlanEntryResult] = []
+
+        for entry in entries {
+            if entry.isLeftover {
+                results.append(.init(entryID: entry.entryID, label: entry.label, status: .leftoverSkipped))
                 continue
             }
 
             var seen: Set<String> = []
-            let names = (ingredientsByMealID[meal.mealID] ?? []).compactMap { rawName -> String? in
+            let names = (ingredientsByMealID[entry.mealID] ?? []).compactMap { rawName -> String? in
                 let normalized = GroceryNameNormalizer.normalize(rawName)
                 guard !normalized.isEmpty, seen.insert(normalized).inserted else { return nil }
                 return rawName
             }
             guard !names.isEmpty else {
-                results.append(.init(eventID: meal.eventID, label: meal.label, status: .noIngredients))
+                results.append(.init(entryID: entry.entryID, label: entry.label, status: .noIngredients))
                 continue
             }
 
             do {
-                let source = try await findOrCreateSource(
+                let resolvedSource = try await findOrCreateSource(
                     listID: list.id,
                     homeID: homeID,
-                    type: .mealEvent,
-                    referenceID: meal.eventID,
-                    label: meal.label,
-                    date: selectedDate,
-                    calendar: calendar
+                    type: .mealPlanEntry,
+                    referenceID: entry.entryID,
+                    label: entry.label,
+                    dateOnly: entry.plannedDate
+                )
+                let source = try await refreshMealPlanSourceMetadataIfNeeded(
+                    resolvedSource,
+                    label: entry.label,
+                    plannedDate: entry.plannedDate
                 )
                 var newAssociations = 0
                 var ingredientFailures = 0
@@ -394,25 +371,38 @@ final class GroceryRepository {
                     } catch {
                         ingredientFailures += 1
                         #if DEBUG
-                        print("[Groceries] FAILED eventID=\(meal.eventID.uuidString) ingredient=\(GroceryNameNormalizer.displayName(name))")
+                        print("[Groceries] FAILED entryID=\(entry.entryID.uuidString) ingredient=\(GroceryNameNormalizer.displayName(name))")
                         print("[Groceries] error=\(String(reflecting: error))")
                         #endif
                     }
                 }
-                let status: GroceryMealEventResult.Status
+
+                let status: GroceryMealPlanEntryResult.Status
                 if ingredientFailures > 0 { status = .failed }
                 else if newAssociations == 0 { status = .alreadyProcessed }
                 else { status = .added }
-                results.append(.init(eventID: meal.eventID, label: meal.label, status: status))
+                results.append(.init(entryID: entry.entryID, label: entry.label, status: status))
             } catch {
                 #if DEBUG
-                print("[Groceries] FAILED eventID=\(meal.eventID.uuidString) error=\(String(reflecting: error))")
+                print("[Groceries] FAILED entryID=\(entry.entryID.uuidString) error=\(String(reflecting: error))")
                 #endif
-                results.append(.init(eventID: meal.eventID, label: meal.label, status: .failed))
+                results.append(.init(entryID: entry.entryID, label: entry.label, status: .failed))
             }
         }
 
-        return AddMealPlanDayToGroceriesResult(meals: results)
+        return AddMealPlanEntryDayToGroceriesResult(entries: results)
+    }
+
+    private func refreshMealPlanSourceMetadataIfNeeded(
+        _ source: GrocerySource,
+        label: String,
+        plannedDate: String
+    ) async throws -> GrocerySource {
+        guard source.sourceLabel != label || source.sourceDate?.rawValue != plannedDate else { return source }
+        return try await client.from("grocery_sources")
+            .update(UpdateMealPlanSourcePayload(sourceLabel: label, sourceDate: plannedDate))
+            .eq("id", value: source.id.uuidString)
+            .select().single().execute().value
     }
 
     func setChecked(_ checked: Bool, itemID: UUID) async throws -> GroceryItem {
@@ -564,11 +554,6 @@ final class GroceryRepository {
         return result
     }
 
-    private static func dateOnlyString(_ date: Date, calendar: Calendar) -> String {
-        let components = calendar.dateComponents([.year, .month, .day], from: date)
-        return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
-    }
-
     private func isUniqueViolation(_ error: Error) -> Bool {
         (error as? PostgrestError)?.code == "23505"
     }
@@ -642,6 +627,14 @@ private struct UpdateItemPayload: Encodable {
 private struct UpdateSourceActivityPayload: Encodable {
     let isActive: Bool
     enum CodingKeys: String, CodingKey { case isActive = "is_active" }
+}
+private struct UpdateMealPlanSourcePayload: Encodable {
+    let sourceLabel: String
+    let sourceDate: String
+    enum CodingKeys: String, CodingKey {
+        case sourceLabel = "source_label"
+        case sourceDate = "source_date"
+    }
 }
 private struct MealRecipeRow: Decodable {
     let id: UUID

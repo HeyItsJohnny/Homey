@@ -288,7 +288,7 @@ struct HomeView: View {
     }
 
     private func mealCount(_ type: MealType) -> Int? {
-        viewModel.snapshot.mealDataLoaded ? viewModel.snapshot.mealCounts[type] : nil
+        viewModel.snapshot.mealCountsDataLoaded ? viewModel.snapshot.mealCounts[type] : nil
     }
 }
 

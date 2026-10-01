@@ -15,9 +15,9 @@ struct AssignLeftoversView: View {
     let onSaved: (Date) -> Void
 
     @State private var step: LeftoverWizardStep = .selection
-    @State private var sourceMeals: [PlannedMeal] = []
-    @State private var selectedEventIDs: Set<UUID> = []
-    @State private var destinationMeals: [PlannedMeal] = []
+    @State private var sourceMeals: [MealPlanItem] = []
+    @State private var selectedEntryIDs: Set<UUID> = []
+    @State private var destinationMeals: [MealPlanItem] = []
     @State private var destinationDate: Date
     @State private var conflictMode: LeftoverConflictMode?
     @State private var didExplicitlyChooseConflictMode = false
@@ -33,15 +33,15 @@ struct AssignLeftoversView: View {
     private var minimumDestination: Date {
         calendar.date(byAdding: .day, value: 1, to: sourceDay) ?? sourceDay.addingTimeInterval(86_400)
     }
-    private var selectedMeals: [PlannedMeal] {
-        sourceMeals.filter { selectedEventIDs.contains($0.eventId) }
+    private var selectedMeals: [MealPlanItem] {
+        sourceMeals.filter { selectedEntryIDs.contains($0.entry.id) }
     }
-    private var selectedMealTypes: Set<MealType> { Set(selectedMeals.map(\.mealType)) }
-    private var conflictingMeals: [PlannedMeal] {
-        destinationMeals.filter { selectedMealTypes.contains($0.mealType) }
+    private var selectedMealTypes: Set<MealType> { Set(selectedMeals.map(\.entry.mealType)) }
+    private var conflictingMeals: [MealPlanItem] {
+        destinationMeals.filter { selectedMealTypes.contains($0.entry.mealType) }
     }
     private var conflictingTypes: [MealType] {
-        visibleTypes.filter { type in conflictingMeals.contains { $0.mealType == type } }
+        visibleTypes.filter { type in conflictingMeals.contains { $0.entry.mealType == type } }
     }
     private var hasConflicts: Bool { !conflictingMeals.isEmpty }
 
@@ -130,7 +130,7 @@ struct AssignLeftoversView: View {
                 emptySourceCard
             } else {
                 ForEach(visibleTypes) { type in
-                    let meals = sourceMeals.filter { $0.mealType == type }
+                    let meals = sourceMeals.filter { $0.entry.mealType == type }
                     if !meals.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             sectionTitle(type.title)
@@ -172,9 +172,9 @@ struct AssignLeftoversView: View {
             ForEach(conflictingTypes) { type in
                 VStack(alignment: .leading, spacing: 12) {
                     sectionTitle(type.title)
-                    conflictList("Currently planned", meals: conflictingMeals.filter { $0.mealType == type })
+                    conflictList("Currently planned", meals: conflictingMeals.filter { $0.entry.mealType == type })
                     Divider()
-                    conflictList("Leftovers", meals: selectedMeals.filter { $0.mealType == type })
+                    conflictList("Leftovers", meals: selectedMeals.filter { $0.entry.mealType == type })
                 }
                 .homeyCard()
             }
@@ -198,7 +198,7 @@ struct AssignLeftoversView: View {
             intro("Review leftovers", "Confirm the meals and destination before saving.")
             reviewSection("Leftovers") {
                 ForEach(selectedMeals) { meal in
-                    Label(meal.meal.name, systemImage: meal.mealType.symbol)
+                    Label(meal.meal.name, systemImage: meal.entry.mealType.symbol)
                         .font(.subheadline.weight(.medium))
                 }
             }
@@ -259,10 +259,10 @@ struct AssignLeftoversView: View {
 
     private var canContinue: Bool {
         switch step {
-        case .selection: !selectedEventIDs.isEmpty
+        case .selection: !selectedEntryIDs.isEmpty
         case .destination: destinationDate >= minimumDestination
         case .conflict: conflictMode != nil
-        case .review: !selectedEventIDs.isEmpty && (!hasConflicts || conflictMode != nil)
+        case .review: !selectedEntryIDs.isEmpty && (!hasConflicts || conflictMode != nil)
         }
     }
 
@@ -276,8 +276,8 @@ struct AssignLeftoversView: View {
         }
     }
 
-    private func selectionCard(_ meal: PlannedMeal) -> some View {
-        let selected = selectedEventIDs.contains(meal.eventId)
+    private func selectionCard(_ meal: MealPlanItem) -> some View {
+        let selected = selectedEntryIDs.contains(meal.entry.id)
         return Button { toggle(meal) } label: {
             HStack(spacing: 13) {
                 HomeRecipeThumbnail(path: meal.meal.primaryPhotoPath)
@@ -286,7 +286,7 @@ struct AssignLeftoversView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(meal.meal.name)
                         .font(.headline).foregroundStyle(HomeyColors.text).lineLimit(2)
-                    Text(meal.mealType.title)
+                    Text(meal.entry.mealType.title)
                         .font(.caption).foregroundStyle(HomeyColors.secondaryText)
                 }
                 Spacer(minLength: 8)
@@ -301,20 +301,20 @@ struct AssignLeftoversView: View {
             }
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(meal.meal.name), \(meal.mealType.title)")
+        .accessibilityLabel("\(meal.meal.name), \(meal.entry.mealType.title)")
         .accessibilityValue(selected ? "Selected" : "Not selected")
     }
 
     private var selectedMealsSummary: some View {
         reviewSection("Selected meals") {
             ForEach(selectedMeals) { meal in
-                Text("\(meal.mealType.title): \(meal.meal.name)")
+                Text("\(meal.entry.mealType.title): \(meal.meal.name)")
                     .font(.subheadline)
             }
         }
     }
 
-    private func conflictList(_ title: String, meals: [PlannedMeal]) -> some View {
+    private func conflictList(_ title: String, meals: [MealPlanItem]) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title).font(.caption.weight(.semibold)).foregroundStyle(HomeyColors.secondaryText)
             ForEach(meals) { meal in Text(meal.meal.name).font(.subheadline.weight(.medium)) }
@@ -387,9 +387,9 @@ struct AssignLeftoversView: View {
         Text(title.uppercased()).font(.caption.weight(.bold)).foregroundStyle(HomeyColors.secondaryText)
     }
 
-    private func toggle(_ meal: PlannedMeal) {
-        if selectedEventIDs.contains(meal.eventId) { selectedEventIDs.remove(meal.eventId) }
-        else { selectedEventIDs.insert(meal.eventId) }
+    private func toggle(_ meal: MealPlanItem) {
+        if selectedEntryIDs.contains(meal.entry.id) { selectedEntryIDs.remove(meal.entry.id) }
+        else { selectedEntryIDs.insert(meal.entry.id) }
         destinationMeals = []
         conflictMode = nil
         didExplicitlyChooseConflictMode = false
@@ -438,10 +438,10 @@ struct AssignLeftoversView: View {
         errorMessage = nil
         defer { isLoadingSource = false }
         do {
-            let loaded = try await model.plannedMealsForDay(home: home, date: sourceDay)
+            let loaded = try await model.mealPlanItemsForDay(home: home, date: sourceDay)
             guard session.activeHome?.id == home.id else { dismiss(); return }
-            sourceMeals = loaded.filter { visibleTypes.contains($0.mealType) }
-            selectedEventIDs.formIntersection(Set(sourceMeals.map(\.eventId)))
+            sourceMeals = loaded.filter { visibleTypes.contains($0.entry.mealType) }
+            selectedEntryIDs.formIntersection(Set(sourceMeals.map(\.entry.id)))
         } catch {
             errorMessage = "Homey couldn't load the meals planned for this day."
         }
@@ -456,7 +456,7 @@ struct AssignLeftoversView: View {
         errorMessage = nil
         defer { isCheckingDestination = false }
         do {
-            destinationMeals = try await model.plannedMealsForDay(home: home, date: destinationDate)
+            destinationMeals = try await model.mealPlanItemsForDay(home: home, date: destinationDate)
             guard session.activeHome?.id == home.id else { dismiss(); return }
             if hasConflicts {
                 if !didExplicitlyChooseConflictMode { conflictMode = nil }
@@ -489,9 +489,9 @@ struct AssignLeftoversView: View {
         defer { isSaving = false }
 
         do {
-            let response = try await model.assignLeftovers(
+            let response = try await model.assignMealPlanLeftovers(
                 home: home,
-                sourceCalendarEventIDs: selectedMeals.map(\.eventId),
+                sourceEntryIDs: selectedMeals.map(\.entry.id),
                 destinationDate: destinationDate,
                 conflictMode: mode,
                 idempotencyKey: key
@@ -500,7 +500,6 @@ struct AssignLeftoversView: View {
                 throw MealsError.message("Homey received an unexpected response. Retry to safely confirm the same request.")
             }
             await model.refreshPlan(home: home, containing: destinationDate)
-            NotificationCenter.default.post(name: Notification.Name("homeyCalendarEventsDidChange"), object: home.id)
             onSaved(calendar.startOfDay(for: destinationDate))
             dismiss()
         } catch {
