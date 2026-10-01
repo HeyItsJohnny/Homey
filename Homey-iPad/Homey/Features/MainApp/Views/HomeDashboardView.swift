@@ -3,22 +3,15 @@ import SwiftUI
 struct HomeDashboardView: View {
     @EnvironmentObject private var authenticationService: AuthenticationService
     @EnvironmentObject private var homeService: HomeService
-    @Environment(\.scenePhase) private var scenePhase
 
-    @State private var selectedDestination: DashboardDestination = .calendar
+    @State private var selectedDestination: DashboardDestination = .home
+    @State private var selectedHomeTab: HomePrimaryTab = .calendar
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var isShowingSettingsMenu = false
-    @State private var calendarFocusDate: Date?
-    @StateObject private var choresAttentionStore = ChoresAttentionStore()
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            HomeSidebarView(
-                selectedDestination: $selectedDestination,
-                onSelectDestination: {
-                    columnVisibility = .detailOnly
-                }
-            )
+            HomeSidebarView(selectedDestination: $selectedDestination)
                 .navigationSplitViewColumnWidth(min: 260, ideal: 280, max: 320)
         } detail: {
             ZStack(alignment: .topTrailing) {
@@ -28,7 +21,6 @@ struct HomeDashboardView: View {
                 selectedContent
                     .environment(\.homePermissions, homeService.homePermissions(currentUser: authenticationService.currentUser))
                     .environment(\.homePermissionResolution, homeService.permissionResolutionState(currentUser: authenticationService.currentUser))
-                    .environmentObject(choresAttentionStore)
 
                 SettingsGearButton(
                     selectedDestination: $selectedDestination,
@@ -45,71 +37,19 @@ struct HomeDashboardView: View {
         .task(id: authenticationService.currentUser?.id) {
             await loadInvitationsForAuthenticatedUser()
         }
-        .task(id: ChoresAttentionDashboardLoadKey(
-            homeId: homeService.selectedHomeID,
-            currentUserId: authenticationService.currentUser?.id,
-            role: homeService.selectedHomeRole(currentUserID: authenticationService.currentUser?.id),
-            weekStartsOn: homeService.selectedHome()?.weekStartsOn,
-            timezone: homeService.selectedHome()?.timezone ?? TimeZone.autoupdatingCurrent.identifier
-        )) {
-            choresAttentionStore.configure(
-                homeId: homeService.selectedHomeID,
-                currentUserId: authenticationService.currentUser?.id,
-                role: homeService.selectedHomeRole(currentUserID: authenticationService.currentUser?.id),
-                weekStartsOn: homeService.selectedHome()?.weekStartsOn,
-                timezone: homeService.selectedHome()?.timezone ?? TimeZone.autoupdatingCurrent.identifier
-            )
-        }
-        .task {
-            for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
-                choresAttentionStore.refresh()
-            }
-        }
-        .onChange(of: scenePhase) { _, newPhase in
-            if newPhase == .active {
-                choresAttentionStore.refresh()
-            }
-        }
     }
 
     @ViewBuilder
     private var selectedContent: some View {
         switch selectedDestination {
         case .home:
-            DashboardContentView(
-                onOpenCalendar: { focusDate in
-                    calendarFocusDate = focusDate
-                    selectedDestination = .calendar
-                },
-                onOpenChores: {
-                    selectedDestination = .chores
-                }
-            )
-        case .chores:
-            ChoresView()
-        case .calendar:
-            CalendarView(focusDate: calendarFocusDate)
-        case .lists:
-            ListsView()
-        case .projects:
-            ProjectsView()
-        case .trips:
-            TripsView()
-        case .meals:
-            MealsView { focusDate in
-                calendarFocusDate = focusDate
-                selectedDestination = .calendar
-            }
-        case .groceries:
-            GroceriesView()
-        case .messages:
-            MessagesView()
-        case .settings:
-            SettingsView()
+            HomePrimaryView(selectedTab: $selectedHomeTab)
+        case .admin:
+            AdminPrimaryView()
         case .homeSettings:
             HomeSettingsView(
                 onClose: {
-                    selectedDestination = .calendar
+                    selectedDestination = .home
                 },
                 onShowCalendarCategories: {
                     selectedDestination = .calendarCategories
@@ -121,12 +61,12 @@ struct HomeDashboardView: View {
             }
         case .members:
             HomeMembersView {
-                selectedDestination = .calendar
+                selectedDestination = .home
             }
         case .myAccount:
             MyAccountView(
                 onClose: {
-                    selectedDestination = .calendar
+                    selectedDestination = .home
                 },
                 onShowInvitations: {
                     selectedDestination = .homeInvitations
@@ -138,15 +78,13 @@ struct HomeDashboardView: View {
                     selectedDestination = .myAccount
                 },
                 onSwitchHome: {
-                    selectedDestination = .calendar
+                    selectedDestination = .home
                 }
             )
-        case .manageHome:
-            ManageHomeView()
         case .changeHome:
             NavigationStack {
                 HomeSelectionView(restoresStoredSelectionOnAppear: false) {
-                    selectedDestination = .calendar
+                    selectedDestination = .home
                 }
             }
         }
@@ -170,12 +108,69 @@ struct HomeDashboardView: View {
     }
 }
 
-private struct ChoresAttentionDashboardLoadKey: Equatable {
-    let homeId: UUID?
-    let currentUserId: UUID?
-    let role: HomeMemberRole?
-    let weekStartsOn: Int?
-    let timezone: String
+private enum HomePrimaryTab: String, CaseIterable, Identifiable {
+    case calendar
+    case chores
+    case meals
+
+    var id: String { rawValue }
+
+    var title: String {
+        rawValue.capitalized
+    }
+}
+
+private struct HomePrimaryView: View {
+    @Binding var selectedTab: HomePrimaryTab
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            ModuleTabSelector(
+                tabs: HomePrimaryTab.allCases,
+                selectedTab: $selectedTab,
+                accessibilityLabel: "Home sections",
+                title: { $0.title }
+            )
+            .padding(.trailing, 78)
+
+            PrimaryComingSoonView()
+        }
+        .padding(.horizontal, 34)
+        .padding(.top, 18)
+        .padding(.bottom, 38)
+        .frame(maxWidth: 1180, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+}
+
+private struct AdminPrimaryView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            Text("Admin")
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .accessibilityAddTraits(.isHeader)
+                .padding(.trailing, 78)
+
+            PrimaryComingSoonView()
+        }
+        .padding(.horizontal, 34)
+        .padding(.top, 34)
+        .padding(.bottom, 38)
+        .frame(maxWidth: 1180, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+}
+
+private struct PrimaryComingSoonView: View {
+    var body: some View {
+        Text("Coming Soon")
+            .font(.title2.weight(.semibold))
+            .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .dashboardCard(cornerRadius: 30)
+            .accessibilityAddTraits(.isHeader)
+    }
 }
 
 private struct DashboardContentView: View {
@@ -1078,54 +1073,27 @@ extension View {
 
 enum DashboardDestination: String, CaseIterable, Identifiable {
     case home
-    case chores
-    case calendar
-    case lists
-    case projects
-    case trips
-    case meals
-    case groceries
-    case messages
-    case settings
+    case admin
     case homeSettings
     case calendarCategories
     case members
     case myAccount
     case homeInvitations
-    case manageHome
     case changeHome
 
     var id: String { rawValue }
 
     static let sidebarItems: [DashboardDestination] = [
-        .calendar,
-        .meals,
-        .chores,
-        .trips
+        .home,
+        .admin
     ]
 
     var title: String {
         switch self {
         case .home:
             "Home"
-        case .chores:
-            "Chores"
-        case .calendar:
-            "Home"
-        case .lists:
-            "Lists"
-        case .projects:
-            "Projects"
-        case .trips:
-            "Trips"
-        case .meals:
-            "Meals"
-        case .groceries:
-            "Groceries"
-        case .messages:
-            "Messages"
-        case .settings:
-            "Settings"
+        case .admin:
+            "Admin"
         case .homeSettings:
             "Home Settings"
         case .calendarCategories:
@@ -1136,8 +1104,6 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
             "My Account"
         case .homeInvitations:
             "Home Invitations"
-        case .manageHome:
-            "Manage Home"
         case .changeHome:
             "Change Home"
         }
@@ -1147,23 +1113,7 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
         switch self {
         case .home:
             "house.fill"
-        case .chores:
-            "checklist"
-        case .calendar:
-            "calendar"
-        case .lists:
-            "list.bullet.rectangle"
-        case .projects:
-            "folder.fill"
-        case .trips:
-            "airplane"
-        case .meals:
-            "fork.knife"
-        case .groceries:
-            "cart.fill"
-        case .messages:
-            "bubble.left.and.bubble.right.fill"
-        case .settings:
+        case .admin:
             "gearshape.fill"
         case .homeSettings:
             "gearshape"
@@ -1175,8 +1125,6 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
             "person.crop.circle"
         case .homeInvitations:
             "envelope.badge"
-        case .manageHome:
-            "house"
         case .changeHome:
             "arrow.left.arrow.right"
         }
@@ -1304,7 +1252,7 @@ enum HomeyDashboardTheme {
 }
 
 private struct HomeSidebarPreview: View {
-    @State private var selectedDestination: DashboardDestination = .calendar
+    @State private var selectedDestination: DashboardDestination = .home
 
     var body: some View {
         HomeSidebarView(selectedDestination: $selectedDestination)
