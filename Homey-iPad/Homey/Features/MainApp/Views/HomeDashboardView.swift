@@ -5,15 +5,13 @@ struct HomeDashboardView: View {
     @EnvironmentObject private var homeService: HomeService
 
     @State private var selectedDestination: DashboardDestination = .home
-    @State private var selectedHomeTab: HomePrimaryTab = .calendar
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var isShowingSettingsMenu = false
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
+        HStack(spacing: 0) {
             HomeSidebarView(selectedDestination: $selectedDestination)
-                .navigationSplitViewColumnWidth(min: 260, ideal: 280, max: 320)
-        } detail: {
+                .frame(width: 74)
+
             ZStack(alignment: .topTrailing) {
                 HomeyDashboardTheme.appBackground
                     .ignoresSafeArea()
@@ -30,7 +28,7 @@ struct HomeDashboardView: View {
                 .padding(.trailing, 34)
             }
         }
-        .navigationSplitViewStyle(.balanced)
+        .background(HomeyDashboardTheme.appBackground.ignoresSafeArea())
         .task(id: homeService.selectedHomeID) {
             await loadMembersForSelectedHome()
         }
@@ -43,7 +41,11 @@ struct HomeDashboardView: View {
     private var selectedContent: some View {
         switch selectedDestination {
         case .home:
-            HomePrimaryView(selectedTab: $selectedHomeTab)
+            HomePrimaryView()
+        case .chores:
+            PlaceholderPrimaryView(title: "Chores")
+        case .meals:
+            PlaceholderPrimaryView(title: "Meals")
         case .admin:
             AdminPrimaryView()
         case .homeSettings:
@@ -108,35 +110,32 @@ struct HomeDashboardView: View {
     }
 }
 
-private enum HomePrimaryTab: String, CaseIterable, Identifiable {
-    case calendar
-    case chores
-    case meals
-
-    var id: String { rawValue }
-
-    var title: String {
-        rawValue.capitalized
+private struct HomePrimaryView: View {
+    var body: some View {
+        CalendarHomeHubView()
+        .padding(.horizontal, 34)
+        .padding(.top, 34)
+        .padding(.bottom, 38)
+        .frame(maxWidth: 1180, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }
 
-private struct HomePrimaryView: View {
-    @Binding var selectedTab: HomePrimaryTab
+private struct PlaceholderPrimaryView: View {
+    let title: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            ModuleTabSelector(
-                tabs: HomePrimaryTab.allCases,
-                selectedTab: $selectedTab,
-                accessibilityLabel: "Home sections",
-                title: { $0.title }
-            )
-            .padding(.trailing, 78)
+        VStack(alignment: .leading, spacing: 28) {
+            Text(title)
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .accessibilityAddTraits(.isHeader)
+                .padding(.trailing, 78)
 
             PrimaryComingSoonView()
         }
         .padding(.horizontal, 34)
-        .padding(.top, 18)
+        .padding(.top, 34)
         .padding(.bottom, 38)
         .frame(maxWidth: 1180, maxHeight: .infinity, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .center)
@@ -295,21 +294,29 @@ private struct DashboardHeader: View {
 }
 
 struct HomeSidebarView: View {
+    @EnvironmentObject private var homeService: HomeService
+    @AppStorage("selectedHomeID") private var storedSelectedHomeID = ""
     @Binding var selectedDestination: DashboardDestination
     var onSelectDestination: () -> Void = {}
+    @State private var isShowingHomeMenu = false
 
     var body: some View {
         ZStack {
             HomeyDashboardTheme.sidebarBackground
                 .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 24) {
-                SidebarLogoView()
-                    .padding(.top, 22)
+            VStack(spacing: 16) {
+                Image(systemName: "heart.fill")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                    .frame(width: 44, height: 44)
+                    .background(HomeyDashboardTheme.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+                    .accessibilityLabel("Homey")
+                    .padding(.top, 20)
 
-                VStack(spacing: 8) {
+                VStack(spacing: 14) {
                     ForEach(DashboardDestination.sidebarItems) { item in
-                        SidebarNavigationRow(
+                        RailNavigationButton(
                             item: item,
                             isSelected: selectedDestination == item
                         ) {
@@ -321,115 +328,123 @@ struct HomeSidebarView: View {
 
                 Spacer(minLength: 24)
 
-                CurrentHomeSidebarCard()
+                Button {
+                    isShowingHomeMenu.toggle()
+                } label: {
+                    Image(systemName: "house.and.flag.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                        .frame(width: 46, height: 46)
+                        .background(HomeyDashboardTheme.cardBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Change Home")
+                .popover(isPresented: $isShowingHomeMenu, arrowEdge: .leading) {
+                    CompactHomeSwitcher(
+                        onSelectHome: selectHome,
+                        onShowAllHomes: showAllHomes
+                    )
+                    .presentationCompactAdaptation(.popover)
+                }
+                .padding(.bottom, 22)
             }
-            .padding(.horizontal, 20)
-            .padding(.bottom, 24)
         }
+    }
+
+    private func selectHome(_ home: HomeSummary) {
+        storedSelectedHomeID = home.id.uuidString
+        homeService.selectHome(id: home.id)
+        selectedDestination = .home
+        isShowingHomeMenu = false
+        onSelectDestination()
+    }
+
+    private func showAllHomes() {
+        isShowingHomeMenu = false
+        selectedDestination = .changeHome
+        onSelectDestination()
     }
 }
 
-private struct SidebarLogoView: View {
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(HomeyDashboardTheme.warmBeige)
-                    .frame(width: 48, height: 48)
-
-                Image(systemName: "house.fill")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
-            }
-
-            Text("homey")
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .foregroundStyle(HomeyDashboardTheme.primaryText)
-        }
-    }
-}
-
-private struct SidebarNavigationRow: View {
+private struct RailNavigationButton: View {
     let item: DashboardDestination
     let isSelected: Bool
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 13) {
-                Image(systemName: item.systemImage)
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(width: 24)
-
-                Text(item.title)
-                    .font(.body.weight(isSelected ? .semibold : .medium))
-
-                Spacer()
-            }
+            Image(systemName: item.systemImage)
+                .font(.system(size: 18, weight: .semibold))
             .foregroundStyle(isSelected ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.secondaryText)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 13)
+            .frame(width: 46, height: 46)
             .background {
                 if isSelected {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(HomeyDashboardTheme.selectedSidebarBackground)
                 }
             }
-            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(item.title)
     }
 }
 
-private struct CurrentHomeSidebarCard: View {
+private struct CompactHomeSwitcher: View {
     @EnvironmentObject private var homeService: HomeService
-
-    private var selectedHome: HomeSummary? {
-        homeService.selectedHome()
-    }
-
-    private var memberCountText: String {
-        guard let selectedHome else {
-            return "Choose a Home"
-        }
-
-        let count = homeService.memberCountForSelectedHome() ?? selectedHome.memberCount
-        return "\(count) \(count == 1 ? "Member" : "Members")"
-    }
+    let onSelectHome: (HomeSummary) -> Void
+    let onShowAllHomes: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(HomeyDashboardTheme.cardBackground)
-                    .frame(width: 46, height: 46)
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Homes")
+                .font(.headline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .padding(.horizontal, 10)
 
-                Image(systemName: "house.fill")
-                    .foregroundStyle(HomeyDashboardTheme.sageAccent)
+            ForEach(homeService.homes) { home in
+                Button {
+                    onSelectHome(home)
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: home.id == homeService.selectedHomeID ? "checkmark.circle.fill" : "house")
+                            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                            .frame(width: 24)
+
+                        Text(home.name)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(HomeyDashboardTheme.primaryText)
+                            .lineLimit(1)
+
+                        Spacer()
+                    }
+                    .padding(10)
+                    .background(
+                        home.id == homeService.selectedHomeID ? HomeyDashboardTheme.selectedSidebarBackground : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
+                }
+                .buttonStyle(.plain)
             }
 
-            VStack(alignment: .leading, spacing: 3) {
-                Text(selectedHome?.name ?? "No Home Selected")
+            Divider()
+
+            Button(action: onShowAllHomes) {
+                Label("Manage Homes", systemImage: "arrow.left.arrow.right")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(HomeyDashboardTheme.primaryText)
-
-                Text(memberCountText)
-                    .font(.caption)
-                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
+                    .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            Spacer()
-
-            Image(systemName: "chevron.down")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            .buttonStyle(.plain)
         }
         .padding(12)
-        .background(HomeyDashboardTheme.currentHomeBackground, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
-        }
+        .frame(width: 280)
+        .background(HomeyDashboardTheme.cardBackground)
     }
 }
 
@@ -1073,6 +1088,8 @@ extension View {
 
 enum DashboardDestination: String, CaseIterable, Identifiable {
     case home
+    case chores
+    case meals
     case admin
     case homeSettings
     case calendarCategories
@@ -1085,6 +1102,8 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
 
     static let sidebarItems: [DashboardDestination] = [
         .home,
+        .chores,
+        .meals,
         .admin
     ]
 
@@ -1092,6 +1111,10 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
         switch self {
         case .home:
             "Home"
+        case .chores:
+            "Chores"
+        case .meals:
+            "Meals"
         case .admin:
             "Admin"
         case .homeSettings:
@@ -1113,6 +1136,10 @@ enum DashboardDestination: String, CaseIterable, Identifiable {
         switch self {
         case .home:
             "house.fill"
+        case .chores:
+            "checklist"
+        case .meals:
+            "fork.knife"
         case .admin:
             "gearshape.fill"
         case .homeSettings:
