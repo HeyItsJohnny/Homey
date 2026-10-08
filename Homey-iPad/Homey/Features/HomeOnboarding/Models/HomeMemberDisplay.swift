@@ -1,11 +1,12 @@
 import Foundation
 
 struct HomeMemberDisplay: Identifiable, Hashable {
-    let id: UUID
+    let membershipId: UUID
     let homeId: UUID
     let userId: UUID
     let role: HomeMemberRole
     let joinedAt: String?
+    let displayOrder: Int
     let firstName: String?
     let lastName: String?
     let profileDisplayName: String?
@@ -13,12 +14,15 @@ struct HomeMemberDisplay: Identifiable, Hashable {
     let avatarURL: URL?
     let isCurrentUser: Bool
 
+    var id: UUID { membershipId }
+
     init(
         id: UUID,
         homeId: UUID = UUID(),
         userId: UUID,
         role: HomeMemberRole,
         joinedAt: String? = nil,
+        displayOrder: Int = 0,
         firstName: String? = nil,
         lastName: String? = nil,
         profileDisplayName: String? = nil,
@@ -27,11 +31,12 @@ struct HomeMemberDisplay: Identifiable, Hashable {
         avatarURL: URL?,
         isCurrentUser: Bool
     ) {
-        self.id = id
+        self.membershipId = id
         self.homeId = homeId
         self.userId = userId
         self.role = role
         self.joinedAt = joinedAt
+        self.displayOrder = displayOrder
         self.firstName = firstName
         self.lastName = lastName
         self.profileDisplayName = profileDisplayName ?? displayName

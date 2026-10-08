@@ -334,7 +334,7 @@ final class HomeService: ObservableObject {
                 return
             }
 
-            members = HomeMemberDisplay.sorted(loadedMembers)
+            members = loadedMembers
             loadedMembersHomeID = homeID
 
             #if DEBUG
@@ -379,6 +379,91 @@ final class HomeService: ObservableObject {
 
     func refreshMembers(for homeID: UUID, currentUser: UserProfile) async {
         await loadMembers(for: homeID, currentUser: currentUser, forceRefresh: true)
+    }
+
+    func reorderMembers(
+        homeID: UUID,
+        membershipIDs: [UUID],
+        currentUser: UserProfile
+    ) async -> Bool {
+        let currentMembers = membersForSelectedHome()
+        let uniqueMembershipIDs = Set(membershipIDs)
+        guard selectedHomeID == homeID,
+              !membershipIDs.isEmpty,
+              uniqueMembershipIDs.count == membershipIDs.count,
+              membershipIDs.count == currentMembers.count,
+              uniqueMembershipIDs == Set(currentMembers.map(\.membershipId)) else {
+            #if DEBUG
+            print("[Homey] MEMBER REORDER VALIDATION ERROR")
+            print("requested_home_id: \(homeID.uuidString)")
+            print("selected_home_id: \(selectedHomeID?.uuidString ?? "nil")")
+            print("ordered_member_count: \(membershipIDs.count)")
+            print("loaded_member_count: \(currentMembers.count)")
+            print("unique_membership_id_count: \(uniqueMembershipIDs.count)")
+            print("ordered membership ids: \(membershipIDs.map(\.uuidString))")
+            print("loaded membership ids: \(currentMembers.map { $0.membershipId.uuidString })")
+            #endif
+            return false
+        }
+
+        membersErrorMessage = nil
+
+        #if DEBUG
+        print("[Homey] MEMBER REORDER REQUEST")
+        print("home_id: \(homeID.uuidString)")
+        print("members:")
+        for (index, member) in currentMembers.enumerated() {
+            print("\(index):")
+            print("name: \(member.displayName)")
+            print("membership_id: \(member.membershipId.uuidString)")
+            print("user_id: \(member.userId.uuidString)")
+        }
+        print("ordered membership ids: \(membershipIDs.map(\.uuidString))")
+        #endif
+
+        do {
+            try await client
+                .rpc(
+                    "reorder_home_members",
+                    params: ReorderHomeMembersRPCParameters(
+                        homeID: homeID,
+                        membershipIDs: membershipIDs
+                    )
+                )
+                .execute()
+        } catch is CancellationError {
+            return false
+        } catch {
+            membersErrorMessage = "Unable to save the member order."
+            #if DEBUG
+            print("[Homey] MEMBER REORDER ERROR")
+            if let postgrestError = error as? PostgrestError {
+                print("code: \(postgrestError.code ?? "nil")")
+                print("detail: \(postgrestError.detail ?? "nil")")
+                print("hint: \(postgrestError.hint ?? "nil")")
+                print("message: \(postgrestError.message)")
+            }
+            print("raw error: \(String(reflecting: error))")
+            #endif
+            return false
+        }
+
+        guard selectedHomeID == homeID else { return false }
+
+        let membersByID = Dictionary(uniqueKeysWithValues: currentMembers.map { ($0.membershipId, $0) })
+        members = membershipIDs.compactMap { membersByID[$0] }
+        loadedMembersHomeID = homeID
+
+        // Persistence is complete once the RPC succeeds. A verification read
+        // should refine local data, but a transient read failure must not make
+        // the UI claim that the committed reorder was rolled back.
+        if let reorderedMembers = try? await fetchMembers(for: homeID, currentUser: currentUser),
+           selectedHomeID == homeID {
+            members = reorderedMembers
+            loadedMembersHomeID = homeID
+        }
+
+        return true
     }
 
     func invitationsForSelectedHome() -> [HomeInvitationDisplay] {
@@ -702,6 +787,7 @@ final class HomeService: ObservableObject {
                 userId: response.userID,
                 role: response.role,
                 joinedAt: response.joinedAt,
+                displayOrder: response.displayOrder,
                 firstName: response.firstName,
                 lastName: response.lastName,
                 profileDisplayName: response.displayName,
@@ -944,6 +1030,7 @@ private struct HomeMemberListResponse: Decodable {
     let userID: UUID
     let role: HomeMemberRole
     let joinedAt: String?
+    let displayOrder: Int
     let firstName: String?
     let lastName: String?
     let displayName: String?
@@ -956,11 +1043,22 @@ private struct HomeMemberListResponse: Decodable {
         case userID = "user_id"
         case role
         case joinedAt = "joined_at"
+        case displayOrder = "display_order"
         case firstName = "first_name"
         case lastName = "last_name"
         case displayName = "display_name"
         case email
         case avatarURL = "avatar_url"
+    }
+}
+
+private struct ReorderHomeMembersRPCParameters: Encodable {
+    let homeID: UUID
+    let membershipIDs: [UUID]
+
+    enum CodingKeys: String, CodingKey {
+        case homeID = "requested_home_id"
+        case membershipIDs = "requested_membership_ids"
     }
 }
 
