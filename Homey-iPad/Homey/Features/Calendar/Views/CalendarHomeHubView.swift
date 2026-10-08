@@ -19,46 +19,49 @@ private struct HomeHubActivity: Identifiable {
     let iconName: String
     let color: Color
     let location: String?
+    let event: CalendarEvent
 }
 
 @MainActor
 private final class CalendarHomeHubViewModel: ObservableObject {
     @Published private(set) var events: [CalendarEvent] = []
+    @Published private(set) var categories: [CalendarCategory] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var isSaving = false
+    @Published private(set) var isDeleting = false
     @Published private(set) var errorMessage: String?
 
     private let calendarService = CalendarService()
-    private var loadTask: Task<Void, Never>?
 
-    func load(homeID: UUID?, date: Date, calendar: Calendar) {
-        loadTask?.cancel()
+    func load(homeID: UUID?, date: Date, calendar: Calendar) async {
         guard let homeID, let range = Self.visibleRange(containing: date, calendar: calendar) else {
             events = []
+            categories = []
             return
         }
 
-        loadTask = Task { [weak self] in
-            guard let self else { return }
-            isLoading = true
-            errorMessage = nil
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
 
-            do {
-                let loadedEvents = try await calendarService.fetchEvents(
-                    homeId: homeID,
-                    rangeStart: range.start,
-                    rangeEnd: range.end
-                )
-                try Task.checkCancellation()
+        do {
+            async let loadedEvents = calendarService.fetchEvents(
+                homeId: homeID,
+                rangeStart: range.start,
+                rangeEnd: range.end
+            )
+            async let loadedCategories = calendarService.fetchCategories(homeId: homeID)
+            let (newEvents, newCategories) = try await (loadedEvents, loadedCategories)
+            try Task.checkCancellation()
 
-                events = loadedEvents
-            } catch is CancellationError {
-                return
-            } catch {
-                events = []
-                errorMessage = "Calendar events couldn’t be loaded right now."
-            }
-
-            isLoading = false
+            events = newEvents
+            categories = newCategories
+        } catch is CancellationError {
+            return
+        } catch {
+            events = []
+            categories = []
+            errorMessage = "Calendar events couldn’t be loaded right now."
         }
     }
 
@@ -73,7 +76,8 @@ private final class CalendarHomeHubViewModel: ObservableObject {
                 isAllDay: event.isAllDay,
                 iconName: event.categoryIconName ?? "calendar",
                 color: Color(hex: event.categoryColorHex) ?? HomeyDashboardTheme.lavenderAccent,
-                location: event.location
+                location: event.location,
+                event: event
             )
         }
         .sorted { lhs, rhs in
@@ -82,6 +86,161 @@ private final class CalendarHomeHubViewModel: ObservableObject {
             if titleComparison != .orderedSame { return titleComparison == .orderedAscending }
             return lhs.id < rhs.id
         }
+    }
+
+    func createEvent(
+        draft: EventEditorDraft,
+        homeID: UUID,
+        allowedCategoryIDs: Set<UUID>,
+        refreshDate: Date,
+        calendar: Calendar,
+        shouldRefresh: Bool
+    ) async -> Bool {
+        guard validateCategory(draft.categoryId, allowedCategoryIDs: allowedCategoryIDs), !isSaving else { return false }
+        let range = normalizedRange(for: draft, calendar: calendar)
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+
+        do {
+            _ = try await calendarService.createEvent(
+                homeId: homeID,
+                title: draft.title,
+                notes: draft.notes,
+                location: draft.location,
+                startsAt: range.start,
+                endsAt: range.end,
+                isAllDay: draft.isAllDay,
+                timezone: draft.timezone,
+                categoryId: draft.categoryId,
+                assignedUserIds: draft.assignedUserIds,
+                recurrence: draft.recurrence
+            )
+            if shouldRefresh {
+                await load(homeID: homeID, date: refreshDate, calendar: calendar)
+            }
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func updateEvent(
+        event: CalendarEvent,
+        scope: EventEditorEditScope,
+        draft: EventEditorDraft,
+        homeID: UUID,
+        allowedCategoryIDs: Set<UUID>,
+        refreshDate: Date,
+        calendar: Calendar,
+        shouldRefresh: Bool
+    ) async -> Bool {
+        guard event.homeId == homeID,
+              validateCategory(draft.categoryId, allowedCategoryIDs: allowedCategoryIDs),
+              !isSaving else { return false }
+        let range = normalizedRange(for: draft, calendar: calendar)
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+
+        do {
+            switch scope {
+            case .singleOccurrence:
+                try await calendarService.updateOccurrence(
+                    eventId: event.eventId,
+                    occurrenceStartsAt: event.occurrenceStartsAt,
+                    title: draft.title,
+                    startsAt: range.start,
+                    endsAt: range.end,
+                    timezone: draft.timezone,
+                    isAllDay: draft.isAllDay,
+                    notes: draft.notes,
+                    location: draft.location,
+                    categoryId: draft.categoryId
+                )
+            case .entireSeries:
+                try await calendarService.updateEvent(
+                    eventId: event.eventId,
+                    title: draft.title,
+                    notes: draft.notes,
+                    location: draft.location,
+                    startsAt: range.start,
+                    endsAt: range.end,
+                    isAllDay: draft.isAllDay,
+                    timezone: draft.timezone,
+                    categoryId: draft.categoryId,
+                    assignedUserIds: draft.assignedUserIds,
+                    recurrence: draft.recurrence
+                )
+            }
+            if shouldRefresh {
+                await load(homeID: homeID, date: refreshDate, calendar: calendar)
+            }
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func deleteEvent(
+        _ event: CalendarEvent,
+        scope: EventEditorDeleteScope,
+        homeID: UUID,
+        refreshDate: Date,
+        calendar: Calendar
+    ) async -> Bool {
+        guard event.homeId == homeID, !isDeleting else { return false }
+        isDeleting = true
+        errorMessage = nil
+        defer { isDeleting = false }
+
+        do {
+            switch scope {
+            case .singleOccurrence:
+                try await calendarService.deleteOccurrence(
+                    eventId: event.eventId,
+                    occurrenceStartsAt: event.occurrenceStartsAt
+                )
+            case .entireSeries:
+                try await calendarService.deleteEvent(eventId: event.eventId)
+            }
+            await load(homeID: homeID, date: refreshDate, calendar: calendar)
+            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func validateCategory(_ categoryID: UUID?, allowedCategoryIDs: Set<UUID>) -> Bool {
+        guard let categoryID else { return true }
+        guard allowedCategoryIDs.contains(categoryID) else {
+            errorMessage = "The selected category is not available for this Home."
+            return false
+        }
+        return true
+    }
+
+    func reportChangedHome() {
+        errorMessage = "The selected Home changed. Close this editor and try again."
+    }
+
+    private func normalizedRange(for draft: EventEditorDraft, calendar: Calendar) -> (start: Date, end: Date) {
+        guard draft.isAllDay else { return (draft.startDate, draft.endDate) }
+        let start = calendar.startOfDay(for: draft.startDate)
+        let finalDay = max(calendar.startOfDay(for: draft.endDate), start)
+        return (start, calendar.date(byAdding: .day, value: 1, to: finalDay) ?? start)
     }
 
     private static func visibleRange(containing date: Date, calendar: Calendar) -> DateInterval? {
@@ -100,6 +259,9 @@ struct CalendarHomeHubView: View {
     @StateObject private var viewModel = CalendarHomeHubViewModel()
     @State private var mode: HomeHubCalendarMode = .week
     @State private var selectedDate = Date()
+    @State private var editorPresentation: HomeHubEditorPresentation?
+    @State private var detailEvent: CalendarEvent?
+    @State private var pendingEditorPresentation: HomeHubEditorPresentation?
 
     private var calendar: Calendar {
         var value = Calendar.autoupdatingCurrent
@@ -128,24 +290,84 @@ struct CalendarHomeHubView: View {
                 HomeHubRightColumn(
                     selectedDate: $selectedDate,
                     calendar: calendar,
-                    activities: selectedDayActivities
+                    activities: selectedDayActivities,
+                    onSelectEvent: showEventDetail
                 )
                 .frame(width: 260)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .task(id: loadKey) {
-            viewModel.load(homeID: homeService.selectedHomeID, date: selectedDate, calendar: calendar)
+            await viewModel.load(homeID: homeService.selectedHomeID, date: selectedDate, calendar: calendar)
+        }
+        .sheet(item: $editorPresentation) { presentation in
+            EventEditorView(
+                mode: presentation.mode,
+                selectedDate: presentation.selectedDate,
+                categories: presentation.categories,
+                members: presentation.members,
+                isSaving: viewModel.isSaving,
+                isDeleting: viewModel.isDeleting,
+                errorMessage: viewModel.errorMessage,
+                calendarTimezone: presentation.timezone,
+                onSave: { draft in
+                    await save(draft, for: presentation)
+                },
+                onDelete: presentation.mode.event.map { event in
+                    { scope in
+                        await delete(event, scope: scope, presentation: presentation)
+                    }
+                },
+                onSuccess: { _ in }
+            )
+        }
+        .sheet(item: $detailEvent, onDismiss: presentPendingEditor) { event in
+            CalendarHomeHubEventDetailView(
+                event: event,
+                category: viewModel.categories.first { $0.id == event.categoryId },
+                assignedMembers: assignedMembers(for: event),
+                isDeleting: viewModel.isDeleting,
+                onEdit: { scope in
+                    pendingEditorPresentation = makeEditorPresentation(
+                        mode: .edit(event, scope: scope),
+                        selectedDate: event.occurrenceStartsAt,
+                        homeID: event.homeId
+                    )
+                    detailEvent = nil
+                },
+                onDelete: { scope in
+                    guard let presentation = makeEditorPresentation(
+                        mode: .edit(event),
+                        selectedDate: event.occurrenceStartsAt,
+                        homeID: event.homeId
+                    ) else { return false }
+                    return await delete(event, scope: scope, presentation: presentation)
+                }
+            )
         }
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 18) {
             Text("Calendar")
                 .font(.system(size: 32, weight: .bold, design: .rounded))
                 .foregroundStyle(HomeyDashboardTheme.primaryText)
                 .accessibilityAddTraits(.isHeader)
+
+            Spacer()
+
+            Button(action: presentCreateEditor) {
+                Label("Add Event", systemImage: "plus")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .frame(height: 42)
+                    .background(HomeyDashboardTheme.warmBrown, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(homeService.selectedHomeID == nil)
         }
+        .padding(.trailing, 78)
     }
 
     private var modePicker: some View {
@@ -215,9 +437,9 @@ struct CalendarHomeHubView: View {
     private var mainCalendar: some View {
         switch mode {
         case .day:
-            HomeHubTimeline(days: [calendar.startOfDay(for: selectedDate)], selectedDate: $selectedDate, calendar: calendar, activities: activitiesForDisplay)
+            HomeHubTimeline(days: [calendar.startOfDay(for: selectedDate)], selectedDate: $selectedDate, calendar: calendar, activities: activitiesForDisplay, onSelectEvent: showEventDetail)
         case .week:
-            HomeHubTimeline(days: weekDays, selectedDate: $selectedDate, calendar: calendar, activities: activitiesForDisplay)
+            HomeHubTimeline(days: weekDays, selectedDate: $selectedDate, calendar: calendar, activities: activitiesForDisplay, onSelectEvent: showEventDetail)
         case .month:
             HomeHubMonthGrid(
                 selectedDate: $selectedDate,
@@ -282,6 +504,377 @@ struct CalendarHomeHubView: View {
             mode = .day
         }
     }
+
+    private func presentCreateEditor() {
+        guard let homeID = homeService.selectedHomeID else { return }
+        editorPresentation = makeEditorPresentation(
+            mode: .create,
+            selectedDate: selectedDate,
+            homeID: homeID
+        )
+    }
+
+    private func showEventDetail(_ event: CalendarEvent) {
+        guard event.homeId == homeService.selectedHomeID else { return }
+        detailEvent = event
+    }
+
+    private func makeEditorPresentation(
+        mode: EventEditorMode,
+        selectedDate: Date,
+        homeID: UUID
+    ) -> HomeHubEditorPresentation? {
+        guard homeService.selectedHomeID == homeID,
+              let home = homeService.homes.first(where: { $0.id == homeID }) else { return nil }
+        return HomeHubEditorPresentation(
+            mode: mode,
+            selectedDate: selectedDate,
+            homeID: homeID,
+            timezone: mode.event?.timezone ?? home.timezone ?? TimeZone.autoupdatingCurrent.identifier,
+            categories: viewModel.categories.filter { $0.homeId == homeID },
+            members: homeService.membersForSelectedHome()
+        )
+    }
+
+    private func save(_ draft: EventEditorDraft, for presentation: HomeHubEditorPresentation) async -> Bool {
+        guard homeService.selectedHomeID == presentation.homeID else {
+            viewModel.reportChangedHome()
+            return false
+        }
+        let targetDate = calendar.startOfDay(for: draft.startDate)
+        let shouldRefresh = calendar.isDate(targetDate, equalTo: selectedDate, toGranularity: .month)
+        let categoryIDs = Set(presentation.categories.map(\.id))
+        let saved: Bool
+
+        switch presentation.mode {
+        case .create:
+            saved = await viewModel.createEvent(
+                draft: draft,
+                homeID: presentation.homeID,
+                allowedCategoryIDs: categoryIDs,
+                refreshDate: targetDate,
+                calendar: calendar,
+                shouldRefresh: shouldRefresh
+            )
+        case .edit(let event, let scope):
+            saved = await viewModel.updateEvent(
+                event: event,
+                scope: scope,
+                draft: draft,
+                homeID: presentation.homeID,
+                allowedCategoryIDs: categoryIDs,
+                refreshDate: targetDate,
+                calendar: calendar,
+                shouldRefresh: shouldRefresh
+            )
+        }
+
+        if saved {
+            selectedDate = targetDate
+        }
+        return saved
+    }
+
+    private func delete(
+        _ event: CalendarEvent,
+        scope: EventEditorDeleteScope,
+        presentation: HomeHubEditorPresentation
+    ) async -> Bool {
+        guard homeService.selectedHomeID == presentation.homeID else {
+            viewModel.reportChangedHome()
+            return false
+        }
+        return await viewModel.deleteEvent(
+            event,
+            scope: scope,
+            homeID: presentation.homeID,
+            refreshDate: selectedDate,
+            calendar: calendar
+        )
+    }
+
+    private func presentPendingEditor() {
+        guard let pendingEditorPresentation else { return }
+        editorPresentation = pendingEditorPresentation
+        self.pendingEditorPresentation = nil
+    }
+
+    private func assignedMembers(for event: CalendarEvent) -> [HomeMemberDisplay] {
+        let membersByID = Dictionary(uniqueKeysWithValues: homeService.membersForSelectedHome().map { ($0.userId, $0) })
+        return event.assignedUserIds.compactMap { membersByID[$0] }
+    }
+}
+
+private struct HomeHubEditorPresentation: Identifiable {
+    let id = UUID()
+    let mode: EventEditorMode
+    let selectedDate: Date
+    let homeID: UUID
+    let timezone: String
+    let categories: [CalendarCategory]
+    let members: [HomeMemberDisplay]
+}
+
+private struct CalendarHomeHubEventDetailView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let event: CalendarEvent
+    let category: CalendarCategory?
+    let assignedMembers: [HomeMemberDisplay]
+    let isDeleting: Bool
+    let onEdit: (EventEditorEditScope) -> Void
+    let onDelete: (EventEditorDeleteScope) async -> Bool
+
+    @State private var isChoosingEditScope = false
+    @State private var isChoosingDeleteScope = false
+
+    var body: some View {
+        ZStack {
+            HomeyDashboardTheme.appBackground.ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack {
+                        Spacer()
+                        Button("Done") { dismiss() }
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                            .padding(.horizontal, 18)
+                            .frame(minHeight: 44)
+                            .background(.white.opacity(0.28), in: Capsule())
+                    }
+
+                    categoryLabel
+
+                    Text(event.title)
+                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .foregroundStyle(HomeyDashboardTheme.primaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    dateCard
+
+                    if let location = normalized(event.location) {
+                        detailSection(title: "Location", systemImage: "mappin.and.ellipse", text: location)
+                    }
+
+                    if let notes = normalized(event.notes) {
+                        detailSection(title: "Notes", systemImage: "note.text", text: notes)
+                    }
+
+                    if event.isRecurring {
+                        detailSection(title: "Repeats", systemImage: "repeat", text: recurrenceSummary)
+                    }
+
+                    if !assignedMembers.isEmpty {
+                        assignedMembersSection
+                    }
+
+                    actionButtons
+                }
+                .padding(.horizontal, 28)
+                .padding(.top, 10)
+                .padding(.bottom, 32)
+                .frame(maxWidth: 680)
+                .frame(maxWidth: .infinity)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .confirmationDialog("Edit Recurring Event", isPresented: $isChoosingEditScope, titleVisibility: .visible) {
+            Button("This Event Only") { onEdit(.singleOccurrence) }
+            Button("Entire Series") { onEdit(.entireSeries) }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog(
+            event.isRecurring ? "Delete Recurring Event" : "Delete Event?",
+            isPresented: $isChoosingDeleteScope,
+            titleVisibility: .visible
+        ) {
+            if event.isRecurring {
+                Button("Delete This Event", role: .destructive) {
+                    Task { await performDelete(.singleOccurrence) }
+                }
+                Button("Delete Entire Series", role: .destructive) {
+                    Task { await performDelete(.entireSeries) }
+                }
+            } else {
+                Button("Delete Event", role: .destructive) {
+                    Task { await performDelete(.entireSeries) }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(event.isRecurring ? "Choose whether to delete this occurrence or the entire series." : "This action cannot be undone.")
+        }
+    }
+
+    private var categoryLabel: some View {
+        Label(category?.name ?? event.categoryName ?? "Calendar Event", systemImage: category?.iconName ?? event.categoryIconName ?? "calendar")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(eventColor)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 7)
+            .background(eventColor.opacity(0.14), in: Capsule())
+    }
+
+    private var dateCard: some View {
+        VStack(spacing: 0) {
+            detailRow(title: "Starts", value: startText, systemImage: "calendar.badge.clock")
+            Divider().overlay(HomeyDashboardTheme.softBorder)
+            detailRow(title: "Ends", value: endText, systemImage: "calendar.badge.checkmark")
+            if event.isAllDay {
+                Divider().overlay(HomeyDashboardTheme.softBorder)
+                detailRow(title: "Schedule", value: "All Day", systemImage: "sun.max")
+            }
+        }
+        .padding(.horizontal, 18)
+        .dashboardCard(cornerRadius: 22)
+    }
+
+    private func detailRow(title: String, value: String, systemImage: String) -> some View {
+        HStack(spacing: 13) {
+            Image(systemName: systemImage)
+                .foregroundStyle(HomeyDashboardTheme.warmBrown)
+                .frame(width: 24)
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            Spacer()
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.vertical, 16)
+    }
+
+    private func detailSection(title: String, systemImage: String, text: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            Text(text)
+                .font(.body)
+                .foregroundStyle(HomeyDashboardTheme.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dashboardCard(cornerRadius: 22)
+    }
+
+    private var assignedMembersSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Assigned Members")
+                .font(.subheadline.weight(.bold))
+                .foregroundStyle(HomeyDashboardTheme.warmBrown)
+            HStack(spacing: 10) {
+                ForEach(assignedMembers) { member in
+                    AvatarView(
+                        imageURL: member.avatarURL,
+                        initials: member.initials,
+                        size: 38,
+                        accentColor: HomeyDashboardTheme.warmBrown,
+                        borderWidth: 2,
+                        showsShadow: false,
+                        accessibilityLabel: "Assigned to \(member.displayName)"
+                    )
+                }
+                Spacer()
+            }
+        }
+        .padding(18)
+        .dashboardCard(cornerRadius: 22)
+    }
+
+    private var actionButtons: some View {
+        HStack(spacing: 12) {
+            Button {
+                if event.isRecurring {
+                    isChoosingEditScope = true
+                } else {
+                    onEdit(.entireSeries)
+                }
+            } label: {
+                Label("Edit Event", systemImage: "pencil")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(DashboardPrimaryButtonStyle())
+
+            Button(role: .destructive) {
+                isChoosingDeleteScope = true
+            } label: {
+                if isDeleting {
+                    ProgressView().tint(HomeyDashboardTheme.destructiveRed)
+                } else {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(HomeyDashboardTheme.destructiveRed)
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(HomeyDashboardTheme.destructiveRed.opacity(0.08), in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+            .buttonStyle(.plain)
+            .disabled(isDeleting)
+        }
+    }
+
+    private var eventColor: Color {
+        Color(hex: category?.colorHex ?? event.categoryColorHex) ?? HomeyDashboardTheme.lavenderAccent
+    }
+
+    private var startText: String {
+        event.isAllDay
+            ? format(event.occurrenceStartsAt, pattern: "EEEE, MMMM d, yyyy")
+            : format(event.occurrenceStartsAt, pattern: "EEE, MMM d, yyyy 'at' h:mm a")
+    }
+
+    private var endText: String {
+        if event.isAllDay,
+           let finalDay = eventCalendar.date(byAdding: .day, value: -1, to: event.occurrenceEndsAt) {
+            return format(finalDay, pattern: "EEEE, MMMM d, yyyy")
+        }
+        return format(event.occurrenceEndsAt, pattern: "EEE, MMM d, yyyy 'at' h:mm a")
+    }
+
+    private var recurrenceSummary: String {
+        EventRecurrenceSummary.summary(
+            for: CalendarRecurrenceInput(
+                frequency: event.recurrenceFrequency,
+                interval: event.recurrenceInterval,
+                daysOfWeek: event.recurrenceDaysOfWeek,
+                endDate: event.recurrenceEndDate,
+                count: event.recurrenceCount
+            ),
+            startDate: event.startsAt
+        )
+    }
+
+    private func normalized(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private var eventCalendar: Calendar {
+        var calendar = Calendar.autoupdatingCurrent
+        calendar.timeZone = TimeZone(identifier: event.timezone) ?? .autoupdatingCurrent
+        return calendar
+    }
+
+    private func format(_ date: Date, pattern: String) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = eventCalendar
+        formatter.timeZone = eventCalendar.timeZone
+        formatter.dateFormat = pattern
+        return formatter.string(from: date)
+    }
+
+    private func performDelete(_ scope: EventEditorDeleteScope) async {
+        if await onDelete(scope) {
+            dismiss()
+        }
+    }
 }
 
 private struct HomeHubTimeline: View {
@@ -289,6 +882,7 @@ private struct HomeHubTimeline: View {
     @Binding var selectedDate: Date
     let calendar: Calendar
     let activities: [HomeHubActivity]
+    let onSelectEvent: (CalendarEvent) -> Void
     @State private var expandedAllDayKeys: Set<String> = []
 
     private let firstHour = 6
@@ -395,7 +989,12 @@ private struct HomeHubTimeline: View {
                     let visibleActivities = isExpanded ? dayActivities : Array(dayActivities.prefix(1))
 
                     ForEach(Array(visibleActivities.enumerated()), id: \.element.id) { rowIndex, activity in
-                        HomeHubActivityCard(activity: activity, compact: days.count > 1)
+                        Button {
+                            onSelectEvent(activity.event)
+                        } label: {
+                            HomeHubActivityCard(activity: activity, compact: days.count > 1)
+                        }
+                            .buttonStyle(.plain)
                             .frame(width: columnWidth - 7, height: allDayRowHeight, alignment: .topLeading)
                             .position(
                                 x: labelWidth + columnWidth * (CGFloat(dayIndex) + 0.5),
@@ -452,7 +1051,12 @@ private struct HomeHubTimeline: View {
                 let y = timelineOrigin + CGFloat(clippedStart - firstHour * 60) / 60 * hourHeight
                 let height = max(34, CGFloat(duration) / 60 * hourHeight - 3)
 
-                HomeHubActivityCard(activity: activity, compact: days.count > 1)
+                Button {
+                    onSelectEvent(activity.event)
+                } label: {
+                    HomeHubActivityCard(activity: activity, compact: days.count > 1)
+                }
+                    .buttonStyle(.plain)
                     .frame(width: columnWidth - 7, height: height, alignment: .topLeading)
                     .position(
                         x: labelWidth + columnWidth * (CGFloat(dayIndex) + 0.5),
@@ -652,13 +1256,15 @@ private struct HomeHubRightColumn: View {
     @Binding var selectedDate: Date
     let calendar: Calendar
     let activities: [HomeHubActivity]
+    let onSelectEvent: (CalendarEvent) -> Void
 
     var body: some View {
         VStack(spacing: 14) {
             MiniMonthCard(selectedDate: $selectedDate, calendar: calendar)
             SelectedDayAgendaCard(
                 date: selectedDate,
-                activities: activities
+                activities: activities,
+                onSelectEvent: onSelectEvent
             )
             .frame(maxHeight: .infinity)
         }
@@ -724,6 +1330,7 @@ private struct MiniMonthCard: View {
 private struct SelectedDayAgendaCard: View {
     let date: Date
     let activities: [HomeHubActivity]
+    let onSelectEvent: (CalendarEvent) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -755,7 +1362,7 @@ private struct SelectedDayAgendaCard: View {
                                 .padding(.bottom, 1)
 
                             ForEach(allDayActivities) { activity in
-                                SelectedDayAgendaRow(activity: activity)
+                                agendaButton(for: activity)
                             }
                         }
 
@@ -766,7 +1373,7 @@ private struct SelectedDayAgendaCard: View {
                         }
 
                         ForEach(timedActivities) { activity in
-                            SelectedDayAgendaRow(activity: activity)
+                            agendaButton(for: activity)
                         }
                     }
                     .padding(.trailing, 2)
@@ -796,6 +1403,16 @@ private struct SelectedDayAgendaCard: View {
 
     private var timedActivities: [HomeHubActivity] {
         sortedActivities.filter { !$0.isAllDay }
+    }
+
+    private func agendaButton(for activity: HomeHubActivity) -> some View {
+        Button {
+            onSelectEvent(activity.event)
+        } label: {
+            SelectedDayAgendaRow(activity: activity)
+        }
+        .buttonStyle(.plain)
+        .accessibilityHint("Opens event details")
     }
 
 }

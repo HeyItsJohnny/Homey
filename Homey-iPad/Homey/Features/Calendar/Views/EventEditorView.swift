@@ -10,6 +10,8 @@ struct EventEditorView: View {
     let isSaving: Bool
     let isDeleting: Bool
     let errorMessage: String?
+    let calendarTimezone: String
+    private let editorCalendar: Calendar
     let onSave: (EventEditorDraft) async -> Bool
     let onDelete: ((EventEditorDeleteScope) async -> Bool)?
     let onSuccess: (EventEditorCompletion) -> Void
@@ -37,6 +39,7 @@ struct EventEditorView: View {
         isSaving: Bool,
         isDeleting: Bool = false,
         errorMessage: String?,
+        calendarTimezone: String = TimeZone.autoupdatingCurrent.identifier,
         onSave: @escaping (EventEditorDraft) async -> Bool,
         onDelete: ((EventEditorDeleteScope) async -> Bool)? = nil,
         onSuccess: @escaping (EventEditorCompletion) -> Void
@@ -48,11 +51,15 @@ struct EventEditorView: View {
         self.isSaving = isSaving
         self.isDeleting = isDeleting
         self.errorMessage = errorMessage
+        self.calendarTimezone = calendarTimezone
+        var calendar = Calendar.autoupdatingCurrent
+        calendar.timeZone = TimeZone(identifier: calendarTimezone) ?? .autoupdatingCurrent
+        self.editorCalendar = calendar
         self.onSave = onSave
         self.onDelete = onDelete
         self.onSuccess = onSuccess
 
-        let initialValues = EventEditorInitialValues.values(for: mode, selectedDate: selectedDate)
+        let initialValues = EventEditorInitialValues.values(for: mode, selectedDate: selectedDate, calendar: calendar)
         _title = State(initialValue: initialValues.title)
         _isAllDay = State(initialValue: initialValues.isAllDay)
         _startDate = State(initialValue: initialValues.startDate)
@@ -79,12 +86,12 @@ struct EventEditorView: View {
     }
 
     private var effectiveStartDate: Date {
-        isAllDay ? Calendar.autoupdatingCurrent.startOfDay(for: startDate) : startDate
+        isAllDay ? editorCalendar.startOfDay(for: startDate) : startDate
     }
 
     private var effectiveEndDate: Date {
         if isAllDay {
-            return Calendar.autoupdatingCurrent.startOfDay(for: endDate)
+            return editorCalendar.startOfDay(for: endDate)
         }
 
         return endDate
@@ -152,10 +159,10 @@ struct EventEditorView: View {
         }
         .onChange(of: isAllDay) { _, newValue in
             if newValue {
-                startDate = Calendar.autoupdatingCurrent.startOfDay(for: startDate)
-                endDate = max(Calendar.autoupdatingCurrent.startOfDay(for: endDate), startDate)
+                startDate = editorCalendar.startOfDay(for: startDate)
+                endDate = max(editorCalendar.startOfDay(for: endDate), startDate)
             } else if endDate <= startDate,
-                      let adjustedEnd = Calendar.autoupdatingCurrent.date(byAdding: .hour, value: 1, to: startDate) {
+                      let adjustedEnd = editorCalendar.date(byAdding: .hour, value: 1, to: startDate) {
                 endDate = adjustedEnd
             }
         }
@@ -201,9 +208,6 @@ struct EventEditorView: View {
                 }
             }
             categorySection
-            if mode.showsMemberAssignments {
-                memberAssignmentSection
-            }
 
             editorTextField(
                 label: "Location",
@@ -441,7 +445,7 @@ struct EventEditorView: View {
                     DatePicker(
                         "End Date",
                         selection: recurrenceEndDateBinding,
-                        in: Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate)...,
+                        in: editorCalendar.startOfDay(for: effectiveStartDate)...,
                         displayedComponents: .date
                     )
                     .datePickerStyle(.compact)
@@ -461,61 +465,6 @@ struct EventEditorView: View {
             .overlay {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
-            }
-        }
-    }
-
-    private var memberAssignmentSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            sectionLabel("Assigned Members", supportingText: "Optional")
-
-            if members.isEmpty {
-                Text("Members will appear here after they load.")
-                    .font(.subheadline)
-                    .foregroundStyle(HomeyDashboardTheme.secondaryText)
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(HomeyDashboardTheme.appBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(members) { member in
-                        Button {
-                            toggleAssignment(member.userId)
-                        } label: {
-                            HStack(spacing: 13) {
-                                AvatarView(
-                                    imageURL: member.avatarURL,
-                                    initials: member.initials,
-                                    size: 38,
-                                    accentColor: HomeyDashboardTheme.warmBrown,
-                                    borderWidth: 2,
-                                    showsShadow: false,
-                                    accessibilityLabel: "Avatar for \(member.displayName)"
-                                )
-
-                                Text(member.displayName)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundStyle(HomeyDashboardTheme.primaryText)
-
-                                Spacer()
-
-                                Image(systemName: assignedUserIds.contains(member.userId) ? "checkmark.circle.fill" : "circle")
-                                    .font(.title3.weight(.semibold))
-                                    .foregroundStyle(assignedUserIds.contains(member.userId) ? HomeyDashboardTheme.warmBrown : HomeyDashboardTheme.secondaryText.opacity(0.6))
-                            }
-                            .padding(.vertical, 12)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isSaving || isDeleting)
-                        .accessibilityLabel("Assign \(member.displayName)")
-                    }
-                }
-                .padding(.horizontal, 14)
-                .background(HomeyDashboardTheme.appBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(HomeyDashboardTheme.softBorder, lineWidth: 1)
-                }
             }
         }
     }
@@ -557,11 +506,11 @@ struct EventEditorView: View {
 
     private var recurrenceEndDateBinding: Binding<Date> {
         Binding(
-            get: { recurrence.endDate ?? Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate) },
+            get: { recurrence.endDate ?? editorCalendar.startOfDay(for: effectiveStartDate) },
             set: { newValue in
                 recurrence.endDate = max(
-                    Calendar.autoupdatingCurrent.startOfDay(for: newValue),
-                    Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate)
+                    editorCalendar.startOfDay(for: newValue),
+                    editorCalendar.startOfDay(for: effectiveStartDate)
                 )
                 recurrence.count = nil
             }
@@ -579,7 +528,7 @@ struct EventEditorView: View {
     }
 
     private var initialRecurrence: CalendarRecurrenceInput {
-        EventEditorInitialValues.values(for: mode, selectedDate: selectedDate).recurrence
+        EventEditorInitialValues.values(for: mode, selectedDate: selectedDate, calendar: editorCalendar).recurrence
     }
 
     private var shouldShowSeriesWarning: Bool {
@@ -611,7 +560,7 @@ struct EventEditorView: View {
 
         if recurrenceEndMode == .onDate,
            let endDate = recurrence.endDate,
-           Calendar.autoupdatingCurrent.startOfDay(for: endDate) < Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate) {
+           editorCalendar.startOfDay(for: endDate) < editorCalendar.startOfDay(for: effectiveStartDate) {
             return "Repeat end date cannot be before the event starts."
         }
 
@@ -674,14 +623,6 @@ struct EventEditorView: View {
         }
     }
 
-    private func toggleAssignment(_ userId: UUID) {
-        if assignedUserIds.contains(userId) {
-            assignedUserIds.remove(userId)
-        } else {
-            assignedUserIds.insert(userId)
-        }
-    }
-
     private func selectRecurrencePreset(_ preset: EventRecurrencePreset) {
         if preset == .custom {
             if recurrence.frequency == nil {
@@ -709,8 +650,8 @@ struct EventEditorView: View {
         guard recurrencePreset == .everyWeek || recurrencePreset == .everyTwoWeeks else {
             if recurrenceEndMode == .onDate,
                let endDate = recurrence.endDate,
-               Calendar.autoupdatingCurrent.startOfDay(for: endDate) < Calendar.autoupdatingCurrent.startOfDay(for: date) {
-                recurrence.endDate = Calendar.autoupdatingCurrent.startOfDay(for: date)
+               editorCalendar.startOfDay(for: endDate) < editorCalendar.startOfDay(for: date) {
+                recurrence.endDate = editorCalendar.startOfDay(for: date)
             }
             return
         }
@@ -734,8 +675,8 @@ struct EventEditorView: View {
             recurrence.count = nil
         case .onDate:
             recurrence.endDate = max(
-                endDate.map { Calendar.autoupdatingCurrent.startOfDay(for: $0) } ?? Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate),
-                Calendar.autoupdatingCurrent.startOfDay(for: effectiveStartDate)
+                endDate.map { editorCalendar.startOfDay(for: $0) } ?? editorCalendar.startOfDay(for: effectiveStartDate),
+                editorCalendar.startOfDay(for: effectiveStartDate)
             )
             recurrence.count = nil
         case .afterCount:
@@ -769,7 +710,7 @@ struct EventEditorView: View {
             startDate: startDate,
             endDate: endDate,
             isAllDay: isAllDay,
-            timezone: TimeZone.autoupdatingCurrent.identifier,
+            timezone: calendarTimezone,
             categoryId: selectedCategoryId,
             assignedUserIds: Array(assignedUserIds),
             recurrence: normalizedRecurrence
@@ -839,10 +780,6 @@ enum EventEditorMode {
         case .edit(_, .singleOccurrence):
             return false
         }
-    }
-
-    var showsMemberAssignments: Bool {
-        editScope != .singleOccurrence
     }
 
     var title: String {
