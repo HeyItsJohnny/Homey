@@ -190,7 +190,7 @@ struct MealsHomeHubView: View {
                     .foregroundStyle(sectionColor(mealType))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(mealType.displayName)
+                    Text(sectionTitle(mealType))
                         .font(.headline.weight(.bold))
                         .foregroundStyle(HomeyDashboardTheme.primaryText)
                     Text("\(items.count) planned")
@@ -203,17 +203,16 @@ struct MealsHomeHubView: View {
                 Button {
                     pickerContext = MealPickerContext(mealType: mealType)
                 } label: {
-                    Label("Add Meal", systemImage: "plus")
-                        .font(.caption.weight(.bold))
+                    Image(systemName: "plus")
+                        .font(.subheadline.weight(.bold))
                         .foregroundStyle(HomeyDashboardTheme.warmBrown)
-                        .padding(.horizontal, 10)
-                        .frame(minHeight: 34)
-                        .background(HomeyDashboardTheme.cardBackground, in: Capsule())
-                        .overlay { Capsule().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
+                        .frame(width: 34, height: 34)
+                        .background(HomeyDashboardTheme.cardBackground, in: Circle())
+                        .overlay { Circle().stroke(HomeyDashboardTheme.softBorder, lineWidth: 1) }
                 }
                 .buttonStyle(.plain)
                 .disabled(!permissions.meals.canPlanMeals || viewModel.isSaving)
-                .accessibilityLabel("Add \(mealType.displayName) meal")
+                .accessibilityLabel("Add \(sectionTitle(mealType)) meal")
             }
             .padding(14)
             .background(sectionColor(mealType).opacity(0.10))
@@ -267,7 +266,7 @@ struct MealsHomeHubView: View {
                     .tint(HomeyDashboardTheme.warmBrown)
             } else if permissions.meals.canPlanMeals {
                 Menu {
-                    Button("Remove From Meal Plan", systemImage: "calendar.badge.minus", role: .destructive) {
+                    Button("Remove", systemImage: "calendar.badge.minus", role: .destructive) {
                         Task { await viewModel.removeMeal(item) }
                     }
                 } label: {
@@ -292,16 +291,19 @@ struct MealsHomeHubView: View {
             Image(systemName: mealType.systemImageName)
                 .font(.title2)
                 .foregroundStyle(sectionColor(mealType))
-            Text("No \(mealType.displayName.lowercased()) planned")
+            Text("No \(sectionTitle(mealType).lowercased()) planned")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(HomeyDashboardTheme.secondaryText)
             if permissions.meals.canPlanMeals {
-                Button("Add Meal", systemImage: "plus") {
+                Button {
                     pickerContext = MealPickerContext(mealType: mealType)
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(HomeyDashboardTheme.warmBrown)
                 }
-                .font(.caption.weight(.bold))
-                .foregroundStyle(HomeyDashboardTheme.warmBrown)
                 .buttonStyle(.plain)
+                .accessibilityLabel("Add \(sectionTitle(mealType)) meal")
             }
         }
         .padding(.vertical, 32)
@@ -319,6 +321,10 @@ struct MealsHomeHubView: View {
         case .snack, .dessert, .drink:
             return HomeyDashboardTheme.warmBrown
         }
+    }
+
+    private func sectionTitle(_ mealType: MealType) -> String {
+        mealType == .snack ? "Snacks" : mealType.displayName
     }
 }
 
@@ -405,7 +411,7 @@ private struct HomeMealPicker: View {
                 }
             }
             .background(HomeyDashboardTheme.appBackground)
-            .navigationTitle("Choose \(mealType.displayName)")
+            .navigationTitle("Choose \(mealType == .snack ? "Snacks" : mealType.displayName)")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "Search Home Meals")
             .toolbar {

@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class MealsHomeHubViewModel: ObservableObject {
-    static let visibleMealTypes: [MealType] = [.breakfast, .lunch, .dinner]
+    static let visibleMealTypes: [MealType] = [.breakfast, .lunch, .dinner, .snack]
 
     @Published private(set) var selectedDate = Date()
     @Published private(set) var itemsByType: [MealType: [MealPlanItem]] = [:]
