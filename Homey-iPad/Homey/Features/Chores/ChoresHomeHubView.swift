@@ -878,9 +878,11 @@ struct ChoresHomeHubView: View {
                     }
                 }
 
-                HStack(spacing: 7) {
-                    choreStatusPill(chore)
-                    Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 6) {
+                    choreRoomPill(chore.roomName)
+                    if chore.status != .notStarted {
+                        choreStatusPill(chore.status)
+                    }
                 }
             }
             .padding(.vertical, 11)
@@ -941,12 +943,18 @@ struct ChoresHomeHubView: View {
             .background(HomeyDashboardTheme.warmBeige.opacity(0.48), in: Capsule())
     }
 
-    private func choreStatusPill(_ chore: MemberChoreRow) -> some View {
-        let status = chore.status
+    private func choreRoomPill(_ roomName: String) -> some View {
+        Label(roomName, systemImage: "house.fill")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(HomeyDashboardTheme.secondaryText)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 4)
+            .background(HomeyDashboardTheme.secondaryText.opacity(0.11), in: Capsule())
+    }
+
+    private func choreStatusPill(_ status: ChoreOccurrenceStatus) -> some View {
         let presentation = statusPresentation(status)
-        let title = status == .notStarted ? chore.roomName : presentation.title
-        let icon = status == .notStarted ? "house.fill" : presentation.icon
-        return Label(title, systemImage: icon)
+        return Label(presentation.title, systemImage: presentation.icon)
             .font(.caption2.weight(.bold))
             .foregroundStyle(presentation.color)
             .padding(.horizontal, 7)
