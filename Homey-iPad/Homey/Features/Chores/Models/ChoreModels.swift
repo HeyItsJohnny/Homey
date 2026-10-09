@@ -6,25 +6,38 @@ struct ClearHomeChoresResult: Codable, Hashable, Sendable {
     let choreDefinitionsDeleted: Int
     let recurrenceRulesDeleted: Int
     let occurrencesDeleted: Int
-    let calendarEventsDeleted: Int
+    let occurrenceAssigneesDeleted: Int
+    let claimsDeleted: Int
     let submissionsDeleted: Int
     let approvalsDeleted: Int
     let pointTransactionsDeleted: Int
+    let taskDefinitionsDeleted: Int
+    let taskAssigneesDeleted: Int
+    let taskCompletionsDeleted: Int
+    let taskPointTransactionsDeleted: Int
     let categoriesDeleted: Int
     let roomsDeleted: Int
+    let rewardsDeleted: Int
+    let calendarEventsDeleted: Int?
 
     enum CodingKeys: String, CodingKey {
         case choreDefinitionsDeleted = "chore_definitions_deleted"
         case recurrenceRulesDeleted = "recurrence_rules_deleted"
         case occurrencesDeleted = "occurrences_deleted"
-        case calendarEventsDeleted = "calendar_events_deleted"
+        case occurrenceAssigneesDeleted = "occurrence_assignees_deleted"
+        case claimsDeleted = "claims_deleted"
         case submissionsDeleted = "submissions_deleted"
         case approvalsDeleted = "approvals_deleted"
         case pointTransactionsDeleted = "point_transactions_deleted"
+        case taskDefinitionsDeleted = "task_definitions_deleted"
+        case taskAssigneesDeleted = "task_assignees_deleted"
+        case taskCompletionsDeleted = "task_completions_deleted"
+        case taskPointTransactionsDeleted = "task_point_transactions_deleted"
         case categoriesDeleted = "categories_deleted"
         case roomsDeleted = "rooms_deleted"
+        case rewardsDeleted = "rewards_deleted"
+        case calendarEventsDeleted = "calendar_events_deleted"
     }
-
 }
 
 struct ChoreHistoryActivity: Codable, Identifiable, Hashable, Sendable {

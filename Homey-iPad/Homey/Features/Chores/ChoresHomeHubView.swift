@@ -463,6 +463,12 @@ struct ChoresHomeHubView: View {
         .task(id: "\(homeID?.uuidString ?? "no-home"):\(timezoneIdentifier)") {
             await viewModel.waitForMidnightAndRefresh(timezoneIdentifier: timezoneIdentifier)
         }
+        .task(id: "responsibility-refresh:\(homeID?.uuidString ?? "no-home")") {
+            for await _ in NotificationCenter.default.notifications(named: .homeyChoresDidChange) {
+                guard !Task.isCancelled else { return }
+                await viewModel.refresh()
+            }
+        }
         .onAppear(perform: synchronizeMemberOrder)
         .onChange(of: homeID) { _, _ in
             orderedMembers = []

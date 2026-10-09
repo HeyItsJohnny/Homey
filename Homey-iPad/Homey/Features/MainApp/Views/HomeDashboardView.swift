@@ -45,7 +45,7 @@ struct HomeDashboardView: View {
         case .chores:
             ChoresHomeHubView()
         case .meals:
-            PlaceholderPrimaryView(title: "Meals")
+            MealsHomeHubView()
         case .admin:
             AdminPrimaryView()
         case .homeSettings:

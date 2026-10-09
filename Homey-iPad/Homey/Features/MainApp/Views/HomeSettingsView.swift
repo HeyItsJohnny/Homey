@@ -118,25 +118,25 @@ struct HomeSettingsView: View {
             Text("Your changes have not been saved.")
         }
         .confirmationDialog(
-            "Clear All Chores?",
+            "Clear Chores & Tasks?",
             isPresented: $isShowingClearChoresDialog,
             titleVisibility: .visible
         ) {
             Button("Cancel", role: .cancel) {}
-            Button("Clear Chores", role: .destructive) {
+            Button("Clear Chores & Tasks", role: .destructive) {
                 clearChoresConfirmationText = ""
                 isShowingClearChoresConfirmation = true
             }
         } message: {
-            Text("This will permanently delete all chore data for this Home, including recurring schedules, future and past chore occurrences, approvals, chore point activity, and chore calendar events. Other Homey data will not be affected.")
+            Text("This will permanently delete all chores, daily tasks, assignments, completions, approvals, reward activity, and related points for this Home. This cannot be undone.")
         }
         .sheet(isPresented: $isShowingClearChoresConfirmation) {
             ClearHomeDataConfirmationSheet(
-                title: "Clear All Chores?",
+                title: "Clear Chores & Tasks?",
                 homeName: selectedHome?.name ?? "this Home",
-                message: "This will permanently delete all chore data for this Home, including recurring schedules, future and past chore occurrences, approvals, chore point activity, and chore calendar events. Other Homey data will not be affected.",
-                confirmButtonTitle: "Clear Chores",
-                loadingAccessibilityLabel: "Clearing chores",
+                message: "This will permanently delete all chores, daily tasks, assignments, completions, approvals, reward activity, and related points for this Home. This cannot be undone.",
+                confirmButtonTitle: "Clear Chores & Tasks",
+                loadingAccessibilityLabel: "Clearing chores and tasks",
                 confirmationText: $clearChoresConfirmationText,
                 isClearing: isClearingChores,
                 onCancel: {
@@ -150,7 +150,7 @@ struct HomeSettingsView: View {
                 }
             )
         }
-        .alert("Unable to Clear Chores", isPresented: $isShowingClearChoresError) {
+        .alert("Unable to Clear Chores & Tasks", isPresented: $isShowingClearChoresError) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(clearChoresErrorMessage ?? "Please try again.")
@@ -367,11 +367,11 @@ struct HomeSettingsView: View {
             }
 
             dangerZoneAction(
-                title: "Clear Chores",
-                description: "Deletes all chores, schedules, approvals, points activity, and chore calendar events for this Home.",
+                title: "Clear Chores & Tasks",
+                description: "Deletes all chores, daily tasks, assignments, completions, approvals, reward activity, and related points for this Home.",
                 systemImage: "trash.fill",
                 isLoading: isClearingChores,
-                loadingTitle: "Clearing Chores...",
+                loadingTitle: "Clearing Chores & Tasks...",
                 action: { isShowingClearChoresDialog = true }
             )
 
@@ -537,10 +537,10 @@ struct HomeSettingsView: View {
             clearChoresConfirmationText = ""
             isShowingClearChoresConfirmation = false
             NotificationCenter.default.post(name: .homeyChoresDidChange, object: nil)
-            NotificationCenter.default.post(name: .homeyCalendarEventsDidChange, object: nil)
+            NotificationCenter.default.post(name: Notification.Name("homeyDailyTasksDidChange"), object: nil)
 
             withAnimation(.easeInOut(duration: 0.2)) {
-                successMessage = "All chores have been removed from this Home."
+                successMessage = "Chores and Tasks cleared."
             }
         } catch {
             clearChoresErrorMessage = error.localizedDescription

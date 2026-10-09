@@ -1891,7 +1891,7 @@ final class ChoresRepository {
 
     private func logClearHomeChoresRequest(homeId: UUID) {
         #if DEBUG
-        print("========== CLEAR CHORES ==========")
+        print("========== CLEAR CHORES & TASKS ==========")
         print("home_id: \(homeId.uuidString)")
         print("==================================")
         #endif
@@ -1899,16 +1899,22 @@ final class ChoresRepository {
 
     private func logClearHomeChoresResult(_ result: ClearHomeChoresResult) {
         #if DEBUG
-        print("========== CLEAR CHORES COMPLETE ==========")
-        print("definitions_deleted: \(result.choreDefinitionsDeleted)")
+        print("========== CLEAR CHORES & TASKS COMPLETE ==========")
+        print("chore_definitions_deleted: \(result.choreDefinitionsDeleted)")
         print("recurrence_rules_deleted: \(result.recurrenceRulesDeleted)")
         print("occurrences_deleted: \(result.occurrencesDeleted)")
-        print("calendar_events_deleted: \(result.calendarEventsDeleted)")
+        print("occurrence_assignees_deleted: \(result.occurrenceAssigneesDeleted)")
+        print("claims_deleted: \(result.claimsDeleted)")
         print("submissions_deleted: \(result.submissionsDeleted)")
         print("approvals_deleted: \(result.approvalsDeleted)")
         print("point_transactions_deleted: \(result.pointTransactionsDeleted)")
+        print("task_definitions_deleted: \(result.taskDefinitionsDeleted)")
+        print("task_assignees_deleted: \(result.taskAssigneesDeleted)")
+        print("task_completions_deleted: \(result.taskCompletionsDeleted)")
+        print("task_point_transactions_deleted: \(result.taskPointTransactionsDeleted)")
         print("categories_deleted: \(result.categoriesDeleted)")
         print("rooms_deleted: \(result.roomsDeleted)")
+        print("rewards_deleted: \(result.rewardsDeleted)")
         print("===========================================")
         #endif
     }

@@ -284,13 +284,14 @@ private struct TimezoneSettingsPicker: View {
 private enum HomeClearAction: String, Identifiable {
     case meals, calendar, chores
     var id: String { rawValue }
-    var title: String { switch self { case .meals: "Clear Meals"; case .calendar: "Clear Calendar"; case .chores: "Clear Chores" } }
+    var title: String { switch self { case .meals: "Clear Meals"; case .calendar: "Clear Calendar"; case .chores: "Clear Chores & Tasks" } }
+    var confirmationTitle: String { self == .chores ? "Clear Chores & Tasks?" : title }
     var icon: String { switch self { case .meals: "fork.knife"; case .calendar: "calendar.badge.minus"; case .chores: "checklist" } }
     var summary: String {
         switch self {
         case .meals: "Home recipes and meal plans"
         case .calendar: "Regular events; chore data stays intact"
-        case .chores: "Chores, rooms, rewards, approvals, and points activity"
+        case .chores: "Chores, daily tasks, assignments, completions, approvals, rewards, and points"
         }
     }
     var message: String {
@@ -300,7 +301,7 @@ private enum HomeClearAction: String, Identifiable {
         case .calendar:
             "This permanently deletes Calendar events for this Home. Meal plans, recipes, chores, and rewards are preserved."
         case .chores:
-            "This permanently deletes all chore templates, schedules, occurrences, assignments, claims, submissions, approvals, Chore points activity, rooms, chore categories, rewards, and redemptions for this Home. Daily Task points are preserved."
+            "This will permanently delete all chores, daily tasks, assignments, completions, approvals, reward activity, and related points for this Home. This cannot be undone."
         }
     }
 }
@@ -341,7 +342,7 @@ private struct ClearHomeDataSheet: View {
                 .padding(22)
             }
             .background(HomeyColors.background.ignoresSafeArea())
-            .navigationTitle(action.title)
+            .navigationTitle(action.confirmationTitle)
             .navigationBarTitleDisplayMode(.inline)
             .interactiveDismissDisabled(isClearing)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(isClearing) } }
@@ -365,9 +366,10 @@ private struct ClearHomeDataSheet: View {
                 message = "Calendar cleared (\(result.calendarEventsDeleted) event\(result.calendarEventsDeleted == 1 ? "" : "s"))."
                 NotificationCenter.default.post(name: Notification.Name("homeyCalendarEventsDidChange"), object: nil)
             case .chores:
-                let result = try await repository.clearChores(homeID: home.id)
-                message = "Chore data cleared (\(result.choreDefinitionsDeleted) chore\(result.choreDefinitionsDeleted == 1 ? "" : "s"))."
+                _ = try await repository.clearChores(homeID: home.id)
+                message = "Chores and Tasks cleared."
                 NotificationCenter.default.post(name: Notification.Name("homeyChoresDidChange"), object: nil)
+                NotificationCenter.default.post(name: Notification.Name("homeyDailyTasksDidChange"), object: nil)
             }
             isClearing = false
             onSuccess(message)
