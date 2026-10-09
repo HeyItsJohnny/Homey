@@ -45,6 +45,11 @@ struct ProfileSheet: View {
     @State private var isRefreshingProfile = false
     @State private var statusMessage: String?
     @State private var profileError: String?
+    @State private var adminPinStatus: HomeAdminPinStatus?
+    @State private var isLoadingAdminPinStatus = false
+    @State private var adminPinStatusError: String?
+    @State private var showingAdminPinManager = false
+    private let adminPinService = AdminPinService()
 
     var body: some View {
         NavigationStack {
@@ -84,10 +89,27 @@ struct ProfileSheet: View {
                 await refreshProfile()
                 await refreshInvitations()
             }
+            .task(id: appSession.activeHome?.id) {
+                await refreshAdminPinStatus()
+            }
             .sheet(isPresented: $showingEditor) {
                 EditProfileView { message in
                     statusMessage = message
                     profileError = nil
+                }
+            }
+            .sheet(isPresented: $showingAdminPinManager, onDismiss: {
+                Task { await refreshAdminPinStatus() }
+            }) {
+                if let homeID = appSession.activeHome?.id,
+                   let adminPinStatus,
+                   adminPinStatus.canManagePIN {
+                    AdminPinManagementSheet(
+                        homeID: homeID,
+                        initialStatus: adminPinStatus
+                    ) { updatedStatus in
+                        self.adminPinStatus = updatedStatus
+                    }
                 }
             }
         }
@@ -137,6 +159,27 @@ struct ProfileSheet: View {
         await appSession.homes.loadMyPendingInvitations(userID: userID, forceRefresh: true)
     }
 
+    private func refreshAdminPinStatus() async {
+        adminPinStatus = nil
+        adminPinStatusError = nil
+        guard let homeID = appSession.activeHome?.id else { return }
+        isLoadingAdminPinStatus = true
+        defer {
+            if appSession.activeHome?.id == homeID {
+                isLoadingAdminPinStatus = false
+            }
+        }
+
+        do {
+            let status = try await adminPinService.status(homeID: homeID)
+            guard appSession.activeHome?.id == homeID else { return }
+            adminPinStatus = status
+        } catch {
+            guard appSession.activeHome?.id == homeID else { return }
+            adminPinStatusError = error.localizedDescription
+        }
+    }
+
     private var accountCard: some View {
         VStack(alignment: .leading, spacing: 16) {
             profileSectionTitle("Account", subtitle: "Manage invitations connected to your account")
@@ -172,6 +215,36 @@ struct ProfileSheet: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+
+            if let adminPinStatus, adminPinStatus.canManagePIN {
+                Divider()
+                Button {
+                    showingAdminPinManager = true
+                } label: {
+                    profileNavigationRow(
+                        "iPad Admin PIN",
+                        detail: adminPinStatus.hasPIN ? "Configured" : "Not Set",
+                        icon: "lock.shield.fill"
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("iPad Admin PIN, \(adminPinStatus.hasPIN ? "Configured" : "Not Set")")
+            } else if isLoadingAdminPinStatus,
+                      appSession.activeRole == .owner || appSession.activeRole == .admin {
+                Divider()
+                HStack(spacing: 10) {
+                    ProgressView()
+                    Text("Checking iPad Admin PIN…")
+                        .font(.caption)
+                        .foregroundStyle(HomeyColors.secondaryText)
+                }
+            } else if let adminPinStatusError,
+                      appSession.activeRole == .owner || appSession.activeRole == .admin {
+                Divider()
+                Text(adminPinStatusError)
+                    .font(.caption)
+                    .foregroundStyle(HomeyColors.danger)
+            }
         }
         .homeyCard()
     }
@@ -264,6 +337,276 @@ struct ProfileSheet: View {
             Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(.tertiary)
         }
         .contentShape(Rectangle())
+    }
+}
+
+private enum AdminPinEntryStep {
+    case enter
+    case confirm
+}
+
+private struct AdminPinManagementSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let homeID: UUID
+    let onStatusChanged: (HomeAdminPinStatus) -> Void
+
+    @State private var status: HomeAdminPinStatus
+    @State private var isEditingPIN: Bool
+    @State private var entryStep: AdminPinEntryStep = .enter
+    @State private var newPIN = ""
+    @State private var confirmationPIN = ""
+    @State private var isSaving = false
+    @State private var isRemoving = false
+    @State private var isShowingRemoveConfirmation = false
+    @State private var errorMessage: String?
+
+    private let service = AdminPinService()
+
+    init(
+        homeID: UUID,
+        initialStatus: HomeAdminPinStatus,
+        onStatusChanged: @escaping (HomeAdminPinStatus) -> Void
+    ) {
+        self.homeID = homeID
+        self.onStatusChanged = onStatusChanged
+        _status = State(initialValue: initialStatus)
+        _isEditingPIN = State(initialValue: !initialStatus.hasPIN)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                HomeyBackground()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if let errorMessage {
+                            HomeyErrorView(message: errorMessage)
+                        }
+
+                        if isEditingPIN {
+                            pinEntryCard
+                        } else {
+                            managementCard
+                        }
+                    }
+                    .padding(18)
+                }
+                .scrollDismissesKeyboard(.interactively)
+            }
+            .navigationTitle("iPad Admin PIN")
+            .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled(isSaving || isRemoving)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(isEditingPIN && status.hasPIN ? "Cancel" : "Done") {
+                        if isEditingPIN && status.hasPIN {
+                            cancelPINEntry()
+                        } else {
+                            clearPINEntry()
+                            dismiss()
+                        }
+                    }
+                    .disabled(isSaving || isRemoving)
+                }
+            }
+        }
+        .presentationDetents([.large])
+        .onDisappear(perform: clearPINEntry)
+        .confirmationDialog(
+            "Remove iPad Admin PIN?",
+            isPresented: $isShowingRemoveConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove PIN", role: .destructive) {
+                Task { await removePIN() }
+            }
+        } message: {
+            Text("This will prevent this PIN from unlocking the shared iPad Admin area.")
+        }
+    }
+
+    private var managementCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 14) {
+                Image(systemName: status.hasPIN ? "lock.shield.fill" : "lock.slash.fill")
+                    .font(.title2)
+                    .foregroundStyle(status.hasPIN ? HomeyColors.success : HomeyColors.secondaryText)
+                    .frame(width: 48, height: 48)
+                    .background((status.hasPIN ? HomeyColors.success : HomeyColors.secondaryText).opacity(0.10), in: RoundedRectangle(cornerRadius: 14))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("iPad Admin PIN")
+                        .font(.headline)
+                        .foregroundStyle(HomeyColors.text)
+                    Text(status.hasPIN ? "Configured" : "Not Set")
+                        .font(.subheadline)
+                        .foregroundStyle(HomeyColors.secondaryText)
+                }
+            }
+
+            Text("This personal PIN unlocks the shared iPad Admin area for your account. Homey never displays your existing PIN.")
+                .font(.subheadline)
+                .foregroundStyle(HomeyColors.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if status.hasPIN {
+                Button("Change PIN") {
+                    beginPINEntry()
+                }
+                .buttonStyle(HomeyButtonStyle())
+
+                Button("Remove PIN", role: .destructive) {
+                    isShowingRemoveConfirmation = true
+                }
+                .font(.headline)
+                .foregroundStyle(HomeyColors.danger)
+                .frame(maxWidth: .infinity, minHeight: 50)
+                .background(HomeyColors.danger.opacity(0.09), in: RoundedRectangle(cornerRadius: 14))
+                .disabled(isRemoving)
+            } else {
+                Button("Set PIN") {
+                    beginPINEntry()
+                }
+                .buttonStyle(HomeyButtonStyle())
+            }
+        }
+        .homeyCard()
+    }
+
+    private var pinEntryCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(entryStep == .enter ? "Enter New PIN" : "Confirm PIN")
+                    .font(HomeyTypography.headline)
+                    .foregroundStyle(HomeyColors.text)
+                Text(entryStep == .enter ? "Choose exactly four numeric digits." : "Enter the same four digits again.")
+                    .font(.subheadline)
+                    .foregroundStyle(HomeyColors.secondaryText)
+            }
+
+            if entryStep == .enter {
+                pinField("New PIN", text: $newPIN)
+
+                Button("Continue") {
+                    errorMessage = nil
+                    entryStep = .confirm
+                }
+                .buttonStyle(HomeyButtonStyle())
+                .disabled(!AdminPinService.isValid(newPIN))
+                .opacity(AdminPinService.isValid(newPIN) ? 1 : 0.55)
+            } else {
+                pinField("Confirm PIN", text: $confirmationPIN)
+
+                Button {
+                    Task { await savePIN() }
+                } label: {
+                    HStack {
+                        if isSaving { ProgressView().tint(.white) }
+                        Text(isSaving ? "Saving…" : "Save PIN")
+                    }
+                }
+                .buttonStyle(HomeyButtonStyle())
+                .disabled(!AdminPinService.isValid(confirmationPIN) || isSaving)
+                .opacity(AdminPinService.isValid(confirmationPIN) && !isSaving ? 1 : 0.55)
+
+                Button("Back") {
+                    confirmationPIN = ""
+                    errorMessage = nil
+                    entryStep = .enter
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(HomeyColors.primary)
+                .frame(maxWidth: .infinity)
+                .disabled(isSaving)
+            }
+        }
+        .homeyCard()
+    }
+
+    private func pinField(_ title: String, text: Binding<String>) -> some View {
+        SecureField("4-digit PIN", text: text)
+            .keyboardType(.numberPad)
+            .multilineTextAlignment(.center)
+            .font(.system(size: 28, weight: .bold, design: .rounded))
+            .tracking(12)
+            .privacySensitive()
+            .homeyTextField()
+            .accessibilityLabel(title)
+            .onChange(of: text.wrappedValue) { _, value in
+                let normalized = AdminPinService.normalized(value)
+                if value != normalized { text.wrappedValue = normalized }
+            }
+    }
+
+    private func beginPINEntry() {
+        clearPINEntry()
+        errorMessage = nil
+        isEditingPIN = true
+    }
+
+    private func cancelPINEntry() {
+        clearPINEntry()
+        errorMessage = nil
+        isEditingPIN = false
+    }
+
+    private func clearPINEntry() {
+        newPIN = ""
+        confirmationPIN = ""
+        entryStep = .enter
+    }
+
+    private func savePIN() async {
+        guard !isSaving,
+              AdminPinService.isValid(newPIN),
+              AdminPinService.isValid(confirmationPIN) else {
+            errorMessage = AdminPinServiceError.invalidPIN.localizedDescription
+            return
+        }
+        guard newPIN == confirmationPIN else {
+            errorMessage = "PINs do not match. Please try again."
+            confirmationPIN = ""
+            return
+        }
+
+        isSaving = true
+        errorMessage = nil
+        let submittedPIN = newPIN
+        defer {
+            isSaving = false
+            clearPINEntry()
+        }
+
+        do {
+            try await service.setPIN(submittedPIN, homeID: homeID)
+            let updatedStatus = HomeAdminPinStatus(hasPIN: true, canManagePIN: true)
+            status = updatedStatus
+            onStatusChanged(updatedStatus)
+            isEditingPIN = false
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+            entryStep = .enter
+        }
+    }
+
+    private func removePIN() async {
+        guard !isRemoving else { return }
+        isRemoving = true
+        errorMessage = nil
+        defer { isRemoving = false }
+
+        do {
+            try await service.removePIN(homeID: homeID)
+            let updatedStatus = HomeAdminPinStatus(hasPIN: false, canManagePIN: true)
+            status = updatedStatus
+            onStatusChanged(updatedStatus)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 }
 
