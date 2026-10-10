@@ -3,13 +3,15 @@ import SwiftUI
 struct HomeDashboardView: View {
     @EnvironmentObject private var authenticationService: AuthenticationService
     @EnvironmentObject private var homeService: HomeService
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var selectedDestination: DashboardDestination = .home
     @State private var isShowingSettingsMenu = false
+    @StateObject private var adminAccess = HomeAdminAccessController()
 
     var body: some View {
         HStack(spacing: 0) {
-            HomeSidebarView(selectedDestination: $selectedDestination)
+            HomeSidebarView(selectedDestination: secureSelectedDestination)
                 .frame(width: 74)
 
             ZStack(alignment: .topTrailing) {
@@ -21,7 +23,7 @@ struct HomeDashboardView: View {
                     .environment(\.homePermissionResolution, homeService.permissionResolutionState(currentUser: authenticationService.currentUser))
 
                 SettingsGearButton(
-                    selectedDestination: $selectedDestination,
+                    selectedDestination: secureSelectedDestination,
                     isShowingSettingsMenu: $isShowingSettingsMenu
                 )
                 .padding(.top, 28)
@@ -35,6 +37,37 @@ struct HomeDashboardView: View {
         .task(id: authenticationService.currentUser?.id) {
             await loadInvitationsForAuthenticatedUser()
         }
+        .onAppear {
+            adminAccess.scope(to: homeService.selectedHomeID)
+        }
+        .onChange(of: homeService.selectedHomeID) { _, selectedHomeID in
+            adminAccess.scope(to: selectedHomeID)
+        }
+        .onChange(of: selectedDestination) { previousDestination, selectedDestination in
+            if previousDestination == .admin, selectedDestination != .admin {
+                adminAccess.lock()
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background {
+                adminAccess.lock()
+            }
+        }
+        .onDisappear {
+            adminAccess.lock()
+        }
+    }
+
+    private var secureSelectedDestination: Binding<DashboardDestination> {
+        Binding(
+            get: { selectedDestination },
+            set: { destination in
+                if selectedDestination == .admin, destination != .admin {
+                    adminAccess.lock()
+                }
+                selectedDestination = destination
+            }
+        )
     }
 
     @ViewBuilder
@@ -47,7 +80,7 @@ struct HomeDashboardView: View {
         case .meals:
             MealsHomeHubView()
         case .admin:
-            AdminPrimaryView()
+            AdminAccessView(controller: adminAccess)
         case .homeSettings:
             HomeSettingsView(
                 onClose: {
@@ -118,57 +151,6 @@ private struct HomePrimaryView: View {
         .padding(.bottom, 38)
         .frame(maxWidth: 1180, maxHeight: .infinity, alignment: .topLeading)
         .frame(maxWidth: .infinity, alignment: .center)
-    }
-}
-
-private struct PlaceholderPrimaryView: View {
-    let title: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            Text(title)
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-                .foregroundStyle(HomeyDashboardTheme.primaryText)
-                .accessibilityAddTraits(.isHeader)
-                .padding(.trailing, 78)
-
-            PrimaryComingSoonView()
-        }
-        .padding(.horizontal, 34)
-        .padding(.top, 34)
-        .padding(.bottom, 38)
-        .frame(maxWidth: 1180, maxHeight: .infinity, alignment: .topLeading)
-        .frame(maxWidth: .infinity, alignment: .center)
-    }
-}
-
-private struct AdminPrimaryView: View {
-    var body: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            Text("Admin")
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-                .foregroundStyle(HomeyDashboardTheme.primaryText)
-                .accessibilityAddTraits(.isHeader)
-                .padding(.trailing, 78)
-
-            PrimaryComingSoonView()
-        }
-        .padding(.horizontal, 34)
-        .padding(.top, 34)
-        .padding(.bottom, 38)
-        .frame(maxWidth: 1180, maxHeight: .infinity, alignment: .topLeading)
-        .frame(maxWidth: .infinity, alignment: .center)
-    }
-}
-
-private struct PrimaryComingSoonView: View {
-    var body: some View {
-        Text("Coming Soon")
-            .font(.title2.weight(.semibold))
-            .foregroundStyle(HomeyDashboardTheme.secondaryText)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .dashboardCard(cornerRadius: 30)
-            .accessibilityAddTraits(.isHeader)
     }
 }
 
